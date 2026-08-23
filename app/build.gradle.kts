@@ -23,8 +23,8 @@ android {
     defaultConfig {
         applicationId = "com.gallerybox"
         minSdk = 31
-        targetSdk = 35
-        versionCode = 89
+        targetSdk = 36
+        versionCode = 90
 
         versionName = "1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
