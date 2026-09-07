@@ -48,14 +48,22 @@
       </SelectionState>
       <SelectionState runConfigName="main">
         <option name="selectionMode" value="DROPDOWN" />
-        <DropdownSelection timestamp="2026-08-23T14:54:53.057729700Z">
+        <DropdownSelection timestamp="2026-09-04T04:55:12.202243500Z">
           <Target type="DEFAULT_BOOT">
             <handle>
-              <DeviceId pluginId="LocalEmulator" identifier="path=C:\Users\ishan\.android\avd\Resizable.avd" />
+              <DeviceId pluginId="Wireless" identifier="serviceName=adb-RZ8N619C0BZ-mX48Oa" />
             </handle>
           </Target>
         </DropdownSelection>
-        <DialogSelection />
+        <DialogSelection>
+          <targets>
+            <Target type="DEFAULT_BOOT">
+              <handle>
+                <DeviceId pluginId="Wireless" identifier="serviceName=adb-RZ8N619C0BZ-mX48Oa" />
+              </handle>
+            </Target>
+          </targets>
+        </DialogSelection>
       </SelectionState>
     </selectionStates>
   </component>

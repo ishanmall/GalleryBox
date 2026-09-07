@@ -70,7 +70,8 @@ import kotlin.random.Random
 enum class PlaybackMode {
     NONE,
     LOCAL_MUSIC,
-    FM_RADIO
+    FM_RADIO,
+    DIGITAL_RADIO
 }
 
 @Singleton
@@ -428,7 +429,6 @@ class PlayerManager @Inject constructor(@ApplicationContext private val context:
     private val _queue = MutableStateFlow<List<AudioTrack>>(emptyList())
     val queue = _queue.asStateFlow()
 
-    // Expose playback errors for UI feedback
     private val _playerError = MutableStateFlow<String?>(null)
     val playerError = _playerError.asStateFlow()
 
@@ -498,7 +498,7 @@ class PlayerManager @Inject constructor(@ApplicationContext private val context:
                 _isPlaying.value = isPlaying
             }
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-                _playerError.value = null // Clear previous errors
+                _playerError.value = null
                 mediaItem?.mediaId?.let { id ->
                     queueMap[id]?.let { track ->
                         _currentTrack.value = track
@@ -529,7 +529,7 @@ class PlayerManager @Inject constructor(@ApplicationContext private val context:
                 _isPlaying2.value = isPlaying
             }
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-                _playerError.value = null // Clear previous errors
+                _playerError.value = null
                 mediaItem?.mediaId?.let { id ->
                     queueMap[id]?.let { track ->
                         _currentTrack2.value = track
@@ -797,7 +797,7 @@ class PlayerManager @Inject constructor(@ApplicationContext private val context:
 
     fun playTrack(track: AudioTrack, secondary: Boolean = false) {
         registerCallbacks()
-        _playerError.value = null // Clear error before attempting to play
+        _playerError.value = null
 
         val targetPlayer = if (secondary) player2 else player
 
@@ -957,6 +957,12 @@ class MusicService : Service() {
     private var currentAlbumArt: Bitmap? = null
     private var autoStopJob: Job? = null
 
+    private var digitalPlayer: ExoPlayer? = null
+    private var isDigitalPlaying = false
+    private var digitalTitle = ""
+    private var digitalSubtitle = ""
+    private var digitalImageUrl = ""
+
     private val _playbackMode = MutableStateFlow(PlaybackMode.NONE)
     val playbackMode = _playbackMode.asStateFlow()
 
@@ -968,6 +974,29 @@ class MusicService : Service() {
         super.onCreate()
         notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         createNotificationChannel()
+
+        digitalPlayer = ExoPlayer.Builder(this).build()
+        digitalPlayer?.addListener(object : Player.Listener {
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                isDigitalPlaying = isPlaying
+                if (isPlaying) {
+                    fmRadioEngine.stop()
+                    playerManager.pause()
+                    _playbackMode.value = PlaybackMode.DIGITAL_RADIO
+                    mediaSession?.player = digitalPlayer!!
+                    updateNotification(true)
+                } else if (_playbackMode.value == PlaybackMode.DIGITAL_RADIO) {
+                    updateNotification(false)
+                    scheduleAutoStop()
+                }
+            }
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                if (_playbackMode.value == PlaybackMode.DIGITAL_RADIO) {
+                    updateNotification(digitalPlayer?.isPlaying == true)
+                }
+            }
+        })
+
         setupMediaSession()
         coordinateEngines()
     }
@@ -975,8 +1004,20 @@ class MusicService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_PLAY_PAUSE -> togglePlayPause()
-            ACTION_NEXT -> if (_playbackMode.value == PlaybackMode.FM_RADIO) fmRadioEngine.scanNext() else playerManager.seekToNext()
-            ACTION_PREV -> if (_playbackMode.value == PlaybackMode.FM_RADIO) fmRadioEngine.scanPrevious() else playerManager.seekToPrevious()
+            ACTION_NEXT -> {
+                when (_playbackMode.value) {
+                    PlaybackMode.FM_RADIO -> fmRadioEngine.scanNext()
+                    PlaybackMode.LOCAL_MUSIC -> playerManager.seekToNext()
+                    PlaybackMode.DIGITAL_RADIO, PlaybackMode.NONE -> {}
+                }
+            }
+            ACTION_PREV -> {
+                when (_playbackMode.value) {
+                    PlaybackMode.FM_RADIO -> fmRadioEngine.scanPrevious()
+                    PlaybackMode.LOCAL_MUSIC -> playerManager.seekToPrevious()
+                    PlaybackMode.DIGITAL_RADIO, PlaybackMode.NONE -> {}
+                }
+            }
         }
         return START_NOT_STICKY
     }
@@ -996,12 +1037,14 @@ class MusicService : Service() {
     }
 
     private fun coordinateEngines() {
-        // Observe Music State
+        // Observe Local Music State
         serviceScope.launch {
             playerManager.isPlaying.collect { isPlaying ->
                 if (isPlaying) {
                     fmRadioEngine.stop()
+                    digitalPlayer?.pause()
                     _playbackMode.value = PlaybackMode.LOCAL_MUSIC
+                    mediaSession?.player = playerManager.player
                     updateNotification(true)
                 } else if (_playbackMode.value == PlaybackMode.LOCAL_MUSIC) {
                     updateNotification(false)
@@ -1028,7 +1071,9 @@ class MusicService : Service() {
             fmRadioEngine.isPlaying.collect { isPlaying ->
                 if (isPlaying) {
                     playerManager.pause()
+                    digitalPlayer?.pause()
                     _playbackMode.value = PlaybackMode.FM_RADIO
+                    // FM doesn't use ExoPlayer, retain the current session player safely
                     updateNotification(true)
                 } else if (_playbackMode.value == PlaybackMode.FM_RADIO) {
                     updateNotification(false)
@@ -1062,13 +1107,38 @@ class MusicService : Service() {
         updateNotification(playerManager.isPlaying.value)
     }
 
+    private suspend fun loadDigitalAlbumArt(url: String) {
+        try {
+            val request = ImageRequest.Builder(this)
+                .data(url)
+                .size(256)
+                .bitmapConfig(Bitmap.Config.RGB_565)
+                .allowHardware(false)
+                .build()
+            val result = imageLoader.execute(request).drawable as? BitmapDrawable
+            currentAlbumArt = result?.bitmap
+        } catch (e: Exception) {
+            currentAlbumArt = null
+        }
+        updateNotification(digitalPlayer?.isPlaying == true)
+    }
+
     private fun updateNotification(isPlaying: Boolean) {
         val isFm = _playbackMode.value == PlaybackMode.FM_RADIO
+        val isDigital = _playbackMode.value == PlaybackMode.DIGITAL_RADIO
 
-        val title = if (isFm) "FM Radio" else playerManager.currentTrack.value?.title ?: "Music"
-        val text = if (isFm) "${fmRadioEngine.frequency.value} MHz" else playerManager.currentTrack.value?.artist ?: "Unknown Artist"
+        val title = when {
+            isFm -> "FM Radio"
+            isDigital -> digitalTitle
+            else -> playerManager.currentTrack.value?.title ?: "Music"
+        }
 
-        // Use Media3's ExoPlayer material icons instead of stock android icons
+        val text = when {
+            isFm -> "${fmRadioEngine.frequency.value} MHz"
+            isDigital -> digitalSubtitle
+            else -> playerManager.currentTrack.value?.artist ?: "Unknown Artist"
+        }
+
         val playPauseIcon = if (isPlaying) androidx.media3.ui.R.drawable.exo_icon_pause else androidx.media3.ui.R.drawable.exo_icon_play
         val playPauseAction = NotificationCompat.Action(playPauseIcon, "Play/Pause", pendingIntent(ACTION_PLAY_PAUSE, 0))
         val prevAction = NotificationCompat.Action(androidx.media3.ui.R.drawable.exo_icon_previous, "Previous", pendingIntent(ACTION_PREV, 1))
@@ -1080,7 +1150,7 @@ class MusicService : Service() {
             .setShowActionsInCompactView(0, 1, 2)
 
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(androidx.media3.ui.R.drawable.exo_icon_play) // Use a neutral material media icon
+            .setSmallIcon(androidx.media3.ui.R.drawable.exo_icon_play)
             .setContentTitle(title)
             .setContentText(text)
             .setLargeIcon(if (isFm) null else currentAlbumArt)
@@ -1126,7 +1196,61 @@ class MusicService : Service() {
             PlaybackMode.FM_RADIO -> {
                 if (fmRadioEngine.isPlaying.value) fmRadioEngine.stop() else fmRadioEngine.start(98.0f)
             }
+            PlaybackMode.DIGITAL_RADIO -> {
+                if (digitalPlayer?.isPlaying == true) pauseDigitalStream() else resumeDigitalStream()
+            }
             PlaybackMode.NONE -> {}
+        }
+    }
+
+    // --- DIGITAL RADIO CONTROLS ---
+
+    fun playDigitalStream(url: String, title: String, subtitle: String, imageUrl: String = "") {
+        digitalTitle = title
+        digitalSubtitle = subtitle
+        digitalImageUrl = imageUrl
+
+        fmRadioEngine.stop()
+        playerManager.pause()
+
+        _playbackMode.value = PlaybackMode.DIGITAL_RADIO
+        mediaSession?.player = digitalPlayer!!
+
+        val metadata = MediaMetadata.Builder()
+            .setTitle(title)
+            .setArtist(subtitle)
+            .build()
+
+        val mediaItem = MediaItem.Builder()
+            .setUri(Uri.parse(url))
+            .setMediaMetadata(metadata)
+            .build()
+
+        digitalPlayer?.setMediaItem(mediaItem)
+        digitalPlayer?.prepare()
+        digitalPlayer?.playWhenReady = true
+
+        if (imageUrl.isNotEmpty()) {
+            serviceScope.launch { loadDigitalAlbumArt(imageUrl) }
+        } else {
+            currentAlbumArt = null
+            updateNotification(true)
+        }
+    }
+
+    fun pauseDigitalStream() {
+        digitalPlayer?.pause()
+    }
+
+    fun resumeDigitalStream() {
+        digitalPlayer?.play()
+    }
+
+    fun stopDigitalStream() {
+        digitalPlayer?.stop()
+        digitalPlayer?.clearMediaItems()
+        if (_playbackMode.value == PlaybackMode.DIGITAL_RADIO) {
+            _playbackMode.value = PlaybackMode.NONE
         }
     }
 
@@ -1134,7 +1258,7 @@ class MusicService : Service() {
         autoStopJob?.cancel()
         autoStopJob = serviceScope.launch {
             delay(15000)
-            if (!playerManager.isPlaying.value && !fmRadioEngine.isPlaying.value) {
+            if (!playerManager.isPlaying.value && !fmRadioEngine.isPlaying.value && digitalPlayer?.isPlaying != true) {
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             }
@@ -1142,7 +1266,7 @@ class MusicService : Service() {
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        if (!playerManager.isPlaying.value && !fmRadioEngine.isPlaying.value) {
+        if (!playerManager.isPlaying.value && !fmRadioEngine.isPlaying.value && digitalPlayer?.isPlaying != true) {
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
         }
@@ -1152,6 +1276,7 @@ class MusicService : Service() {
     override fun onDestroy() {
         serviceScope.cancel()
         mediaSession?.release()
+        digitalPlayer?.release()
         playerManager.release()
         fmRadioEngine.release()
         super.onDestroy()

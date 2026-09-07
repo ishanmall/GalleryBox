@@ -2,17 +2,15 @@
 
 package com.gallerybox.data
 
-import android.content.Intent
-import android.content.IntentSender
-import android.graphics.Bitmap
 import android.graphics.RectF
 import android.net.Uri
+import android.os.ParcelFileDescriptor
 import android.os.Parcelable
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.room.*
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.room.*
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
@@ -28,7 +26,6 @@ import java.util.*
 private val headerDateFormatter = object : ThreadLocal<SimpleDateFormat>() {
     override fun initialValue() = SimpleDateFormat("MMMM dd, yyyy", Locale.getDefault())
 }
-
 
 class Converters {
     @TypeConverter
@@ -74,11 +71,17 @@ class Converters {
     fun toUri(uriString: String?): Uri? = uriString?.let { Uri.parse(it) }
 }
 
+
+// ============================================================================
+// GALLERY & EDITOR DATA MODELS
+// ============================================================================
+
 data class MosaicRegion(
     val region: RectF,
     val intensity: Float = 1f,
     val isVisible: Boolean = true
 )
+
 data class DrawLayer(
     val id: String = java.util.UUID.randomUUID().toString(),
     val points: List<DrawPoint> = emptyList(),
@@ -92,6 +95,7 @@ data class DrawPoint(
     val x: Float,
     val y: Float
 )
+
 data class MediaItem(
     val id: Long,
     val uri: Uri,
@@ -245,14 +249,8 @@ data class ExportSettings(
     val resolution: Pair<Int, Int> = Pair(1920, 1080)
 )
 
-
-
-// --- EDITOR STATE ---
-
 data class EditState(
     val exportSettings: ExportSettings = ExportSettings(),
-
-    // Core Adjustments
     val brightness: Float = 0f,
     val contrast: Float = 1f,
     val saturation: Float = 1f,
@@ -261,32 +259,21 @@ data class EditState(
     val shadows: Float = 0f,
     val tint: Float = 0f,
     val temperature: Float = 0f,
-
-    // Filter/LUT
     val filterId: String? = null,
     val lutData: CubeLut? = null,
     val lutIntensity: Float = 1f,
-
-    // Crop/Transform
     val cropRect: RectF? = null,
     val aspectRatio: Float? = null,
     val rotationDegrees: Float = 0f,
     val straightenDegrees: Float = 0f,
     val flipHorizontal: Boolean = false,
     val flipVertical: Boolean = false,
-
-    // Trim/CutOut (Ripple Delete)
     val trimStartMs: Long = 0L,
     val trimEndMs: Long = 0L,
-    val cutOutStartMs: Long = 0L, // Added for Ripple Delete
-    val cutOutEndMs: Long = 0L,   // Added for Ripple Delete
-
-
-    // Audio
+    val cutOutStartMs: Long = 0L,
+    val cutOutEndMs: Long = 0L,
     val videoVolume: Float = 1f,
     val isMuted: Boolean = false,
-
-    // Overlays
     val frames: List<FrameLayer> = emptyList(),
     val stickers: List<StickerLayer> = emptyList(),
     val textLayers: List<TextLayer> = emptyList()
@@ -296,6 +283,33 @@ data class FullMediaMetadata(
     @Embedded val core: MediaMetadataCore,
     @Relation(parentColumn = "mediaId", entityColumn = "mediaId") val video: MediaMetadataVideo?,
     @Relation(parentColumn = "mediaId", entityColumn = "mediaId") val flags: MediaMetadataFlags?
+)
+
+data class DocumentUiState(
+    val documents: List<DocumentEntity> = emptyList(),
+    val searchQuery: String = "",
+    val selectedFilter: DocumentFilter = DocumentFilter.ALL
+)
+
+sealed class DocumentContent {
+    data class Text(val text: String) : DocumentContent()
+    data class Spreadsheet(val sheets: List<SheetContent>) : DocumentContent()
+    data class Presentation(val slides: List<SlideContent>) : DocumentContent()
+    data class Pdf(val uri: Uri, val fileDescriptor: ParcelFileDescriptor) : DocumentContent()
+}
+
+data class SheetContent(
+    val sheetName: String,
+    val rows: List<RowContent>
+)
+
+data class RowContent(
+    val cells: List<String>
+)
+
+data class SlideContent(
+    val slideNumber: Int,
+    val textContent: String
 )
 
 data class MediaMetadata(
@@ -314,6 +328,10 @@ data class VaultInfo(
     val dkHash: String,
     val uuid: String
 )
+
+// ============================================================================
+// ROOM ENTITIES
+// ============================================================================
 
 @Entity(tableName = "music_track_stats")
 data class TrackStatEntity(
@@ -546,13 +564,48 @@ data class ManualAlbumEntity(
     val hasBeenUsed: Boolean = false
 )
 
+@Entity(tableName = "documents")
+data class DocumentEntity(
+    @PrimaryKey(autoGenerate = true)
+    val id: Long = 0,
+    val name: String,
+    val uri: String,
+    val mimeType: String,
+    val size: Long,
+    val dateAdded: Long = System.currentTimeMillis(),
+    val lastOpened: Long = 0L,
+    val isFavorite: Boolean = false,
+    val folderId: Long? = null
+)
+
+// ============================================================================
+// ROOM DAOs
+// ============================================================================
+
+@Dao
+interface DocumentDao {
+    @Query("SELECT * FROM documents ORDER BY dateAdded DESC")
+    fun getAllDocuments(): Flow<List<DocumentEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertDocument(document: DocumentEntity): Long
+
+    @Query("UPDATE documents SET lastOpened = :timestamp WHERE id = :id")
+    suspend fun updateLastOpened(id: Long, timestamp: Long)
+
+    @Query("UPDATE documents SET isFavorite = :isFavorite WHERE id = :id")
+    suspend fun updateFavorite(id: Long, isFavorite: Boolean)
+
+    @Query("DELETE FROM documents WHERE id = :id")
+    suspend fun deleteDocument(id: Long)
+}
+
 @Dao
 @JvmSuppressWildcards
 interface MusicDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertStats(stats: List<TrackStatEntity>)
-
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertStat(stat: TrackStatEntity): Long
@@ -653,7 +706,7 @@ abstract class GalleryDao {
     @Query("SELECT COUNT(*) FROM trash WHERE mediaType = :mediaType")
     abstract suspend fun getTrashCountByType(mediaType: String): Int
 
-    @Query("SELECT * FROM trash WHERE mediaType IN ('image', 'video', 'audio', 'story') ORDER BY deletedTimestamp DESC")
+    @Query("SELECT * FROM trash WHERE mediaType IN ('image', 'video', 'audio', 'story', 'document') ORDER BY deletedTimestamp DESC")
     abstract fun getUnifiedTrash(): Flow<List<TrashEntity>>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -807,8 +860,6 @@ interface AlbumThumbnailDao {
     fun getAlbumThumbnailsFlow(): Flow<List<AlbumThumbnail>>
 }
 
-
-
 @Database(
     entities = [
         TrashEntity::class,
@@ -831,7 +882,8 @@ interface AlbumThumbnailDao {
         MediaMetadataFlags::class,
         TrackStatEntity::class,
         ManualAlbumEntity::class,
-        UsageEntity::class
+        UsageEntity::class,
+        DocumentEntity::class
     ],
     version = 15,
     exportSchema = false
@@ -841,6 +893,7 @@ abstract class GalleryDatabase : RoomDatabase() {
     abstract fun galleryDao(): GalleryDao
     abstract fun albumThumbnailDao(): AlbumThumbnailDao
     abstract fun musicDao(): MusicDao
+    abstract fun documentDao(): DocumentDao
 
     companion object {
         const val DATABASE_NAME = "gallerybox_db"
@@ -901,7 +954,6 @@ fun MediaEntity.toMediaItem() = MediaItem(
 )
 
 object StickerUnicode {
-
     object SmileysAndEmotion {
         val faceSmiling = listOf("😀", "😃", "😄", "😁", "😆", "😅", "🤣", "😂", "🙂", "🙃", "🫠", "😉", "😊", "😇")
         val faceAffection = listOf("🥰", "😍", "🤩", "😘", "😗", "☺", "😚", "😙", "🥲")
@@ -920,7 +972,6 @@ object StickerUnicode {
         val heart = listOf("💌", "💘", "💝", "💖", "💗", "💓", "💞", "💕", "💟", "❣", "💔", "❤️‍🔥", "❤️‍🩹", "❤", "🩷", "🧡", "💛", "💚", "💙", "🩵", "💜", "🤎", "🖤", "🩶", "🤍")
         val emotion = listOf("💋", "💯", "💢", "🫯", "💥", "💫", "💦", "💨", "🕳", "💬", "👁️‍🗨️", "🗨", "🗯", "💭", "💤")
     }
-
     object PeopleAndBody {
         val handFingersOpen = listOf("👋", "🤚", "🖐", "✋", "🖖", "🫱", "🫲", "🫳", "🫴", "🫷", "🫸")
         val handFingersPartial = listOf("👌", "🤌", "🤏", "✌", "🤞", "🫰", "🤟", "🤘", "🤙")
@@ -940,7 +991,6 @@ object StickerUnicode {
         val personSymbol = listOf("🗣", "👤", "👥", "🫂", "👪", "🧑‍🧑‍🧒", "🧑‍🧑‍🧒‍🧒", "🧑‍🧒", "🧑‍🧒‍🧒", "👣", "🫆")
         val hairStyle = listOf("🦰", "🦱", "🦳", "🦲")
     }
-
     object AnimalsAndNature {
         val animalMammal = listOf("🐵", "🐒", "🦍", "🦧", "🐶", "🐕", "🦮", "🐕‍🦺", "🐩", "🐺", "🦊", "🦝", "🐱", "🐈", "🐈‍⬛", "🦁", "🐯", "🐅", "🐆", "🐴", "🫎", "🫏", "🐎", "🦄", "🦓", "🦌", "🦬", "🐮", "🐂", "🐃", "🐄", "🐷", "🐖", "🐗", "🐽", "🐏", "🐑", "🐐", "🐪", "🐫", "🦙", "🦒", "🐘", "🦣", "🦏", "🦛", "🐭", "🐁", "🐀", "🐹", "🐰", "🐇", "🐿", "🦫", "🦔", "🦇", "🐻", "🐻‍❄️", "🐨", "🐼", "🦥", "🦦", "🦨", "🦘", "🦡", "🐾")
         val animalBird = listOf("🦃", "🐔", "🐓", "🐣", "🐤", "🐥", "🐦", "🐧", "🕊", "🦅", "🦆", "🦢", "🦉", "🦤", "🪶", "🦩", "🦚", "🦜", "🪽", "🐦‍⬛", "🪿", "🐦‍🔥")
@@ -951,7 +1001,6 @@ object StickerUnicode {
         val plantFlower = listOf("💐", "🌸", "💮", "🪷", "🏵", "🌹", "🥀", "🌺", "🌻", "🌼", "🌷", "🪻")
         val plantOther = listOf("🌱", "🪴", "🌲", "🌳", "🌴", "🌵", "🌾", "🌿", "☘", "🍀", "🍁", "🍂", "🍃", "🪹", "🪺", "🍄", "🪾")
     }
-
     object FoodAndDrink {
         val foodFruit = listOf("🍇", "🍈", "🍉", "🍊", "🍋", "🍋‍🟩", "🍌", "🍍", "🥭", "🍎", "🍏", "🍐", "🍑", "🍒", "🍓", "🫐", "🥝", "🍅", "🫒", "🥥")
         val foodVegetable = listOf("🥑", "🍆", "🥔", "🥕", "🌽", "🌶", "🫑", "🥒", "🥬", "🥦", "🧄", "🧅", "🥜", "🫘", "🌰", "🫚", "🫛", "🍄‍🟫", "🫜")
@@ -961,7 +1010,6 @@ object StickerUnicode {
         val drink = listOf("🍼", "🥛", "☕", "🫖", "🍵", "🍶", "🍾", "🍷", "🍸", "🍹", "🍺", "🍻", "🥂", "🥃", "🫗", "🥤", "🧋", "🧃", "🧉", "🧊")
         val dishware = listOf("🥢", "🍽", "🍴", "🥄", "🔪", "🫙", "🏺")
     }
-
     object TravelAndPlaces {
         val placeMap = listOf("🌍", "🌎", "🌏", "🌐", "🗺", "🗾", "🧭")
         val placeGeographic = listOf("🏔", "⛰", "🛘", "🌋", "🗻", "🏕", "🏖", "🏜", "🏝", "🏞")
@@ -975,7 +1023,6 @@ object StickerUnicode {
         val time = listOf("⌛", "⏳", "⌚", "⏰", "⏱", "⏲", "🕰", "🕛", "🕧", "🕐", "🕜", "🕑", "🕝", "🕒", "🕞", "🕓", "🕟", "🕔", "🕠", "🕕", "🕡", "🕖", "🕢", "🕗", "🕣", "🕘", "🕤", "🕙", "🕥", "🕚", "🕦")
         val skyAndWeather = listOf("🌑", "🌒", "🌓", "🌔", "🌕", "🌖", "🌗", "🌘", "🌙", "🌚", "🌛", "🌜", "🌡", "☀", "🌝", "🌞", "🪐", "⭐", "🌟", "🌠", "🌌", "☁", "⛅", "⛈", "🌤", "🌥", "🌦", "🌧", "🌨", "🌩", "🌪", "🌫", "🌬", "🌀", "🌈", "🌂", "☂", "☔", "⛱", "⚡", "❄", "☃", "⛄", "☄", "🔥", "💧", "🌊")
     }
-
     object Activities {
         val event = listOf("🎃", "🎄", "🎆", "🎇", "🧨", "✨", "🎈", "🎉", "🎊", "🎋", "🎍", "🎎", "🎏", "🎐", "🎑", "🧧", "🎀", "🎁", "🎗", "🎟", "🎫")
         val awardMedal = listOf("🎖", "🏆", "🏅", "🥇", "🥈", "🥉")
@@ -983,7 +1030,6 @@ object StickerUnicode {
         val game = listOf("🎯", "🪀", "🪁", "🔫", "🎱", "🔮", "🪄", "🎮", "🕹", "🎰", "🎲", "🧩", "🧸", "🪅", "🪩", "🪆", "♠", "♥", "♦", "♣", "♟", "🃏", "🀄", "🎴")
         val artsAndCrafts = listOf("🎭", "🖼", "🎨", "🧵", "🪡", "🧶", "🪢")
     }
-
     object Objects {
         val clothing = listOf("👓", "🕶", "🥽", "🥼", "🦺", "👔", "👕", "👖", "🧣", "🧤", "🧥", "🧦", "👗", "👘", "🥻", "🩱", "🩲", "🩳", "👙", "👚", "🪭", "👛", "👜", "👝", "🛍", "🎒", "🩴", "👞", "👟", "🥾", "🥿", "👠", "👡", "🩰", "👢", "🪮", "👑", "👒", "🎩", "🎓", "🧢", "🪖", "⛑", "📿", "💄", "💍", "💎")
         val sound = listOf("🔇", "🔈", "🔉", "🔊", "📢", "📣", "📯", "🔔", "🔕")
@@ -1003,7 +1049,6 @@ object StickerUnicode {
         val household = listOf("🚪", "🛗", "🪞", "🪟", "🛏", "🛋", "🪑", "🚽", "🪠", "🚿", "🛁", "🪤", "🪒", "🧴", "🧷", "🧹", "🧺", "🧻", "🪣", "🧼", "🫧", "🪥", "🧽", "🧯", "🛒")
         val otherObject = listOf("🚬", "⚰", "🪦", "⚱", "🧿", "🪬", "🗿", "🪧", "🪪")
     }
-
     object Symbols {
         val transportSign = listOf("🏧", "🚮", "🚰", "♿", "🚹", "🚺", "🚻", "🚼", "🚾", "🛂", "🛃", "🛄", "🛅")
         val warning = listOf("⚠", "🚸", "⛔", "🚫", "🚳", "🚭", "🚯", "🚱", "🚷", "📵", "🔞", "☢", "☣")
@@ -1020,7 +1065,6 @@ object StickerUnicode {
         val alphanum = listOf("🔠", "🔡", "🔢", "🔣", "🔤", "🅰", "🆎", "🅱", "🆑", "🆒", "🆓", "ℹ", "🆔", "Ⓜ", "🆕", "🆖", "🅾", "🆗", "🅿", "🆘", "🆙", "🆚", "🈁", "🈂", "🈷", "🈶", "🈯", "🉐", "🈹", "🈚", "🈲", "🉑", "🈸", "🈴", "🈳", "㊗", "㊙", "🈺", "🈵")
         val geometric = listOf("🔴", "🟠", "🟡", "🟢", "🔵", "🟣", "🟤", "⚫", "⚪", "🟥", "🟧", "🟨", "🟩", "🟦", "🟪", "🟫", "⬛", "⬜", "◼", "◻", "◾", "◽", "▪", "▫", "🔶", "🔷", "🔸", "🔹", "🔺", "🔻", "💠", "🔘", "🔳", "🔲")
     }
-
     object Flags {
         val flag = listOf("🏁", "🚩", "🎌", "🏴", "🏳", "🏳️‍🌈", "🏳️‍⚧️", "🏴‍☠️")
         val countryFlag = listOf("🇦🇨", "🇦🇩", "🇦🇪", "🇦🇫", "🇦🇬", "🇦🇮", "🇦🇱", "🇦🇲", "🇦🇴", "🇦🇶", "🇦🇷", "🇦🇸", "🇦🇹", "🇦🇺", "🇦🇼", "🇦🇽", "🇦🇿", "🇧🇦", "🇧🇧", "🇧🇩", "🇧🇪", "🇧🇫", "🇧🇬", "🇧🇭", "🇧🇮", "🇧🇯", "🇧🇱", "🇧🇲", "🇧🇳", "🇧🇴", "🇧🇶", "🇧🇷", "🇧🇸", "🇧🇹", "🇧🇻", "🇧🇼", "🇧🇾", "🇧🇿", "🇨🇦", "🇨🇨", "🇨🇩", "🇨🇫", "🇨🇬", "🇨🇭", "🇨🇮", "🇨🇰", "🇨🇱", "🇨🇲", "🇨🇳", "🇨🇴", "🇨🇵", "🇨🇶", "🇨🇷", "🇨🇺", "🇨🇻", "🇨🇼", "🇨🇽", "🇨🇾", "🇨🇿", "🇩🇪", "🇩🇬", "🇩🇯", "🇩🇰", "🇩🇲", "🇩🇴", "🇩🇿", "🇪🇦", "🇪🇨", "🇪🇪", "🇪🇬", "🇪🇭", "🇪🇷", "🇪🇸", "🇪🇹", "🇪🇺", "🇫🇮", "🇫🇯", "🇫🇰", "🇫🇲", "🇫🇴", "🇫🇷", "🇬🇦", "🇬🇧", "🇬🇩", "🇬🇪", "🇬🇫", "🇬🇬", "🇬🇭", "🇬🇮", "🇬🇱", "🇬🇲", "🇬🇳", "🇬🇵", "🇬🇶", "🇬🇷", "🇬🇸", "🇬🇹", "🇬🇺", "🇬🇼", "🇬🇾", "🇭🇰", "🇭🇲", "🇭🇳", "🇭🇷", "🇭🇹", "🇭🇺", "🇮🇨", "🇮🇩", "🇮🇪", "🇮🇱", "🇮🇲", "🇮🇳", "🇮🇴", "🇮🇶", "🇮🇷", "🇮🇸", "🇮🇹", "🇯🇪", "🇯🇲", "🇯🇴", "🇯🇵", "🇰🇪", "🇰🇬", "🇰🇭", "🇰🇮", "🇰🇲", "🇰🇳", "🇰🇵", "🇰🇷", "🇰🇼", "🇰🇾", "🇰🇿", "🇱🇦", "🇱🇧", "🇱🇨", "🇱🇮", "🇱🇰", "🇱🇷", "🇱🇸", "🇱🇹", "🇱🇺", "🇱🇻", "🇱🇾", "🇲🇦", "🇲🇨", "🇲🇩", "🇲🇪", "🇲🇫", "🇲🇬", "🇲🇭", "🇲🇰", "🇲🇱", "🇲🇲", "🇲🇳", "🇲🇴", "🇲🇵", "🇲🇶", "🇲🇷", "🇲🇸", "🇲🇹", "🇲🇺", "🇲🇻", "🇲🇼", "🇲🇽", "🇲🇾", "🇲🇿", "🇳🇦", "🇳🇨", "🇳🇪", "🇳🇫", "🇳🇬", "🇳🇮", "🇳🇱", "🇳🇴", "🇳🇵", "🇳🇷", "🇳🇺", "🇳🇿", "🇴🇲", "🇵🇦", "🇵🇪", "🇵🇫", "🇵🇬", "🇵🇭", "🇵🇰", "🇵🇱", "🇵🇲", "🇵🇳", "🇵🇷", "🇵🇸", "🇵🇹", "🇵🇼", "🇵🇾", "🇶🇦", "🇷🇪", "🇷🇴", "🇷🇸", "🇷🇺", "🇷🇼", "🇸🇦", "🇸🇧", "🇸🇨", "🇸🇩", "🇸🇪", "🇸🇬", "🇸🇭", "🇸🇮", "🇸🇯", "🇸🇰", "🇸🇱", "🇸🇲", "🇸🇳", "🇸🇴", "🇸🇷", "🇸🇸", "🇸🇹", "🇸🇻", "🇸🇽", "🇸🇾", "🇸🇿", "🇹🇦", "🇹🇨", "🇹🇩", "🇹🇫", "🇹🇬", "🇹🇭", "🇹🇯", "🇹🇰", "🇹🇱", "🇹🇲", "🇹🇳", "🇹🇴", "🇹🇷", "🇹🇹", "🇹🇻", "🇹🇼", "🇹🇿", "🇺🇦", "🇺🇬", "🇺🇲", "🇺🇳", "🇺🇸", "🇺🇾", "🇺🇿", "🇻🇦", "🇻🇨", "🇻🇪", "🇻🇬", "🇻🇮", "🇻🇳", "🇻🇺", "🇼🇫", "🇼🇸", "🇽🇰", "🇾🇪", "🇾🇹", "🇿🇦", "🇿🇲", "🇿🇼")
@@ -1038,4 +1082,8 @@ object StickerUnicode {
                 Symbols.let { it.transportSign + it.warning + it.arrow + it.religion + it.zodiac + it.avSymbol + it.gender + it.math + it.punctuation + it.currency + it.otherSymbol + it.keycap + it.alphanum + it.geometric } +
                 Flags.let { it.flag + it.countryFlag + it.subdivisionFlag }
     }
+}
+
+enum class DocumentFilter {
+    ALL, PDF, WORD, EXCEL, POWERPOINT, TEXT, FAVORITES
 }

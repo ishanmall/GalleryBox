@@ -5,6 +5,7 @@ package com.gallerybox.ui.screens.trash
 import android.app.Activity
 import android.content.Context
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
 import android.text.format.Formatter
@@ -13,6 +14,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.RequiresApi
 import androidx.compose.animation.*
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
@@ -92,6 +94,7 @@ sealed class TrashGridItem {
 enum class TrashSort { NewestDeleted, OldestDeleted }
 enum class TrashFilter { All, Images, Videos, Audio, Stories }
 
+@RequiresApi(Build.VERSION_CODES.ECLAIR)
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun TrashScreen(

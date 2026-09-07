@@ -257,7 +257,6 @@ private fun DeveloperProfileCard() {
 
             Spacer(modifier = Modifier.height(20.dp))
 
-            // GitHub Open Source Disclaimer
             Surface(
                 shape = RoundedCornerShape(12.dp),
                 color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f),
@@ -292,7 +291,6 @@ private fun DeveloperProfileCard() {
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Portfolio Disclaimer
             Surface(
                 shape = RoundedCornerShape(12.dp),
                 color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.5f),
@@ -390,14 +388,13 @@ private fun LegalTextContent(text: String) {
     }
 }
 
-// --- Data Models ---
 
 data class FeatureSection(val title: String, val emoji: String, val items: List<String>)
 
 private fun getFeatureList(): List<FeatureSection> = listOf(
     FeatureSection("Pictures / Gallery", "🖼️", listOf(
         "All photos and videos in one place", "Samsung Gallery-style interface", "4×4 default grid",
-        "Adjustable grid size from 1 to 10 columns", "Reverse grid-size control", "Photo/video thumbnails",
+        "Adjustable grid size from 1 to 8 columns", "Reverse grid-size control", "Photo/video thumbnails",
         "Fast MediaStore scanning", "Automatic media synchronization", "Latest media shown first",
         "Search media", "Selection mode", "Multi-select", "Share", "Delete", "Move", "Copy", "Slideshow",
         "Favorite/unfavorite", "Hide media", "Recently added/media section", "Video filtering",
@@ -449,13 +446,23 @@ private fun getFeatureList(): List<FeatureSection> = listOf(
         "Separate seek controls", "Play/Pause controls", "Track selection",
         "Switch/change either track", "Independent music experience"
     )),
-    FeatureSection("Radio", "📻", listOf(
-        "Radio section", "Radio station browsing", "Play/pause", "Station switching",
-        "Background playback", "Radio mini-player", "Full radio player"
+    FeatureSection("Live Radio", "📻", listOf(
+        "Live global internet radio stations", "Radio station browsing by genre and country",
+        "Play/pause and Station switching", "Background playback", "Radio mini-player", "Full radio player"
+    )),
+    FeatureSection("Online Music Search", "🌐", listOf(
+        "Find songs online natively", "Search across YouTube, Google, and Spotify",
+        "Quick access to lyrics and music videos", "Unified search interface"
     )),
     FeatureSection("Video Player", "🎬", listOf(
-        "Offline video playback", "Play/pause, Seek bar, Previous/next", "Video rotation (0° / 90°)",
-        "Full-screen playback", "Video sound & controls", "Local video playback"
+        "Offline video playback", "Picture-in-Picture (PiP) mode", "Background audio playback",
+        "Playback speed control (up to 8x)", "Sleep Timer", "Play/pause, Seek bar, Previous/next",
+        "Video rotation (0° / 90°)", "Full-screen playback", "Video sound & controls"
+    )),
+    FeatureSection("Basic Photo Editor", "🪄", listOf(
+        "Crop, rotate, and straighten photos", "Adjust brightness, contrast, saturation, and exposure",
+        "Apply custom filters and color effects", "Add text overlays and stickers",
+        "Draw and highlight on images", "Export edited photos seamlessly"
     )),
     FeatureSection("Basic Video Editor", "✂️", listOf(
         "Video editing & trimming/cutting", "Export & Media3 Transformer", "Shader-based effects",
@@ -474,6 +481,22 @@ private fun getFeatureList(): List<FeatureSection> = listOf(
     FeatureSection("Smart Media Classification", "🏷️", listOf(
         "Camera", "Screenshots", "Downloads", "WhatsApp", "Videos", "Favorites", "Recent",
         "Other automatically detected categories"
+    )),
+    FeatureSection("Document Reader & Viewer", "📄", listOf(
+        "Read and view PDF documents with page navigation and smooth zoom",
+        "Full support for Word documents (.doc, .docx)",
+        "Spreadsheet viewer for Excel spreadsheets (.xls, .xlsx) and CSV files",
+        "Slide-by-slide viewer for PowerPoint presentations (.ppt, .pptx)",
+        "Fast plain text viewer (.txt)",
+        "Automatic device storage scan and index for all local documents",
+        "Search and filter documents by type (PDF, Word, Excel, PowerPoint, Text, Favorites)"
+    )),
+    FeatureSection("Image to PDF Converter", "📑", listOf(
+        "Convert single or multiple gallery images directly into a high-quality PDF",
+        "Multi-select photo picker integration",
+        "Preserves original image quality and dimensions per page",
+        "Saves converted PDFs directly to device Documents folder",
+        "Instant database sync to view newly created PDFs immediately"
     )),
     FeatureSection("Offline Database", "🗄️", listOf(
         "Trash", "Stories", "Favorites", "Hidden media", "Hidden albums", "Pinned albums",
@@ -494,8 +517,6 @@ private fun getFeatureList(): List<FeatureSection> = listOf(
         "Works completely offline", "Enable/disable App Lock from Settings"
     ))
 )
-
-// --- Raw Legal Texts ---
 
 private fun getTermsText(): String = """
 Terms of Use
@@ -623,26 +644,21 @@ The core local gallery functionality is designed to operate without cloud storag
 GalleryBox does not intentionally collect your personal photos, videos, music, or other private media for storage on GalleryBox servers.
 GalleryBox does not sell your personal media or personal information.
 
-10. Advertising
-If your version of GalleryBox displays advertisements, advertising providers may process certain information required to provide and measure advertisements.
-This may include device information, advertising identifiers, approximate location, and information about interactions with advertisements, depending on the advertising provider and your Android/device settings.
-Advertising providers operate under their own privacy policies.
-
-11. Third-Party Libraries and Services
+10. Third-Party Libraries and Services
 GalleryBox may contain third-party software libraries required for application functionality.
 These libraries may process information according to their respective purposes and privacy policies.
 Only third-party services actually included and used by the released version of GalleryBox should be considered part of this policy.
 
-12. Data Security
+11. Data Security
 GalleryBox uses Android platform security mechanisms and application-level protections where applicable.
 However, no software or storage system can guarantee absolute security.
 You should use your device's security features and maintain backups of important files.
 
-13. Children's Privacy
+12. Children's Privacy
 GalleryBox does not knowingly collect personal information from children.
 If you believe that personal information has been provided to GalleryBox in a manner that violates applicable law, please contact us.
 
-14. Your Choices
+13. Your Choices
 You can control many permissions through Android settings, including:
 • Photos and videos
 • Music and audio
@@ -652,11 +668,11 @@ You can control many permissions through Android settings, including:
 • Other device permissions
 You may also uninstall GalleryBox at any time.
 
-15. Changes to This Privacy Policy
+14. Changes to This Privacy Policy
 This Privacy Policy may be updated when GalleryBox's features, technologies, or services change.
 The latest version will be made available within GalleryBox or through its official information page.
 
-16. Contact
+15. Contact
 If you have questions, concerns, or requests regarding this Privacy Policy, contact:
 Developer: Ishan Mall
 Website: https://portfolio-b1973.web.app

@@ -382,6 +382,7 @@ fun SamsungFastScrollbar(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PictureScreen(
+    initialUri: String? = null,
     viewModel: GalleryViewModel = hiltViewModel(),
     trashViewModel: TrashViewModel = hiltViewModel(),
     onViewerStateChanged: (Boolean) -> Unit = {},
@@ -418,7 +419,7 @@ fun PictureScreen(
     val openViewerState = viewerState as? GalleryViewerState.Open
     val currentItem = openViewerState?.mediaId?.let { mediaMap[it] }
     val pagedMedia = viewModel.pagedMedia.collectAsLazyPagingItems()
-    val prefs = remember { context.getSharedPreferences("gallery_prefs", Context.MODE_PRIVATE) }
+    val prefs = remember { context.getSharedPreferences("gallery_prefs", Context.MODE_PRIVATE) ?: context.getSharedPreferences("gallery_prefs", Context.MODE_PRIVATE) }
 
     var columnCount by rememberSaveable { mutableIntStateOf(prefs.getInt("picture_grid_columns", 4)) }
     var isSelectionMode by rememberSaveable { mutableStateOf(false) }
@@ -428,11 +429,29 @@ fun PictureScreen(
 
     var localSearchQuery by rememberSaveable { mutableStateOf("") }
     var debouncedSearchQuery by remember { mutableStateOf("") }
+    var hasOpenedInitial by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(localSearchQuery) {
         delay(250)
         debouncedSearchQuery = localSearchQuery
         viewModel.setSearchQuery(debouncedSearchQuery)
+    }
+
+    LaunchedEffect(initialUri, mediaMap) {
+        if (!initialUri.isNullOrEmpty() && !hasOpenedInitial && mediaMap.isNotEmpty()) {
+            withContext(Dispatchers.Default) {
+                val targetUriStr = initialUri.trim()
+                val targetItem = mediaMap.values.find {
+                    it.uri.toString() == targetUriStr || it.path == targetUriStr
+                }
+                if (targetItem != null) {
+                    withContext(Dispatchers.Main) {
+                        viewModel.openViewer(targetItem.id)
+                        hasOpenedInitial = true
+                    }
+                }
+            }
+        }
     }
 
     val intentSenderLauncher = rememberLauncherForActivityResult(contract = ActivityResultContracts.StartIntentSenderForResult()) { result ->
@@ -511,8 +530,15 @@ fun PictureScreen(
             snackbarHost = { SnackbarHost(snackbarHostState) },
             topBar = {
                 if (isSelectionMode) {
-                    val mediaItems = remember(pagedMedia.itemSnapshotList) { pagedMedia.itemSnapshotList.items.filterIsInstance<GalleryGridItem.Media>() }
-                    val isAllSelected = selectedIds.size == mediaItems.size && mediaItems.isNotEmpty()
+                    var totalSelectableCount by remember { mutableIntStateOf(0) }
+
+                    LaunchedEffect(pagedMedia.itemSnapshotList) {
+                        withContext(Dispatchers.Default) {
+                            totalSelectableCount = pagedMedia.itemSnapshotList.items.count { it is GalleryGridItem.Media }
+                        }
+                    }
+
+                    val isAllSelected = selectedIds.size == totalSelectableCount && totalSelectableCount > 0
 
                     Surface(shadowElevation = 2.dp, color = MaterialTheme.colorScheme.surface) {
                         TopAppBar(
@@ -539,10 +565,17 @@ fun PictureScreen(
                             actions = {
                                 TextButton(
                                     onClick = {
-                                        selectedIds = if (isAllSelected) {
-                                            emptySet()
-                                        } else {
-                                            mediaItems.map { it.item.id }.take(5000).toSet()
+                                        scope.launch(Dispatchers.Default) {
+                                            if (isAllSelected) {
+                                                withContext(Dispatchers.Main) { selectedIds = emptySet() }
+                                            } else {
+                                                val ids = pagedMedia.itemSnapshotList.items
+                                                    .filterIsInstance<GalleryGridItem.Media>()
+                                                    .map { it.item.id }
+                                                    .take(5000)
+                                                    .toSet()
+                                                withContext(Dispatchers.Main) { selectedIds = ids }
+                                            }
                                         }
                                     }
                                 ) {
@@ -583,16 +616,22 @@ fun PictureScreen(
                             onMenuAction = { action ->
                                 when (action) {
                                     "select_all" -> {
-                                        val mediaItems = pagedMedia.itemSnapshotList.items.filterIsInstance<GalleryGridItem.Media>()
-                                        selectedIds = mediaItems.map { it.item.id }.take(5000).toSet()
-                                        isSelectionMode = true
+                                        scope.launch(Dispatchers.Default) {
+                                            val ids = pagedMedia.itemSnapshotList.items
+                                                .filterIsInstance<GalleryGridItem.Media>()
+                                                .map { it.item.id }
+                                                .take(5000)
+                                                .toSet()
+                                            withContext(Dispatchers.Main) {
+                                                selectedIds = ids
+                                                isSelectionMode = true
+                                            }
+                                        }
                                     }
                                     "camera" -> onNavigateToCamera()
-                                    "scan" -> onNavigateToScan()
                                     "grid" -> activeDialog = PictureUiDialog.GridSize
                                     "sort" -> activeDialog = PictureUiDialog.Sort
                                     "slideshow" -> onNavigateToSlideshow()
-                                    "duplicates" -> onNavigateToDuplicates()
                                     "trash" -> onNavigateToTrash()
                                     "about" -> onNavigateToAbout()
                                 }
@@ -725,44 +764,54 @@ fun PictureScreen(
         }
 
         if (viewerState is GalleryViewerState.Open && currentItem != null) {
-            val stableMediaList = remember(pagedMedia.itemCount, mediaMap) {
-                pagedMedia.itemSnapshotList.items
-                    .filterIsInstance<GalleryGridItem.Media>()
-                    .map { mediaMap[it.item.id] ?: it.item }
-            }
-            val stableStartIndex = remember(currentItem.id, stableMediaList) {
-                stableMediaList.indexOfFirst { it.id == currentItem.id }.coerceAtLeast(0)
-            }
-            FullscreenMediaPager(
-                initialIndex = stableStartIndex,
-                mediaList = stableMediaList,
-                mediaMap = mediaMap,
-                favoriteIds = favoriteIds,
-                sharedPlayer = viewModel.getPlayer(),
-                onClose = { viewModel.closeViewer() },
-                onToggleFavorite = { id -> viewModel.toggleFavorite(id) },
-                onEdit = { item ->
-                    viewModel.closeViewer()
-                    onNavigateToEditor(item.uri.toString(), item.id)
-                },
-                onDelete = { item -> activeDialog = PictureUiDialog.TrashConfirm(listOf(item)) },
-                onNavigateToVideoPlayer = { uri ->
-                    viewModel.closeViewer()
-                    onNavigateToVideoPlayer(uri, stableMediaList.filter { it.isVideo }.map { it.uri.toString() })
-                },
-                onMove = { item ->
-                    viewModel.closeViewer()
-                    onNavigateToMoveCopy("MOVE", item.id.toString(), null)
-                },
-                onCopy = { item ->
-                    viewModel.closeViewer()
-                    onNavigateToMoveCopy("COPY", item.id.toString(), null)
-                },
-                onWallpaper = { item ->
-                    viewModel.closeViewer()
-                    onNavigateToWallpaper(item.uri.toString(), item.id)
+            var stableMediaList by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
+            var stableStartIndex by remember { mutableIntStateOf(0) }
+
+            LaunchedEffect(pagedMedia.itemSnapshotList, mediaMap, currentItem.id) {
+                withContext(Dispatchers.Default) {
+                    val items = pagedMedia.itemSnapshotList.items
+                        .filterIsInstance<GalleryGridItem.Media>()
+                        .map { mediaMap[it.item.id] ?: it.item }
+                    val index = items.indexOfFirst { it.id == currentItem.id }.coerceAtLeast(0)
+                    withContext(Dispatchers.Main) {
+                        stableMediaList = items
+                        stableStartIndex = index
+                    }
                 }
-            )
+            }
+
+            if (stableMediaList.isNotEmpty()) {
+                FullscreenMediaPager(
+                    initialIndex = stableStartIndex,
+                    mediaList = stableMediaList,
+                    mediaMap = mediaMap,
+                    favoriteIds = favoriteIds,
+                    sharedPlayer = viewModel.getPlayer(),
+                    onClose = { viewModel.closeViewer() },
+                    onToggleFavorite = { id -> viewModel.toggleFavorite(id) },
+                    onEdit = { item ->
+                        viewModel.closeViewer()
+                        onNavigateToEditor(item.uri.toString(), item.id)
+                    },
+                    onDelete = { item -> activeDialog = PictureUiDialog.TrashConfirm(listOf(item)) },
+                    onNavigateToVideoPlayer = { uri ->
+                        viewModel.closeViewer()
+                        onNavigateToVideoPlayer(uri, stableMediaList.filter { it.isVideo }.map { it.uri.toString() })
+                    },
+                    onMove = { item ->
+                        viewModel.closeViewer()
+                        onNavigateToMoveCopy("MOVE", item.id.toString(), null)
+                    },
+                    onCopy = { item ->
+                        viewModel.closeViewer()
+                        onNavigateToMoveCopy("COPY", item.id.toString(), null)
+                    },
+                    onWallpaper = { item ->
+                        viewModel.closeViewer()
+                        onNavigateToWallpaper(item.uri.toString(), item.id)
+                    }
+                )
+            }
         }
 
         Box(modifier = Modifier.align(Alignment.BottomCenter)) {
@@ -796,26 +845,40 @@ fun PictureScreen(
                             isSelectionMode = false
                         }
                         BottomBarActionItem(icon = Icons.Outlined.Share, label = "Share") {
-                            val itemsToShare = getSelectedItems()
-                            if (itemsToShare.isNotEmpty()) {
-                                val intent = Intent(if (itemsToShare.size > 1) Intent.ACTION_SEND_MULTIPLE else Intent.ACTION_SEND).apply {
-                                    val hasImg = itemsToShare.any { !it.isVideo }
-                                    val hasVid = itemsToShare.any { it.isVideo }
-                                    type = if (hasVid && !hasImg) "video/*" else if (hasImg && !hasVid) "image/*" else "*/*"
-                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                    if (itemsToShare.size > 1) {
-                                        putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(itemsToShare.map { it.uri }))
-                                    } else {
-                                        putExtra(Intent.EXTRA_STREAM, itemsToShare.first().uri)
+                            scope.launch(Dispatchers.Default) {
+                                val itemsToShare = getSelectedItems()
+                                if (itemsToShare.isNotEmpty()) {
+                                    val intent = Intent(if (itemsToShare.size > 1) Intent.ACTION_SEND_MULTIPLE else Intent.ACTION_SEND).apply {
+                                        val hasImg = itemsToShare.any { !it.isVideo }
+                                        val hasVid = itemsToShare.any { it.isVideo }
+                                        type = if (hasVid && !hasImg) "video/*" else if (hasImg && !hasVid) "image/*" else "*/*"
+                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                        if (itemsToShare.size > 1) {
+                                            putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(itemsToShare.map { it.uri }))
+                                        } else {
+                                            putExtra(Intent.EXTRA_STREAM, itemsToShare.first().uri)
+                                        }
+                                    }
+                                    withContext(Dispatchers.Main) {
+                                        context.startActivity(Intent.createChooser(intent, "Share via"))
+                                        isSelectionMode = false
+                                        selectedIds = emptySet()
+                                    }
+                                } else {
+                                    withContext(Dispatchers.Main) {
+                                        isSelectionMode = false
+                                        selectedIds = emptySet()
                                     }
                                 }
-                                context.startActivity(Intent.createChooser(intent, "Share via"))
                             }
-                            isSelectionMode = false
-                            selectedIds = emptySet()
                         }
                         BottomBarActionItem(icon = Icons.Outlined.Delete, label = "Trash", isDestructive = true) {
-                            activeDialog = PictureUiDialog.TrashConfirm(getSelectedItems())
+                            scope.launch(Dispatchers.Default) {
+                                val itemsToTrash = getSelectedItems()
+                                withContext(Dispatchers.Main) {
+                                    activeDialog = PictureUiDialog.TrashConfirm(itemsToTrash)
+                                }
+                            }
                         }
                         Box {
                             var showMoreMenu by remember { mutableStateOf(false) }
@@ -831,7 +894,14 @@ fun PictureScreen(
                                         text = { Text("Details") },
                                         onClick = {
                                             showMoreMenu = false
-                                            activeDialog = PictureUiDialog.MetadataInfo(getSelectedItems().first())
+                                            scope.launch(Dispatchers.Default) {
+                                                val items = getSelectedItems()
+                                                if (items.isNotEmpty()) {
+                                                    withContext(Dispatchers.Main) {
+                                                        activeDialog = PictureUiDialog.MetadataInfo(items.first())
+                                                    }
+                                                }
+                                            }
                                         },
                                         leadingIcon = { Icon(Icons.Outlined.Info, null) }
                                     )
@@ -1387,19 +1457,9 @@ fun ModernTopBar(title: String, scrollBehavior: TopAppBarScrollBehavior, onSearc
                         leadingIcon = { Icon(imageVector = Icons.Outlined.PhotoCamera, contentDescription = null) }
                     )
                     DropdownMenuItem(
-                        text = { Text("Scan Library", color = MaterialTheme.colorScheme.onSurface) },
-                        onClick = { onMenuAction("scan"); showMenu = false },
-                        leadingIcon = { Icon(imageVector = Icons.Outlined.ImageSearch, contentDescription = null) }
-                    )
-                    DropdownMenuItem(
                         text = { Text("Start Slideshow", color = MaterialTheme.colorScheme.onSurface) },
                         onClick = { onMenuAction("slideshow"); showMenu = false },
                         leadingIcon = { Icon(imageVector = Icons.Outlined.Slideshow, contentDescription = null) }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("View Duplicates", color = MaterialTheme.colorScheme.onSurface) },
-                        onClick = { onMenuAction("duplicates"); showMenu = false },
-                        leadingIcon = { Icon(imageVector = Icons.Outlined.ContentCopy, contentDescription = null) }
                     )
                     DropdownMenuItem(
                         text = { Text("Grid Size", color = MaterialTheme.colorScheme.onSurface) },
@@ -1826,6 +1886,7 @@ fun GalleryGridContent(
 ) {
     val haptic = LocalHapticFeedback.current
     val screenWidthPx = with(LocalDensity.current) { LocalConfiguration.current.screenWidthDp.dp.roundToPx() }
+    val scope = rememberCoroutineScope()
 
     var isScrollingFast by remember { mutableStateOf(false) }
 
@@ -2048,9 +2109,14 @@ fun GalleryGridContent(
                         ModernDateHeader(
                             title = gridItem.title,
                             onSelectAllForDate = {
-                                val snapshot = pagedMedia.itemSnapshotList.items.filterIsInstance<GalleryGridItem.Media>().filter { it.item.dateHeader == gridItem.title }
-                                onSelectionChange((selectedIds + snapshot.map { it.item.id }.toSet()).takeIf { s -> s.size < 5000 } ?: selectedIds)
-                                onSelectionModeChange(true)
+                                scope.launch(Dispatchers.Default) {
+                                    val snapshot = pagedMedia.itemSnapshotList.items.filterIsInstance<GalleryGridItem.Media>().filter { it.item.dateHeader == gridItem.title }
+                                    val newIds = (selectedIds + snapshot.map { it.item.id }.toSet()).takeIf { s -> s.size < 5000 } ?: selectedIds
+                                    withContext(Dispatchers.Main) {
+                                        onSelectionChange(newIds)
+                                        onSelectionModeChange(true)
+                                    }
+                                }
                             }
                         )
                     }
@@ -2277,6 +2343,8 @@ fun FullscreenMediaPager(
     var showControls by remember { mutableStateOf(true) }
     var showMetadataSheet by remember { mutableStateOf(false) }
     var showMoreMenu by remember { mutableStateOf(false) }
+
+    // Quick filter, safe for this isolated list
     val videoList = remember(mediaList) { mediaList.filter { it.isVideo } }
 
     LaunchedEffect(videoList) {

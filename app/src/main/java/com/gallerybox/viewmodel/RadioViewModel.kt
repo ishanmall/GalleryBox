@@ -14,13 +14,31 @@ import androidx.media3.common.util.UnstableApi
 import com.gallerybox.engine.MusicService
 import com.gallerybox.engine.PlaybackMode
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.URLEncoder
+import java.util.UUID
 import javax.inject.Inject
 import kotlin.math.abs
 import kotlin.math.round
+
+// --- DIGITAL RADIO DATA MODEL ---
+data class DigitalStation(
+    val id: String,
+    val name: String,
+    val streamUrl: String,
+    val imageUrl: String,
+    val tags: String,
+    val country: String,
+    val isFavorite: Boolean = false
+)
 
 @UnstableApi
 @HiltViewModel
@@ -30,6 +48,7 @@ class RadioViewModel @Inject constructor(private val app: Application) : Android
     private var isBound = false
     private var observeJob: Job? = null
 
+    // --- CORE & FM RADIO STATES ---
     private val _isServiceConnected = MutableStateFlow(false)
     val isServiceConnected = _isServiceConnected.asStateFlow()
 
@@ -79,6 +98,30 @@ class RadioViewModel @Inject constructor(private val app: Application) : Android
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
+    // --- DIGITAL RADIO STATES ---
+    private val _searchQuery = MutableStateFlow("")
+    val searchQuery = _searchQuery.asStateFlow()
+
+    private val _digitalStations = MutableStateFlow<List<DigitalStation>>(emptyList())
+    val digitalStations = _digitalStations.asStateFlow()
+
+    private val _currentDigitalStation = MutableStateFlow<DigitalStation?>(null)
+    val currentDigitalStation = _currentDigitalStation.asStateFlow()
+
+    private val _isDigitalPlaying = MutableStateFlow(false)
+    val isDigitalPlaying = _isDigitalPlaying.asStateFlow()
+
+    private val _isDigitalLoading = MutableStateFlow(false)
+    val isDigitalLoading = _isDigitalLoading.asStateFlow()
+
+    private val _selectedDigitalCategory = MutableStateFlow("Trending")
+    val selectedDigitalCategory = _selectedDigitalCategory.asStateFlow()
+
+    val digitalCategories = listOf("Trending", "Local", "Pop", "News", "Classical", "Jazz")
+
+    private var digitalSearchJob: Job? = null
+
+    // --- SERVICE CONNECTION ---
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             musicService = (service as? MusicService.MusicBinder)?.getService() ?: return
@@ -103,58 +146,210 @@ class RadioViewModel @Inject constructor(private val app: Application) : Android
             // Ignored: Background execution limits on older Android versions
         }
         app.bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+
+        // Load initial digital stations globally
+        fetchDigitalStations("Trending")
     }
 
     private fun observeRadioState() {
         observeJob?.cancel()
 
-        // Safety extraction to avoid nullability issues inside coroutines
         val service = musicService ?: return
-        val engine = service.fmRadioEngine ?: return
+        val engine = service.fmRadioEngine
 
         observeJob = viewModelScope.launch {
-            _favoriteStations.value = engine.favoriteStations.value
-
             launch {
                 service.playbackMode.collect { mode ->
                     _playbackMode.value = mode
+                    if (mode != PlaybackMode.DIGITAL_RADIO) {
+                        _isDigitalPlaying.value = false
+                    }
+                    if (mode != PlaybackMode.FM_RADIO) {
+                        _isPlaying.value = false
+                    }
                 }
             }
 
-            launch {
-                engine.isPlaying.collect { playing ->
-                    _isPlaying.value = playing
-                }
-            }
+            if (engine != null) {
+                _favoriteStations.value = engine.favoriteStations.value
 
-            launch {
-                engine.favoriteStations.collect { stations ->
-                    _favoriteStations.value = stations
+                launch {
+                    engine.isPlaying.collect { playing ->
+                        if (_playbackMode.value == PlaybackMode.FM_RADIO) {
+                            _isPlaying.value = playing
+                        }
+                    }
                 }
-            }
 
-            launch {
-                engine.frequency.collect { freq ->
-                    _currentFrequency.value = freq
-                    updateDSPMetrics(freq)
+                launch {
+                    engine.favoriteStations.collect { stations ->
+                        _favoriteStations.value = stations
+                    }
                 }
-            }
 
-            launch {
-                engine.isHeadsetConnected.collect { connected ->
-                    _isHeadsetConnected.value = connected
-                    if (!connected) {
-                        _isSpeakerEnabled.value = false
-                        _isMuted.value = false
-                        if (_isPlaying.value) {
-                            _error.value = "Headset disconnected. Radio stopped."
-                            engine.stop()
+                launch {
+                    engine.frequency.collect { freq ->
+                        _currentFrequency.value = freq
+                        updateDSPMetrics(freq)
+                    }
+                }
+
+                launch {
+                    engine.isHeadsetConnected.collect { connected ->
+                        _isHeadsetConnected.value = connected
+                        if (!connected) {
+                            _isSpeakerEnabled.value = false
+                            _isMuted.value = false
+                            if (_isPlaying.value) {
+                                _error.value = "Headset disconnected. Radio stopped."
+                                engine.stop()
+                            }
                         }
                     }
                 }
             }
         }
     }
+
+    // --- LIVE RADIO BROWSER API FETCHING --- //
+
+    private suspend fun fetchFromRadioBrowser(endpoint: String): List<DigitalStation> = withContext(Dispatchers.IO) {
+        val resultList = mutableListOf<DigitalStation>()
+        try {
+            val url = URL("https://de1.api.radio-browser.info/json/stations$endpoint")
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "GET"
+            connection.setRequestProperty("User-Agent", "GalleryBoxRadio/1.0")
+            connection.connectTimeout = 5000
+            connection.readTimeout = 5000
+
+            if (connection.responseCode == 200) {
+                val response = connection.inputStream.bufferedReader().use { it.readText() }
+                val jsonArray = JSONArray(response)
+
+                for (i in 0 until jsonArray.length()) {
+                    val obj = jsonArray.getJSONObject(i)
+                    val id = obj.optString("stationuuid", UUID.randomUUID().toString())
+                    val name = obj.optString("name", "Unknown Station").trim()
+                    val streamUrl = obj.optString("url_resolved", obj.optString("url", ""))
+                    val imageUrl = obj.optString("favicon", "")
+
+                    var tags = obj.optString("tags", "").replace(",", ", ")
+                    if (tags.length > 35) tags = tags.take(32) + "..."
+                    if (tags.isBlank()) tags = "Live Stream"
+
+                    val country = obj.optString("country", "Global")
+
+                    if (streamUrl.isNotEmpty() && name.isNotEmpty()) {
+                        resultList.add(DigitalStation(id, name, streamUrl, imageUrl, tags, country))
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        resultList
+    }
+
+    // --- DIGITAL RADIO METHODS --- //
+
+    fun updateSearchQuery(query: String) {
+        _searchQuery.value = query
+        digitalSearchJob?.cancel()
+
+        digitalSearchJob = viewModelScope.launch {
+            delay(500) // Debounce user typing
+            if (query.isNotBlank()) {
+                _isDigitalLoading.value = true
+                val encodedQuery = URLEncoder.encode(query, "UTF-8")
+                val searchResults = fetchFromRadioBrowser("/search?name=$encodedQuery&limit=100&hidebroken=true")
+                _digitalStations.value = searchResults
+                _isDigitalLoading.value = false
+            } else {
+                fetchDigitalStations(_selectedDigitalCategory.value)
+            }
+        }
+    }
+
+    fun selectDigitalCategory(category: String) {
+        _selectedDigitalCategory.value = category
+        _searchQuery.value = "" // Clear search when changing category
+        digitalSearchJob?.cancel()
+        fetchDigitalStations(category)
+    }
+
+    private fun fetchDigitalStations(category: String) {
+        viewModelScope.launch {
+            _isDigitalLoading.value = true
+
+            val endpoint = when (category) {
+                "Trending" -> "/topclick/100?hidebroken=true"
+                "Local" -> "/bycountry/India?limit=100&hidebroken=true"
+                "Pop" -> "/bytag/pop?limit=100&hidebroken=true"
+                "News" -> "/bytag/news?limit=100&hidebroken=true"
+                "Classical" -> "/bytag/classical?limit=100&hidebroken=true"
+                "Jazz" -> "/bytag/jazz?limit=100&hidebroken=true"
+                else -> "/topclick/100?hidebroken=true"
+            }
+
+            val fetchedStations = fetchFromRadioBrowser(endpoint)
+
+            if (fetchedStations.isNotEmpty()) {
+                _digitalStations.value = fetchedStations
+            } else {
+                // Network failure fallback
+                _digitalStations.value = listOf(
+                    DigitalStation("fb1", "Check Internet Connection", "", "", "Offline", "")
+                )
+            }
+
+            _isDigitalLoading.value = false
+        }
+    }
+
+    fun playDigitalStation(station: DigitalStation) {
+        if (station.streamUrl.isBlank()) return // Prevent clicking fallback items
+
+        _currentDigitalStation.value = station
+        _isDigitalPlaying.value = true
+
+        stopRadioIfNeeded()
+
+        musicService?.playDigitalStream(
+            url = station.streamUrl,
+            title = station.name,
+            subtitle = "${station.country} • ${station.tags}",
+            imageUrl = station.imageUrl
+        )
+    }
+
+    fun toggleDigitalPlayPause() {
+        val playing = _isDigitalPlaying.value
+        _isDigitalPlaying.value = !playing
+
+        if (playing) {
+            musicService?.pauseDigitalStream()
+        } else {
+            musicService?.resumeDigitalStream()
+        }
+    }
+
+    fun toggleDigitalFavorite(stationId: String) {
+        _digitalStations.update { currentList ->
+            currentList.map {
+                if (it.id == stationId) it.copy(isFavorite = !it.isFavorite) else it
+            }
+        }
+    }
+
+    fun stopDigitalRadioIfNeeded() {
+        if (_isDigitalPlaying.value) {
+            _isDigitalPlaying.value = false
+            musicService?.stopDigitalStream()
+        }
+    }
+
+    // --- FM RADIO METHODS ---
 
     private fun updateDSPMetrics(freq: Float) {
         val nearest = knownStations.minByOrNull { abs(it - freq) } ?: freq
@@ -165,6 +360,8 @@ class RadioViewModel @Inject constructor(private val app: Application) : Android
     }
 
     fun toggleRadio() {
+        stopDigitalRadioIfNeeded()
+
         val engine = musicService?.fmRadioEngine ?: return
         if (!engine.isHeadsetConnected.value) {
             _error.value = "Connect wired headset to use FM radio"
@@ -178,6 +375,8 @@ class RadioViewModel @Inject constructor(private val app: Application) : Android
     }
 
     fun startRadio(freq: Float = _currentFrequency.value) {
+        stopDigitalRadioIfNeeded()
+
         val engine = musicService?.fmRadioEngine ?: return
         if (!engine.isHeadsetConnected.value) {
             _error.value = "Connect wired headset to use FM radio"
@@ -210,6 +409,8 @@ class RadioViewModel @Inject constructor(private val app: Application) : Android
     }
 
     fun tuneToFrequency(freq: Float) {
+        stopDigitalRadioIfNeeded()
+
         val engine = musicService?.fmRadioEngine ?: return
         engine.tune(freq)
         if (!engine.isPlaying.value) {
@@ -233,6 +434,8 @@ class RadioViewModel @Inject constructor(private val app: Application) : Android
 
     fun autoScan() {
         if (_isScanning.value) return
+        stopDigitalRadioIfNeeded()
+
         val engine = musicService?.fmRadioEngine ?: return
         if (!engine.isHeadsetConnected.value) {
             _error.value = "Connect wired headset to scan stations"
@@ -246,15 +449,15 @@ class RadioViewModel @Inject constructor(private val app: Application) : Android
             }
             engine.scanNext()
 
-            // Standard FM hardware polling delay rather than CPU calculation
             delay(250L)
-
             _isScanning.value = false
         }
     }
 
     fun scanPrevious() {
         if (_isScanning.value) return
+        stopDigitalRadioIfNeeded()
+
         val engine = musicService?.fmRadioEngine ?: return
         if (!engine.isHeadsetConnected.value) {
             _error.value = "Connect wired headset to scan stations"
@@ -268,9 +471,7 @@ class RadioViewModel @Inject constructor(private val app: Application) : Android
             }
             engine.scanPrevious()
 
-            // Standard FM hardware polling delay rather than CPU calculation
             delay(250L)
-
             _isScanning.value = false
         }
     }
@@ -286,7 +487,6 @@ class RadioViewModel @Inject constructor(private val app: Application) : Android
             _isScanning.value = true
             _error.value = "Scanning FM band..."
 
-            // Hardware simulation time block
             delay(2500L)
 
             var count = 0
@@ -318,6 +518,7 @@ class RadioViewModel @Inject constructor(private val app: Application) : Android
 
     override fun onCleared() {
         observeJob?.cancel()
+        digitalSearchJob?.cancel()
         if (isBound) {
             app.unbindService(serviceConnection)
             isBound = false

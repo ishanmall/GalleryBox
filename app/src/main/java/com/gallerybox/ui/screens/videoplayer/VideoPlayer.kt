@@ -1,5 +1,5 @@
-@file:Suppress("unused", "UnsafeOptInUsageError")
-@file:OptIn(ExperimentalMaterial3Api::class, kotlinx.coroutines.FlowPreview::class)
+@file:Suppress("unused", "UnsafeOptInUsageError", "UnstableApiUsage", "OPT_IN_USAGE", "DEPRECATION")
+@file:androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class, androidx.compose.material3.ExperimentalMaterial3Api::class, kotlinx.coroutines.FlowPreview::class)
 
 package com.gallerybox.ui.screens.videoplayer
 
@@ -289,7 +289,7 @@ fun VideoPlayerScreen(
     var lastOpenedUrl by remember { mutableStateOf("") }
 
     LaunchedEffect(initialVideoUrl) {
-        if (lastOpenedUrl != initialVideoUrl) {
+        if (initialVideoUrl.isNotEmpty() && lastOpenedUrl != initialVideoUrl) {
             viewModel.openVideo(initialVideoUrl)
             lastOpenedUrl = initialVideoUrl
         }
@@ -302,7 +302,6 @@ fun VideoPlayerScreen(
     )
 }
 
-@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 @Composable
 fun VideoPlayerContent(
     viewModel: GalleryViewModel,

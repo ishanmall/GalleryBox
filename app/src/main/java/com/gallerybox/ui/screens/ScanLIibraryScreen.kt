@@ -2,6 +2,7 @@
 
 package com.gallerybox.ui.screens
 
+import android.text.format.Formatter
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -36,14 +37,19 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -51,6 +57,8 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.gallerybox.viewmodel.GalleryViewModel
 import com.gallerybox.viewmodel.MusicViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -60,21 +68,39 @@ fun ScanLibraryScreen(
     galleryViewModel: GalleryViewModel = hiltViewModel(),
     musicViewModel: MusicViewModel = hiltViewModel()
 ) {
+    val context = LocalContext.current
     val mediaList by galleryViewModel.media.collectAsState()
     val allSongs by musicViewModel.allAudioTracks.collectAsState()
     val isScanning by galleryViewModel.isBusy.collectAsState()
 
-    val photoCount = remember(mediaList) {
-        mediaList.count { !it.isVideo }
+    // Use states to prevent Main Thread blocking
+    var photoCount by remember { mutableIntStateOf(0) }
+    var videoCount by remember { mutableIntStateOf(0) }
+    var formattedTotalSize by remember { mutableStateOf("Calculating...") }
+
+    // Run heavy counting and sizing math on a background thread
+    LaunchedEffect(mediaList) {
+        withContext(Dispatchers.Default) {
+            var pCount = 0
+            var vCount = 0
+            var totalBytes = 0L
+
+            for (item in mediaList) {
+                if (item.isVideo) {
+                    vCount++
+                } else {
+                    pCount++
+                }
+                totalBytes += item.size
+            }
+
+            photoCount = pCount
+            videoCount = vCount
+            formattedTotalSize = Formatter.formatFileSize(context, totalBytes)
+        }
     }
 
-    val videoCount = remember(mediaList) {
-        mediaList.count { it.isVideo }
-    }
-
-    val songCount = remember(allSongs) {
-        allSongs.size
-    }
+    val songCount = allSongs.size
 
     Scaffold(
         topBar = {
@@ -121,7 +147,7 @@ fun ScanLibraryScreen(
 
             ScannerStatusText(
                 isScanning = isScanning,
-                totalSize = "Calculated Size"
+                totalSize = formattedTotalSize
             )
 
             Spacer(modifier = Modifier.height(48.dp))

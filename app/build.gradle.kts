@@ -18,13 +18,12 @@ configurations.all {
 android {
     namespace = "com.gallerybox"
     compileSdk = 36
-    ndkVersion = "28.2.13676358"
 
     defaultConfig {
         applicationId = "com.gallerybox"
         minSdk = 31
         targetSdk = 36
-        versionCode = 90
+        versionCode = 93
 
         versionName = "1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -122,6 +121,7 @@ dependencies {
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.core:core-splashscreen:1.0.1")
     implementation("androidx.window:window:1.3.0")
+    implementation(libs.androidx.benchmark.common)
 
     // Version Catalog (libs) imports
     implementation(libs.androidx.compose.remote.creation.core)
@@ -222,6 +222,10 @@ dependencies {
     implementation("androidx.exifinterface:exifinterface:1.3.7")
     implementation("io.coil-kt:coil-compose:2.7.0")
     implementation("io.coil-kt:coil-svg:2.7.0")
+
+    implementation("org.apache.poi:poi-ooxml:5.2.5")
+    implementation("androidx.documentfile:documentfile:1.1.0")
+    implementation("androidx.pdf:pdf-viewer:1.0.0-alpha15")
 
     // AndroidSVG
     implementation("com.caverock:androidsvg-aar:1.4")

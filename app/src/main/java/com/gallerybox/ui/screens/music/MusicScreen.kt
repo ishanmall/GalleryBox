@@ -1,3 +1,5 @@
+@file:Suppress("UnsafeOptInUsageError", "OPT_IN_USAGE", "unused", "DEPRECATION", "ObsoleteSdkInt")
+
 package com.gallerybox.ui.screens.music
 
 import android.app.Activity
@@ -60,10 +62,14 @@ import coil.request.ImageRequest
 import com.gallerybox.engine.MusicService
 import com.gallerybox.viewmodel.AudioTrack
 import com.gallerybox.viewmodel.MusicViewModel
+import com.gallerybox.viewmodel.RadioViewModel
 import com.gallerybox.viewmodel.TrashViewModel
 import kotlinx.collections.immutable.*
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.Locale
 
 sealed class MusicRoute(val route: String) {
@@ -71,12 +77,15 @@ sealed class MusicRoute(val route: String) {
     data object Library : MusicRoute("library")
     data object Folders : MusicRoute("folders")
     data object Favorites : MusicRoute("favorites")
+    data object DigitalRadio : MusicRoute("digital_radio")
+    data object OnlineFinder : MusicRoute("online_finder")
 }
 
 @androidx.media3.common.util.UnstableApi
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MusicScreen(
+    initialUri: String? = null,
     viewModel: MusicViewModel,
     trashViewModel: TrashViewModel = hiltViewModel(),
     onViewerStateChanged: (Boolean) -> Unit = {},
@@ -91,6 +100,7 @@ fun MusicScreen(
     var showFullPlayer by remember { mutableStateOf(false) }
     var isSearchActive by remember { mutableStateOf(false) }
     var trackToTrash by remember { mutableStateOf<AudioTrack?>(null) }
+    var hasPlayedInitial by remember { mutableStateOf(false) }
 
     var showQueueSheet by remember { mutableStateOf(false) }
     var showAudioInfoSheet by remember { mutableStateOf(false) }
@@ -100,7 +110,8 @@ fun MusicScreen(
     val loadedSongsRaw by viewModel.allAudioTracks.collectAsStateWithLifecycle()
     val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
 
-    val loadedSongs = remember(loadedSongsRaw) { loadedSongsRaw.toImmutableList() }
+    var loadedSongs by remember { mutableStateOf<ImmutableList<AudioTrack>>(persistentListOf()) }
+    var displaySongs by remember { mutableStateOf<ImmutableList<AudioTrack>>(persistentListOf()) }
 
     LaunchedEffect(Unit) {
         viewModel.loadAllAudioTracks()
@@ -120,9 +131,38 @@ fun MusicScreen(
         }
     }
 
-    val displaySongs = remember(loadedSongs, searchQuery) {
-        if (searchQuery.isBlank()) loadedSongs
-        else loadedSongs.filter { it.title.contains(searchQuery, true) || it.artist.contains(searchQuery, true) }.toImmutableList()
+    // Process lists on background thread to prevent UI freezing
+    LaunchedEffect(loadedSongsRaw) {
+        withContext(Dispatchers.Default) {
+            loadedSongs = loadedSongsRaw.toImmutableList()
+        }
+    }
+
+    LaunchedEffect(loadedSongs, searchQuery) {
+        withContext(Dispatchers.Default) {
+            displaySongs = if (searchQuery.isBlank()) {
+                loadedSongs
+            } else {
+                loadedSongs.filter { it.title.contains(searchQuery, true) || it.artist.contains(searchQuery, true) }.toImmutableList()
+            }
+        }
+    }
+
+    // Automatically play the requested track when launched externally
+    LaunchedEffect(initialUri, loadedSongs) {
+        if (!initialUri.isNullOrEmpty() && !hasPlayedInitial && loadedSongs.isNotEmpty()) {
+            val targetUriStr = initialUri.trim()
+            val trackToPlay = loadedSongs.find {
+                it.path == targetUriStr ||
+                        ContentUris.withAppendedId(android.provider.MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, it.id).toString() == targetUriStr
+            }
+
+            if (trackToPlay != null) {
+                viewModel.playQueue(loadedSongs, trackToPlay)
+                showFullPlayer = true
+                hasPlayedInitial = true
+            }
+        }
     }
 
     LaunchedEffect(showFullPlayer) { onViewerStateChanged(showFullPlayer) }
@@ -217,12 +257,28 @@ fun MusicScreen(
                         onShowQueue = { showQueueSheet = true },
                         onNavigateToDuoMode = onNavigateToDuoPlayer,
                         onNavigateToFavorites = { navController.navigate(MusicRoute.Favorites.route) },
-                        onNavigateToEqualizer = onNavigateToEqualizer
+                        onNavigateToEqualizer = onNavigateToEqualizer,
+                        onNavigateToDigitalRadio = { navController.navigate(MusicRoute.DigitalRadio.route) },
+                        onNavigateToOnlineFinder = { navController.navigate(MusicRoute.OnlineFinder.route) }
                     )
                 }
                 composable(MusicRoute.Library.route) { LibraryContent(displaySongs, viewModel) { trackToTrash = it } }
                 composable(MusicRoute.Favorites.route) { FavoritesScreen(viewModel, loadedSongs) { trackToTrash = it } }
                 composable(MusicRoute.Folders.route) { FolderList(displaySongs, viewModel) { trackToTrash = it } }
+
+                composable(MusicRoute.DigitalRadio.route) {
+                    val radioViewModel = hiltViewModel<RadioViewModel>()
+                    DigitalRadioScreen(
+                        viewModel = radioViewModel,
+                        onBack = { navController.popBackStack() }
+                    )
+                }
+
+                composable(MusicRoute.OnlineFinder.route) {
+                    OnlineSongFinderScreen(
+                        onBack = { navController.popBackStack() }
+                    )
+                }
             }
         }
     }
@@ -304,13 +360,17 @@ fun MusicTopAppBar(
             MusicRoute.Folders.route -> "Folders"
             MusicRoute.Favorites.route -> "Favorites"
             MusicRoute.Dashboard.route -> "Music"
+            MusicRoute.DigitalRadio.route -> "Digital Radio"
+            MusicRoute.OnlineFinder.route -> "Find Songs"
             else -> "Music"
         }
         CenterAlignedTopAppBar(
             title = { Text(text = title, color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis) },
             navigationIcon = { if (currentRoute != MusicRoute.Dashboard.route) IconButton(onClick = onNavigateBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = MaterialTheme.colorScheme.onSurface) } },
             actions = {
-                IconButton(onClick = { onToggleSearch(true) }) { Icon(Icons.Default.Search, "Search", tint = MaterialTheme.colorScheme.onSurface) }
+                if (currentRoute == MusicRoute.Dashboard.route || currentRoute == MusicRoute.Library.route || currentRoute == MusicRoute.Favorites.route || currentRoute == MusicRoute.Folders.route) {
+                    IconButton(onClick = { onToggleSearch(true) }) { Icon(Icons.Default.Search, "Search", tint = MaterialTheme.colorScheme.onSurface) }
+                }
                 if (currentRoute == MusicRoute.Dashboard.route) {
                     IconButton(onClick = onNavigateToEqualizer) { Icon(Icons.Rounded.GraphicEq, "Equalizer", tint = MaterialTheme.colorScheme.onSurface) }
                 }
@@ -329,9 +389,13 @@ fun DashboardScreen(
     onShowQueue: () -> Unit,
     onNavigateToDuoMode: () -> Unit,
     onNavigateToFavorites: () -> Unit,
-    onNavigateToEqualizer: () -> Unit
+    onNavigateToEqualizer: () -> Unit,
+    onNavigateToDigitalRadio: () -> Unit,
+    onNavigateToOnlineFinder: () -> Unit
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
     LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 16.dp, bottom = 100.dp)) {
         item {
             Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp)) {
@@ -345,21 +409,36 @@ fun DashboardScreen(
                 }
                 Spacer(Modifier.height(24.dp))
                 Row(Modifier.fillMaxWidth()) {
-                    Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { QuickActionIcon(Icons.Rounded.Radio, "Radio", MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.onSurfaceVariant, onNavigateToRadio) }
+                    Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { QuickActionIcon(Icons.Rounded.Radio, "FM Radio", MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.onSurfaceVariant, onNavigateToRadio) }
                     Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { QuickActionIcon(Icons.Rounded.Headset, "Duo Player", MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.onSurfaceVariant, onNavigateToDuoMode) }
                     Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
                         QuickActionIcon(Icons.Rounded.Shuffle, "Shuffle", MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.onSurfaceVariant) {
-                            if (loadedSongs.isNotEmpty()) {
-                                val toPlay = if (loadedSongs.size > 1000) loadedSongs.shuffled().take(1000) else loadedSongs.shuffled()
-                                toPlay.firstOrNull()?.let { track -> viewModel.playQueue(toPlay, track) }
-                            } else {
-                                Toast.makeText(context, "Library is empty", Toast.LENGTH_SHORT).show()
+                            scope.launch(Dispatchers.Default) {
+                                if (loadedSongs.isNotEmpty()) {
+                                    val toPlay = if (loadedSongs.size > 1000) loadedSongs.shuffled().take(1000) else loadedSongs.shuffled()
+                                    toPlay.firstOrNull()?.let { track ->
+                                        withContext(Dispatchers.Main) { viewModel.playQueue(toPlay, track) }
+                                    }
+                                } else {
+                                    withContext(Dispatchers.Main) { Toast.makeText(context, "Library is empty", Toast.LENGTH_SHORT).show() }
+                                }
                             }
                         }
                     }
                     Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
                         QuickActionIcon(Icons.Rounded.GraphicEq, "Equalizer", MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.onSurfaceVariant, onNavigateToEqualizer)
                     }
+                }
+                Spacer(Modifier.height(24.dp))
+                Row(Modifier.fillMaxWidth()) {
+                    Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                        QuickActionIcon(Icons.Rounded.CellTower, "Web Radio", MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.onSurfaceVariant, onNavigateToDigitalRadio)
+                    }
+                    Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                        QuickActionIcon(Icons.Rounded.TravelExplore, "Find Online", MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.onSurfaceVariant, onNavigateToOnlineFinder)
+                    }
+                    Box(Modifier.weight(1f))
+                    Box(Modifier.weight(1f))
                 }
             }
         }
@@ -382,8 +461,14 @@ fun QuickActionIcon(icon: ImageVector, label: String, containerColor: Color, con
 @Composable
 fun FavoritesScreen(viewModel: MusicViewModel, allSongs: ImmutableList<AudioTrack>, onTrashClick: (AudioTrack) -> Unit) {
     val favoriteIdsRaw by viewModel.favoriteIds.collectAsStateWithLifecycle()
-    val favoriteIds = remember(favoriteIdsRaw) { favoriteIdsRaw.toImmutableSet() }
-    val favoriteSongs = remember(allSongs, favoriteIds) { allSongs.filter { it.id in favoriteIds }.toImmutableList() }
+    var favoriteSongs by remember { mutableStateOf<ImmutableList<AudioTrack>>(persistentListOf()) }
+
+    LaunchedEffect(allSongs, favoriteIdsRaw) {
+        withContext(Dispatchers.Default) {
+            val favSet = favoriteIdsRaw.toSet()
+            favoriteSongs = allSongs.filter { it.id in favSet }.toImmutableList()
+        }
+    }
 
     if (favoriteSongs.isEmpty()) {
         Box(Modifier.fillMaxSize(), Alignment.Center) { Text("No favorites yet", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant) }
@@ -411,8 +496,37 @@ fun LibraryContent(displaySongs: ImmutableList<AudioTrack>, vm: MusicViewModel, 
 
 @Composable
 fun FolderList(songs: ImmutableList<AudioTrack>, vm: MusicViewModel, onTrashClick: (AudioTrack) -> Unit) {
-    val folders = remember(songs) { songs.filter { it.path.isNotBlank() }.groupBy { it.path.substringBeforeLast("/", "Unknown").trim() }.toSortedMap() }
+    var folders by remember { mutableStateOf<Map<String, List<AudioTrack>>>(emptyMap()) }
+    var folderKeys by remember { mutableStateOf<ImmutableList<String>>(persistentListOf()) }
+    var activeTracks by remember { mutableStateOf<ImmutableList<AudioTrack>>(persistentListOf()) }
     var selectedFolder by remember { mutableStateOf<String?>(null) }
+
+    // Run folder grouping in background
+    LaunchedEffect(songs) {
+        withContext(Dispatchers.Default) {
+            val grouped = songs.filter { it.path.isNotBlank() }
+                .groupBy { it.path.substringBeforeLast("/", "Unknown").trim() }
+                .toSortedMap()
+            folders = grouped
+            folderKeys = grouped.keys.toList().toImmutableList()
+
+            // Sync tracks if a folder is already open
+            if (selectedFolder != null) {
+                activeTracks = grouped[selectedFolder]?.toImmutableList() ?: persistentListOf()
+            }
+        }
+    }
+
+    // Refresh active tracks when folder changes
+    LaunchedEffect(selectedFolder, folders) {
+        withContext(Dispatchers.Default) {
+            activeTracks = if (selectedFolder != null) {
+                folders[selectedFolder]?.toImmutableList() ?: persistentListOf()
+            } else {
+                persistentListOf()
+            }
+        }
+    }
 
     BackHandler(enabled = selectedFolder != null) { selectedFolder = null }
 
@@ -422,7 +536,6 @@ fun FolderList(songs: ImmutableList<AudioTrack>, vm: MusicViewModel, onTrashClic
                 if (folders.isEmpty()) {
                     Box(Modifier.fillMaxSize(), Alignment.Center) { Text("No folders found", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 } else {
-                    val folderKeys = remember(folders) { folders.keys.toList().toImmutableList() }
                     LazyVerticalGrid(columns = GridCells.Adaptive(160.dp), contentPadding = PaddingValues(16.dp, 16.dp, 16.dp, 90.dp), horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp), modifier = Modifier.fillMaxSize()) {
                         items(folderKeys, key = { it }, contentType = { "folder" }) { path ->
                             val firstTrack = folders[path]?.firstOrNull { it.albumId > 0 }
@@ -445,18 +558,17 @@ fun FolderList(songs: ImmutableList<AudioTrack>, vm: MusicViewModel, onTrashClic
                     }
                 }
             } else {
-                val tracks = remember(activeFolder, folders) { folders[activeFolder]?.toImmutableList() ?: persistentListOf() }
                 Column(Modifier.fillMaxSize()) {
                     Row(modifier = Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
                         IconButton(onClick = { selectedFolder = null }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = MaterialTheme.colorScheme.onSurface) }
                         Text(activeFolder.substringAfterLast("/"), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.padding(start = 8.dp))
                     }
-                    if (tracks.isEmpty()) {
+                    if (activeTracks.isEmpty()) {
                         Box(Modifier.fillMaxWidth().weight(1f), Alignment.Center) { Text("Folder is empty", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                     } else {
                         LazyColumn(modifier = Modifier.fillMaxWidth().weight(1f), contentPadding = PaddingValues(bottom = 90.dp)) {
-                            items(tracks, key = { it.id }, contentType = { "song" }) { song ->
-                                InteractiveSongRow(song, vm, { vm.playQueue(tracks, song) }, { onTrashClick(song) })
+                            items(activeTracks, key = { it.id }, contentType = { "song" }) { song ->
+                                InteractiveSongRow(song, vm, { vm.playQueue(activeTracks, song) }, { onTrashClick(song) })
                             }
                         }
                     }
@@ -470,7 +582,13 @@ fun FolderList(songs: ImmutableList<AudioTrack>, vm: MusicViewModel, onTrashClic
 @Composable
 fun QueueBottomSheet(viewModel: MusicViewModel, currentTrack: AudioTrack?, onDismiss: () -> Unit, onTrashClick: (AudioTrack) -> Unit) {
     val activeQueueRaw by viewModel.currentQueue.collectAsStateWithLifecycle()
-    val activeQueue = remember(activeQueueRaw) { activeQueueRaw.toImmutableList() }
+    var activeQueue by remember { mutableStateOf<ImmutableList<AudioTrack>>(persistentListOf()) }
+
+    LaunchedEffect(activeQueueRaw) {
+        withContext(Dispatchers.Default) {
+            activeQueue = activeQueueRaw.toImmutableList()
+        }
+    }
 
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = MaterialTheme.colorScheme.surfaceContainerLow) {
         Column(Modifier.fillMaxSize()) {
@@ -554,7 +672,6 @@ fun PlayerScreen(onBack: () -> Unit, viewModel: MusicViewModel, currentTrack: Au
         ImageRequest.Builder(ctx).data(getAlbumArtUri(currentTrack?.albumId ?: -1)).size(800).error(android.R.drawable.ic_media_play).build()
     }
 
-    // Vinyl rotation: continuous while playing, holds position when paused (like a real turntable)
     val rotation = remember(currentTrack?.id) { Animatable(0f) }
     LaunchedEffect(isPlaying, currentTrack?.id) {
         if (isPlaying) {
@@ -584,7 +701,6 @@ fun PlayerScreen(onBack: () -> Unit, viewModel: MusicViewModel, currentTrack: Au
                     .scale(artScale),
                 contentAlignment = Alignment.Center
             ) {
-                // A single, perfect spinning circle (Vinyl/CD style)
                 Surface(
                     shape = CircleShape,
                     color = MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -600,13 +716,11 @@ fun PlayerScreen(onBack: () -> Unit, viewModel: MusicViewModel, currentTrack: Au
                             contentScale = ContentScale.Crop,
                             modifier = Modifier.fillMaxSize().clip(CircleShape)
                         )
-
-                        // Center cutout for physical record appearance
                         Box(
                             modifier = Modifier
                                 .size(48.dp)
                                 .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.background) // Fixes bg issue with proper circle
+                                .background(MaterialTheme.colorScheme.background)
                                 .border(1.dp, Color.White.copy(alpha = 0.1f), CircleShape),
                             contentAlignment = Alignment.Center
                         ) {
@@ -882,7 +996,6 @@ fun ModernMiniPlayer(
                 }
             }
 
-            // Symmetrical controls
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.align(Alignment.CenterEnd).padding(end = 4.dp)

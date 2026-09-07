@@ -9,11 +9,6 @@ import android.provider.MediaStore
 import android.util.Base64
 import android.widget.Toast
 import androidx.annotation.RequiresApi
-import androidx.compose.animation.EnterTransition
-import androidx.compose.animation.ExitTransition
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -77,6 +72,7 @@ sealed interface Route {
     @Serializable data object ScanLibrary : Route
     @Serializable data object Trash : Route
     @Serializable data object Hidden : Route
+    @Serializable data object HideAlbums : Route // Added for HideScreen
     @Serializable data object Duplicates : Route
     @Serializable data class VideoPlayer(val uri: String, val position: Long = 0L) : Route
     @Serializable data class AlbumView(val albumId: String) : Route
@@ -241,11 +237,7 @@ fun GalleryAppContent(
         NavHost(
             navController = navController,
             startDestination = initialStartDestination,
-            modifier = Modifier.padding(padding),
-            enterTransition = { fadeIn(animationSpec = tween(200)) },
-            exitTransition = { fadeOut(animationSpec = tween(200)) },
-            popEnterTransition = { fadeIn(animationSpec = tween(200)) },
-            popExitTransition = { fadeOut(animationSpec = tween(200)) }
+            modifier = Modifier.padding(padding) // REMOVED ANIMATION TRANSITIONS HERE
         ) {
             mainTabs(
                 nav = navController,
@@ -287,12 +279,7 @@ private fun NavGraphBuilder.mainTabs(
     trashViewModel: TrashViewModel,
     musicViewModel: MusicViewModel
 ) {
-    composable<Route.Pictures>(
-        enterTransition = { EnterTransition.None },
-        exitTransition = { ExitTransition.None },
-        popEnterTransition = { EnterTransition.None },
-        popExitTransition = { ExitTransition.None }
-    ) {
+    composable<Route.Pictures> {
         PictureScreen(
             viewModel = galleryViewModel,
             trashViewModel = trashViewModel,
@@ -312,12 +299,7 @@ private fun NavGraphBuilder.mainTabs(
         )
     }
 
-    composable<Route.Albums>(
-        enterTransition = { EnterTransition.None },
-        exitTransition = { ExitTransition.None },
-        popEnterTransition = { EnterTransition.None },
-        popExitTransition = { ExitTransition.None }
-    ) {
+    composable<Route.Albums> {
         AlbumScreen(
             viewModel = galleryViewModel,
             trashViewModel = trashViewModel,
@@ -327,31 +309,21 @@ private fun NavGraphBuilder.mainTabs(
                 onAlbumClick = { a -> nav.navigate(Route.AlbumView(a.id.toSafeRouteArgs())) },
                 onNavigateToFavorites = { nav.navigate(Route.AlbumView("virtual_favorites".toSafeRouteArgs())) },
                 onNavigateToTrash = { nav.navigate(Route.Trash) },
-                onNavigateToHidden = { nav.navigate(Route.Hidden) },
+                onNavigateToHidden = { nav.navigate(Route.HideAlbums) },
                 onNavigateToDuplicates = { nav.navigate(Route.Duplicates) },
                 onNavigateToScan = { nav.navigate(Route.ScanLibrary) }
             )
         )
     }
 
-    composable<Route.Stories>(
-        enterTransition = { EnterTransition.None },
-        exitTransition = { ExitTransition.None },
-        popEnterTransition = { EnterTransition.None },
-        popExitTransition = { ExitTransition.None }
-    ) {
+    composable<Route.Stories> {
         StoriesScreen(
             viewModel = galleryViewModel,
             storyViewModel = hiltViewModel()
         )
     }
 
-    composable<Route.Music>(
-        enterTransition = { EnterTransition.None },
-        exitTransition = { ExitTransition.None },
-        popEnterTransition = { EnterTransition.None },
-        popExitTransition = { ExitTransition.None }
-    ) {
+    composable<Route.Music> {
         MusicScreen(
             viewModel = musicViewModel,
             trashViewModel = trashViewModel,
@@ -439,6 +411,13 @@ private fun NavGraphBuilder.toolsAndUtilityGraphs(
     trashViewModel: TrashViewModel,
     musicViewModel: MusicViewModel
 ) {
+    composable<Route.HideAlbums> {
+        HideScreen(
+            viewModel = galleryViewModel,
+            onBack = { nav.popBackStack() }
+        )
+    }
+
     composable<Route.About> { AboutScreen(onNavigateUp = { nav.popBackStack() }) }
     composable<Route.Radio> { RadioScreen(viewModel = hiltViewModel<RadioViewModel>(), onBack = { nav.popBackStack() }) }
     composable<Route.Equalizer> { EqualizerScreen(viewModel = musicViewModel, onBack = { nav.popBackStack() }) }

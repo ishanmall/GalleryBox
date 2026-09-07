@@ -173,7 +173,6 @@ sealed class AlbumUiDialog {
     data object GridSize : AlbumUiDialog()
     data object Sort : AlbumUiDialog()
     data object CreateAlbum : AlbumUiDialog()
-    data object HiddenAlbums : AlbumUiDialog()
     data class Rename(val album: Album) : AlbumUiDialog()
     data class Delete(val albums: List<Album>) : AlbumUiDialog()
     data class Info(val album: Album) : AlbumUiDialog()
@@ -742,7 +741,7 @@ fun AlbumScreen(
         rawAlbumPreviews.mapValues { it.value.toImmutableList() }.toImmutableMap()
     }
 
-    val displayAlbums = remember(vmAlbums, searchQuery, sortOption, favoriteIds, allMedia, optimisticallyRemovedAlbums) {
+    var displayAlbums = remember(vmAlbums, searchQuery, sortOption, favoriteIds, allMedia, optimisticallyRemovedAlbums) {
         val favMedia = allMedia.filter { favoriteIds.contains(it.id) }
         val virtualAlbumsMutable = vmAlbums.filter { it.id.startsWith("virtual_") && it.id != ID_FAVORITES && albumMatchesQuery(it, searchQuery) }.toMutableList()
         if (favMedia.isNotEmpty()) {
@@ -791,7 +790,7 @@ fun AlbumScreen(
         (sortedVirtualAlbums + sortedUserAlbums).toImmutableList()
     }
 
-    val sdCardAlbums = remember(allMedia) {
+    var sdCardAlbums = remember(allMedia) {
         allMedia.filter { item ->
             if (item.volumeName.isNotBlank()) {
                 item.volumeName != MediaStore.VOLUME_EXTERNAL_PRIMARY && item.volumeName != "external"
@@ -935,7 +934,7 @@ fun AlbumScreen(
                                     "sort" -> activeDialog = AlbumUiDialog.Sort
                                     "create" -> activeDialog = AlbumUiDialog.CreateAlbum
                                     "trash" -> actions.onNavigateToTrash()
-                                    "hidden" -> activeDialog = AlbumUiDialog.HiddenAlbums
+                                    "hidden" -> actions.onNavigateToHidden()
                                     "duplicates" -> actions.onNavigateToDuplicates()
                                     "scan" -> actions.onNavigateToScan()
                                     "toggle_lock" -> toggleAppLock(context, securityViewModel, isAppLockEnabled) { isAppLockEnabled = it }
@@ -1038,7 +1037,7 @@ fun AlbumScreen(
                 }
             }
         ) { padding ->
-            val bottomPadding = if (isSelectionMode) padding.calculateBottomPadding() else WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+            val bottomPadding = if (isSelectionMode) padding.calculateBottomPadding() else 0.dp
             Column(
                 modifier = Modifier
                     .fillMaxSize()
@@ -1257,84 +1256,6 @@ fun AlbumScreen(
                     activeDialog = AlbumUiDialog.None
                 }
             )
-        }
-        is AlbumUiDialog.HiddenAlbums -> {
-            val rawMedia by viewModel.rawMedia.collectAsState()
-            val allPossibleAlbums = remember(rawMedia) {
-                rawMedia.groupBy { it.bucketId }.map { (id, items) ->
-                    val first = items.first()
-                    Album(
-                        id = id,
-                        name = first.bucketName,
-                        coverUri = first.uri,
-                        mediaCount = items.size,
-                        sizeBytes = items.sumOf { it.size },
-                        isPinned = false
-                    )
-                }.filter { !it.id.startsWith("virtual_") }.sortedBy { it.name.lowercase() }
-            }
-            ModalBottomSheet(
-                onDismissRequest = { activeDialog = AlbumUiDialog.None },
-                containerColor = MaterialTheme.colorScheme.surface,
-                dragHandle = { BottomSheetDefaults.DragHandle(width = 48.dp, height = 4.dp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)) }
-            ) {
-                Column(Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
-                    Text(
-                        text = "Hide or Unhide",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp)
-                    )
-                    LazyColumn(
-                        modifier = Modifier.fillMaxWidth(),
-                        contentPadding = PaddingValues(bottom = 12.dp)
-                    ) {
-                        items(allPossibleAlbums, key = { it.id }) { album ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        viewModel.toggleHiddenAlbum(album.id)
-                                        val newHidden = if (hiddenAlbums.contains(album.id)) {
-                                            hiddenAlbums - album.id
-                                        } else {
-                                            hiddenAlbums + album.id
-                                        }
-                                        enginePrefs.edit().putStringSet("hidden_albums", newHidden).apply()
-                                    }
-                                    .padding(horizontal = 24.dp, vertical = 14.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = album.name,
-                                        style = MaterialTheme.typography.titleMedium,
-                                        fontWeight = FontWeight.Medium
-                                    )
-                                    Text(
-                                        text = "${album.mediaCount} items",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                                Switch(
-                                    checked = hiddenAlbums.contains(album.id),
-                                    onCheckedChange = {
-                                        viewModel.toggleHiddenAlbum(album.id)
-                                        val newHidden = if (hiddenAlbums.contains(album.id)) {
-                                            hiddenAlbums - album.id
-                                        } else {
-                                            hiddenAlbums + album.id
-                                        }
-                                        enginePrefs.edit().putStringSet("hidden_albums", newHidden).apply()
-                                    }
-                                )
-                            }
-                        }
-                    }
-                }
-            }
         }
         else -> {}
     }
@@ -2186,7 +2107,7 @@ fun StatelessAlbumGrid(
             columns = GridCells.Fixed(columnCount),
             state = gridState,
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 90.dp),
+            contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
@@ -2493,7 +2414,7 @@ fun StatelessMediaGrid(
             columns = GridCells.Fixed(columnCount),
             state = gridState,
             modifier = Modifier.fillMaxSize().then(slideModifier),
-            contentPadding = PaddingValues(start = 4.dp, end = 4.dp, top = 8.dp, bottom = 90.dp),
+            contentPadding = PaddingValues(start = 4.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
             horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {

@@ -32,7 +32,6 @@
     <string name="music_unknown_artist">Unknown Artist</string>
     <string name="music_now_playing">Now Playing</string>
 
-    <string name="settings_title">Settings</string>
     <string name="pref_autoplay">Auto play videos</string>
     <string name="pref_trash">Trash Bin</string>
     <string name="default_web_client_id">421144237882-3e9mfdqj9322algd2u14iomp64q0cbvr.apps.googleusercontent.com</string>
