@@ -104,7 +104,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
@@ -207,7 +206,11 @@ fun SamsungFastScrollbar(
     deviceTier: DeviceTier = DeviceTier.HIGH,
     modifier: Modifier = Modifier
 ) {
-    if (pagedMedia.itemCount < 20) return
+    val canScroll by remember {
+        derivedStateOf { gridState.layoutInfo.totalItemsCount > gridState.layoutInfo.visibleItemsInfo.size }
+    }
+
+    if (!canScroll || pagedMedia.itemCount < 20) return
 
     val scope = rememberCoroutineScope()
     val haptic = LocalHapticFeedback.current
@@ -244,17 +247,15 @@ fun SamsungFastScrollbar(
     }
 
     LaunchedEffect(gridState) {
-        snapshotFlow { gridState.firstVisibleItemIndex }
-            .filter { !isDragging && !gridState.isScrollInProgress && trackHeightPx > 0f }
-            .collect { index ->
+        snapshotFlow { gridState.firstVisibleItemIndex }.collect { index ->
+            if (!isDragging && trackHeightPx > 0f) {
                 val count = pagedMedia.itemCount.coerceAtLeast(1)
                 val adjusted = (index - indexOffset).coerceIn(0, count - 1)
-
                 val maxThumbOffset = (trackHeightPx - thumbHeightPx).coerceAtLeast(0f)
                 val fraction = if (count > 1) adjusted.toFloat() / (count - 1).toFloat() else 0f
-
                 thumbOffsetPx = (fraction * maxThumbOffset).coerceIn(0f, maxThumbOffset)
             }
+        }
     }
 
     var lastDragUpdateMs by remember { mutableLongStateOf(0L) }
@@ -484,8 +485,9 @@ fun PictureScreen(
         }
     }
 
-    LaunchedEffect(viewerState) {
-        onViewerStateChanged(viewerState is GalleryViewerState.Open)
+    // Crucial fix: Inform the parent NavHost that selection mode is active so it hides the main bottom bar
+    LaunchedEffect(viewerState, isSelectionMode) {
+        onViewerStateChanged(viewerState is GalleryViewerState.Open || isSelectionMode)
     }
 
     LaunchedEffect(activeFilter) {
@@ -790,17 +792,18 @@ fun PictureScreen(
                     mediaMap = mediaMap,
                     favoriteIds = favoriteIds,
                     sharedPlayer = viewModel.getPlayer(),
+                    onPageChanged = {}, // No action needed for PictureScreen
                     onClose = { viewModel.closeViewer() },
                     onToggleFavorite = { id -> viewModel.toggleFavorite(id) },
                     onEdit = { item ->
                         viewModel.closeViewer()
                         onNavigateToEditor(item.uri.toString(), item.id)
                     },
-                    onDelete = { item -> activeDialog = PictureUiDialog.TrashConfirm(listOf(item)) },
-                    onNavigateToVideoPlayer = { uri ->
+                    onPlayVideo = { uri, playlist ->
                         viewModel.closeViewer()
-                        onNavigateToVideoPlayer(uri, stableMediaList.filter { it.isVideo }.map { it.uri.toString() })
+                        onNavigateToVideoPlayer(uri, playlist)
                     },
+                    onDelete = { item -> activeDialog = PictureUiDialog.TrashConfirm(listOf(item)) },
                     onMove = { item ->
                         viewModel.closeViewer()
                         onNavigateToMoveCopy("MOVE", item.id.toString(), null)
@@ -1694,23 +1697,6 @@ fun ActionItem(icon: ImageVector, label: String, isDestructive: Boolean = false,
     }
 }
 
-@Composable
-fun SamsungFilterChip(selected: Boolean, label: String, onClick: () -> Unit) {
-    Surface(
-        onClick = onClick,
-        shape = CircleShape,
-        color = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.surfaceContainerHigh,
-        contentColor = if (selected) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.onSurface
-    ) {
-        Text(
-            text = label,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-            fontSize = 13.sp,
-            fontWeight = FontWeight.Medium
-        )
-    }
-}
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DialogsHost(
@@ -2072,7 +2058,8 @@ fun GalleryGridContent(
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        val bottomPadding = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + if (isSelectionMode) 100.dp else 16.dp
+        val navBarHeight = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+        val bottomPadding = if (isSelectionMode) navBarHeight + 100.dp else navBarHeight + 90.dp
         LazyVerticalGrid(
             state = gridState,
             columns = gridCells,
@@ -2328,11 +2315,12 @@ fun FullscreenMediaPager(
     mediaMap: Map<Long, MediaItem>,
     favoriteIds: List<Long>,
     sharedPlayer: Player,
+    onPageChanged: (MediaItem) -> Unit,
     onClose: () -> Unit,
     onToggleFavorite: (Long) -> Unit,
     onEdit: (MediaItem) -> Unit,
     onDelete: (MediaItem) -> Unit,
-    onNavigateToVideoPlayer: (String) -> Unit,
+    onPlayVideo: (String, List<String>) -> Unit,
     onMove: (MediaItem) -> Unit,
     onCopy: (MediaItem) -> Unit,
     onWallpaper: (MediaItem) -> Unit
@@ -2349,7 +2337,6 @@ fun FullscreenMediaPager(
     var showMetadataSheet by remember { mutableStateOf(false) }
     var showMoreMenu by remember { mutableStateOf(false) }
 
-    // Quick filter, safe for this isolated list
     val videoList = remember(mediaList) { mediaList.filter { it.isVideo } }
 
     LaunchedEffect(videoList) {
@@ -2372,14 +2359,21 @@ fun FullscreenMediaPager(
         }
     }
 
-    LaunchedEffect(pagerState.currentPage) {
+    LaunchedEffect(pagerState.currentPage, videoList) {
         showControls = true
-        val current = mediaList.getOrNull(pagerState.currentPage)
-        if (current != null && !current.isVideo) {
-            sharedPlayer.pause()
-            if (sharedPlayer.mediaItemCount > 0) {
-                sharedPlayer.seekTo(sharedPlayer.currentMediaItemIndex, 0)
+        val current = mediaList.getOrNull(pagerState.currentPage) ?: return@LaunchedEffect
+        val resolvedCurrent = mediaMap[current.id] ?: current
+        onPageChanged(resolvedCurrent)
+
+        if (current.isVideo) {
+            val videoIndex = videoList.indexOfFirst { it.id == current.id }
+            if (videoIndex >= 0 && videoIndex < sharedPlayer.mediaItemCount) {
+                sharedPlayer.pause()
+                sharedPlayer.seekTo(videoIndex, 0L)
+                sharedPlayer.playWhenReady = false
             }
+        } else {
+            sharedPlayer.pause()
             sharedPlayer.playWhenReady = false
         }
     }
@@ -2419,12 +2413,12 @@ fun FullscreenMediaPager(
             if (item.isVideo) {
                 VideoPreviewPage(
                     item = item,
-                    videoIndex = videoList.indexOfFirst { it.id == item.id },
+                    videoItems = videoList,
                     isCurrentPage = pagerState.currentPage == page,
                     showControls = showControls,
                     sharedPlayer = sharedPlayer,
                     onTap = { showControls = !showControls },
-                    onPlay = { onNavigateToVideoPlayer(item.uri.toString()) }
+                    onPlay = { onPlayVideo(item.uri.toString(), videoList.map { it.uri.toString() }) }
                 )
             } else {
                 ZoomableImagePage(
@@ -2592,7 +2586,7 @@ fun FullscreenMediaPager(
 @Composable
 fun VideoPreviewPage(
     item: MediaItem,
-    videoIndex: Int,
+    videoItems: List<MediaItem>,
     isCurrentPage: Boolean,
     showControls: Boolean,
     sharedPlayer: Player,
@@ -2606,12 +2600,8 @@ fun VideoPreviewPage(
         sharedPlayer.volume = if (m) 0f else 1f
     }
 
-    LaunchedEffect(isCurrentPage, videoIndex) {
-        if (isCurrentPage) {
-            if (videoIndex >= 0 && sharedPlayer.currentMediaItemIndex != videoIndex) {
-                sharedPlayer.seekTo(videoIndex, 0)
-            }
-        } else {
+    LaunchedEffect(isCurrentPage) {
+        if (!isCurrentPage) {
             sharedPlayer.pause()
         }
     }

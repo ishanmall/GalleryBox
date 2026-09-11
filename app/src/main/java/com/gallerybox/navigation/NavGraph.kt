@@ -66,6 +66,8 @@ sealed interface Route {
     @Serializable data object Camera : Route
     @Serializable data object Vault : Route
     @Serializable data object Radio : Route
+    @Serializable data object DigitalRadio : Route
+    @Serializable data object OnlineFinder : Route
     @Serializable data object Equalizer : Route
     @Serializable data object DuoMusic : Route
     @Serializable data object About : Route
@@ -427,6 +429,19 @@ private fun NavGraphBuilder.toolsAndUtilityGraphs(
     composable<Route.Radio> { RadioScreen(viewModel = radioViewModel, onBack = { nav.popBackStack() }) }
     composable<Route.Equalizer> { EqualizerScreen(viewModel = musicViewModel, onBack = { nav.popBackStack() }) }
     composable<Route.DuoMusic> { DuoMusicScreen(viewModel = musicViewModel, onBack = { nav.popBackStack() }) }
+
+    composable<Route.DigitalRadio> {
+        DigitalRadioScreen(
+            viewModel = radioViewModel,
+            onBack = { nav.popBackStack() }
+        )
+    }
+
+    composable<Route.OnlineFinder> {
+        OnlineSongFinderScreen(
+            onBack = { nav.popBackStack() }
+        )
+    }
 
     composable<Route.Wallpaper> { backStack ->
         val args = backStack.toRoute<Route.Wallpaper>()

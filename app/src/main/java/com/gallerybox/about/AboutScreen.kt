@@ -482,22 +482,7 @@ private fun getFeatureList(): List<FeatureSection> = listOf(
         "Camera", "Screenshots", "Downloads", "WhatsApp", "Videos", "Favorites", "Recent",
         "Other automatically detected categories"
     )),
-    FeatureSection("Document Reader & Viewer", "📄", listOf(
-        "Read and view PDF documents with page navigation and smooth zoom",
-        "Full support for Word documents (.doc, .docx)",
-        "Spreadsheet viewer for Excel spreadsheets (.xls, .xlsx) and CSV files",
-        "Slide-by-slide viewer for PowerPoint presentations (.ppt, .pptx)",
-        "Fast plain text viewer (.txt)",
-        "Automatic device storage scan and index for all local documents",
-        "Search and filter documents by type (PDF, Word, Excel, PowerPoint, Text, Favorites)"
-    )),
-    FeatureSection("Image to PDF Converter", "📑", listOf(
-        "Convert single or multiple gallery images directly into a high-quality PDF",
-        "Multi-select photo picker integration",
-        "Preserves original image quality and dimensions per page",
-        "Saves converted PDFs directly to device Documents folder",
-        "Instant database sync to view newly created PDFs immediately"
-    )),
+
     FeatureSection("Offline Database", "🗄️", listOf(
         "Trash", "Stories", "Favorites", "Hidden media", "Hidden albums", "Pinned albums",
         "Smart tags", "Album metadata", "Everything remains local on the device"

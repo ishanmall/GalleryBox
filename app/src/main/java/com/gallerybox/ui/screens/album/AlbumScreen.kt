@@ -963,8 +963,7 @@ fun AlbumScreen(
                     Surface(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(16.dp)
-                            .navigationBarsPadding(),
+                            .padding(16.dp),
                         shape = RoundedCornerShape(24.dp),
                         color = MaterialTheme.colorScheme.surface,
                         shadowElevation = 10.dp
@@ -1047,11 +1046,10 @@ fun AlbumScreen(
                 }
             }
         ) { padding ->
-            val bottomPadding = if (isSelectionMode) padding.calculateBottomPadding() else 0.dp
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(top = padding.calculateTopPadding(), bottom = bottomPadding)
+                    .padding(top = padding.calculateTopPadding())
             ) {
                 if (dynamicList.isEmpty()) {
                     Box(modifier = Modifier.weight(1f)) {
@@ -1061,7 +1059,7 @@ fun AlbumScreen(
                     Box(modifier = Modifier.weight(1f)) {
                         StatelessAlbumGrid(
                             gridState = gridState,
-                            padding = PaddingValues(0.dp),
+                            bottomPadding = padding.calculateBottomPadding(),
                             columnCount = columnCount,
                             dynamicList = dynamicList,
                             albumPreviews = albumPreviews,
@@ -1639,11 +1637,10 @@ fun AlbumDetailScreen(
                 }
             }
         ) { padding ->
-            val bottomPadding = if (isSelectionMode) padding.calculateBottomPadding() else WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(top = padding.calculateTopPadding(), bottom = bottomPadding)
+                    .padding(top = padding.calculateTopPadding())
             ) {
                 if (pagedMedia.itemCount == 0 && localSearchQuery.isBlank() && mediaFilter == MediaTypeFilter.ALL) {
                     Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -1689,6 +1686,7 @@ fun AlbumDetailScreen(
                     Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                         StatelessMediaGrid(
                             gridState = gridState,
+                            bottomPadding = padding.calculateBottomPadding(),
                             pagedMedia = pagedMedia,
                             mediaMap = mediaMap,
                             columnCount = detailColumns,
@@ -2073,7 +2071,7 @@ fun ModernDateHeader(modifier: Modifier = Modifier, title: String, onSelectAllFo
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun StatelessAlbumGrid(
-    gridState: LazyGridState, padding: PaddingValues, columnCount: Int, dynamicList: SnapshotStateList<Album>, albumPreviews: ImmutableMap<String, ImmutableList<Uri>>,
+    gridState: LazyGridState, bottomPadding: Dp, columnCount: Int, dynamicList: SnapshotStateList<Album>, albumPreviews: ImmutableMap<String, ImmutableList<Uri>>,
     isSelectionMode: Boolean, selectedIds: ImmutableSet<String>, sortOption: AlbumSort, searchQuery: String, screenWidthDp: Float, deviceTier: DeviceTier, sdCardAlbums: Set<String>,
     onOrderSaved: (List<Album>) -> Unit, onAlbumClick: (Album) -> Unit, onAlbumLongClick: (Album) -> Unit, onDragStateChange: (Boolean) -> Unit
 ) {
@@ -2112,12 +2110,12 @@ fun StatelessAlbumGrid(
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize().padding(padding)) {
+    Box(modifier = Modifier.fillMaxSize()) {
         LazyVerticalGrid(
             columns = GridCells.Fixed(columnCount),
             state = gridState,
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
+            contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 8.dp + bottomPadding),
             verticalArrangement = Arrangement.spacedBy(10.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
@@ -2253,6 +2251,7 @@ fun StatelessAlbumGrid(
 @Composable
 fun StatelessMediaGrid(
     gridState: LazyGridState,
+    bottomPadding: Dp,
     pagedMedia: LazyPagingItems<GalleryGridItem>,
     mediaMap: Map<Long, MediaItem>,
     columnCount: Int,
@@ -2425,7 +2424,7 @@ fun StatelessMediaGrid(
             columns = GridCells.Fixed(columnCount),
             state = gridState,
             modifier = Modifier.fillMaxSize().then(slideModifier),
-            contentPadding = PaddingValues(start = 4.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
+            contentPadding = PaddingValues(start = 4.dp, end = 4.dp, top = 8.dp, bottom = 8.dp + bottomPadding),
             verticalArrangement = Arrangement.spacedBy(4.dp),
             horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {

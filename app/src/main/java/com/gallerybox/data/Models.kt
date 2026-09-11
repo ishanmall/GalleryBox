@@ -885,7 +885,7 @@ interface AlbumThumbnailDao {
         UsageEntity::class,
         DocumentEntity::class
     ],
-    version = 15,
+    version = 17,
     exportSchema = false
 )
 @TypeConverters(Converters::class)

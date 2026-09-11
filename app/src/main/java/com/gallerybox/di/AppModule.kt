@@ -46,10 +46,6 @@ object AppModule {
 
     @Provides
     @Singleton
-    fun provideDocumentDao(database: GalleryDatabase): DocumentDao = database.documentDao()
-
-    @Provides
-    @Singleton
     fun provideAlbumThumbnailDao(database: GalleryDatabase): AlbumThumbnailDao = database.albumThumbnailDao()
 
 }

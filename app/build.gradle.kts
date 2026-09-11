@@ -262,6 +262,10 @@ dependencies {
     implementation("androidx.paging:paging-compose:$pagingVersion")
     implementation("androidx.paging:paging-common:$pagingVersion")
 
+    implementation("androidx.media3:media3-exoplayer-hls:1.4.1")
+    implementation("androidx.media3:media3-exoplayer-dash:1.4.1")
+    implementation("androidx.media3:media3-exoplayer-smoothstreaming:1.4.1")
+
     // Testing
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")

@@ -995,6 +995,10 @@ class MusicService : Service() {
                     updateNotification(digitalPlayer?.isPlaying == true)
                 }
             }
+            override fun onPlayerError(error: PlaybackException) {
+                Log.e("MusicService", "Digital stream error", error)
+                // surface to UI, e.g. via a shared _playerError flow
+            }
         })
 
         setupMediaSession()
@@ -1226,9 +1230,14 @@ class MusicService : Service() {
             .setMediaMetadata(metadata)
             .build()
 
-        digitalPlayer?.setMediaItem(mediaItem)
-        digitalPlayer?.prepare()
-        digitalPlayer?.playWhenReady = true
+        try {
+            digitalPlayer?.setMediaItem(mediaItem)
+            digitalPlayer?.prepare()
+            digitalPlayer?.playWhenReady = true
+        } catch (e: Exception) {
+            Log.e("MusicService", "Failed to start stream: $url", e)
+            // notify RadioViewModel / show a toast instead of crashing
+        }
 
         if (imageUrl.isNotEmpty()) {
             serviceScope.launch { loadDigitalAlbumArt(imageUrl) }
