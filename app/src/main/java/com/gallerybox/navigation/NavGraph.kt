@@ -104,7 +104,8 @@ fun GalleryNavHost(
     securityVM: SecurityViewModel = hiltViewModel(),
     sharedGalleryViewModel: GalleryViewModel = hiltViewModel(),
     sharedMusicViewModel: MusicViewModel = hiltViewModel(),
-    sharedTrashViewModel: TrashViewModel = hiltViewModel()
+    sharedTrashViewModel: TrashViewModel = hiltViewModel(),
+    sharedRadioViewModel: RadioViewModel = hiltViewModel()
 ) {
     val isUnlocked by securityVM.isUnlocked.collectAsState()
     var isAppLockEnabled by remember { mutableStateOf(false) }
@@ -156,6 +157,7 @@ fun GalleryNavHost(
             sharedGalleryViewModel = sharedGalleryViewModel,
             sharedMusicViewModel = sharedMusicViewModel,
             sharedTrashViewModel = sharedTrashViewModel,
+            sharedRadioViewModel = sharedRadioViewModel,
             onLockApp = { securityVM.lock() }
         )
     }
@@ -167,6 +169,7 @@ fun GalleryAppContent(
     sharedGalleryViewModel: GalleryViewModel,
     sharedMusicViewModel: MusicViewModel,
     sharedTrashViewModel: TrashViewModel,
+    sharedRadioViewModel: RadioViewModel,
     onLockApp: () -> Unit
 ) {
     val navController = rememberNavController()
@@ -263,7 +266,8 @@ fun GalleryAppContent(
                 onLock = onLockApp,
                 galleryViewModel = sharedGalleryViewModel,
                 trashViewModel = sharedTrashViewModel,
-                musicViewModel = sharedMusicViewModel
+                musicViewModel = sharedMusicViewModel,
+                radioViewModel = sharedRadioViewModel
             )
         }
     }
@@ -409,7 +413,8 @@ private fun NavGraphBuilder.toolsAndUtilityGraphs(
     onLock: () -> Unit,
     galleryViewModel: GalleryViewModel,
     trashViewModel: TrashViewModel,
-    musicViewModel: MusicViewModel
+    musicViewModel: MusicViewModel,
+    radioViewModel: RadioViewModel
 ) {
     composable<Route.HideAlbums> {
         HideScreen(
@@ -419,7 +424,7 @@ private fun NavGraphBuilder.toolsAndUtilityGraphs(
     }
 
     composable<Route.About> { AboutScreen(onNavigateUp = { nav.popBackStack() }) }
-    composable<Route.Radio> { RadioScreen(viewModel = hiltViewModel<RadioViewModel>(), onBack = { nav.popBackStack() }) }
+    composable<Route.Radio> { RadioScreen(viewModel = radioViewModel, onBack = { nav.popBackStack() }) }
     composable<Route.Equalizer> { EqualizerScreen(viewModel = musicViewModel, onBack = { nav.popBackStack() }) }
     composable<Route.DuoMusic> { DuoMusicScreen(viewModel = musicViewModel, onBack = { nav.popBackStack() }) }
 

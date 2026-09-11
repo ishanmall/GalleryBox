@@ -748,11 +748,13 @@ class GalleryViewModel @Inject constructor(
 
     private fun recalculateDynamicScaling() { val actManager = getApplication<Application>().getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager; val memInfo = ActivityManager.MemoryInfo(); actManager.getMemoryInfo(memInfo); val ramMB = (memInfo.totalMem / (1024 * 1024)).toDouble(); val thermal = getThermalFactor(); val memory = memInfo.availMem.toDouble() / memInfo.totalMem.toDouble(); currentCacheSizeMB = minOf((ramMB * thermal * memory).toInt(), 512); currentPageSize = 64; if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) { searchCache.resize((currentCacheSizeMB * 2).coerceIn(50, 500)); sortedCache.resize(currentCacheSizeMB.coerceIn(20, 250)) } }
 
-    val processedMedia: StateFlow<List<MediaItem>> = combine(_mediaIndexes, _searchQuery.debounce(300), _activeFilter, _activeSort, usageStatsMap) { indexes, query, filter, sort, usageStats ->
+    val processedMedia: StateFlow<List<MediaItem>> = combine(_mediaIndexes, _searchQuery.debounce(300), _activeFilter, _activeSort) { indexes, query, filter, sort ->
         val q = query.trim().lowercase()
         val cacheKey = "${lastMediaStoreGeneration}_${filter.name}_${sort.name}_$q"
         val cached = sortedCache.get(cacheKey)
         if (cached != null) return@combine cached
+
+        val usageStats = usageStatsMap.value
 
         var result = when (filter) {
             MediaTypeFilter.ALL -> indexes.all
@@ -883,7 +885,7 @@ class GalleryViewModel @Inject constructor(
 
         viewModelScope.launch(Dispatchers.Default) {
             combine(trashBin, favoriteIds, secureIds, albumMeta, _hiddenAlbums, _albumSort, manualAlbums) { _ -> }
-                .debounce(120)
+                .debounce(250)
                 .collectLatest {
                     if (_rawMedia.value.isNotEmpty()) {
                         rebuildIndexesAndAlbums(_rawMedia.value)

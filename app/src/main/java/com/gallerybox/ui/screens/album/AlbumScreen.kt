@@ -94,6 +94,7 @@ import androidx.media3.ui.PlayerView
 import androidx.media3.common.MediaItem as Media3Item
 import androidx.paging.compose.LazyPagingItems
 import androidx.paging.compose.collectAsLazyPagingItems
+import androidx.paging.filter
 import coil.compose.AsyncImage
 import coil.imageLoader
 import coil.request.CachePolicy
@@ -118,6 +119,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
@@ -741,15 +743,10 @@ fun AlbumScreen(
         rawAlbumPreviews.mapValues { it.value.toImmutableList() }.toImmutableMap()
     }
 
-    var displayAlbums = remember(vmAlbums, searchQuery, sortOption, favoriteIds, allMedia, optimisticallyRemovedAlbums) {
+    val favAlbumStats = remember(favoriteIds, allMedia.size) {
         val favMedia = allMedia.filter { favoriteIds.contains(it.id) }
-        val virtualAlbumsMutable = vmAlbums.filter { it.id.startsWith("virtual_") && it.id != ID_FAVORITES && albumMatchesQuery(it, searchQuery) }.toMutableList()
         if (favMedia.isNotEmpty()) {
-            val updatedFavAlbum = vmAlbums.find { it.id == ID_FAVORITES }?.copy(
-                mediaCount = favMedia.size,
-                sizeBytes = favMedia.sumOf { it.size },
-                coverUri = favMedia.firstOrNull()?.uri ?: Uri.EMPTY
-            ) ?: Album(
+            Album(
                 ID_FAVORITES,
                 "Favorites",
                 favMedia.firstOrNull()?.uri ?: Uri.EMPTY,
@@ -757,6 +754,18 @@ fun AlbumScreen(
                 favMedia.sumOf { it.size },
                 true
             )
+        } else null
+    }
+
+    val displayAlbums = remember(vmAlbums, searchQuery, sortOption, favAlbumStats, optimisticallyRemovedAlbums) {
+        val virtualAlbumsMutable = vmAlbums.filter { it.id.startsWith("virtual_") && it.id != ID_FAVORITES && albumMatchesQuery(it, searchQuery) }.toMutableList()
+        if (favAlbumStats != null) {
+            val updatedFavAlbum = vmAlbums.find { it.id == ID_FAVORITES }?.copy(
+                mediaCount = favAlbumStats.mediaCount,
+                sizeBytes = favAlbumStats.sizeBytes,
+                coverUri = favAlbumStats.coverUri
+            ) ?: favAlbumStats
+
             if (albumMatchesQuery(updatedFavAlbum, searchQuery)) {
                 virtualAlbumsMutable.add(updatedFavAlbum)
             }
@@ -790,7 +799,7 @@ fun AlbumScreen(
         (sortedVirtualAlbums + sortedUserAlbums).toImmutableList()
     }
 
-    var sdCardAlbums = remember(allMedia) {
+    val sdCardAlbums = remember(allMedia.size) {
         allMedia.filter { item ->
             if (item.volumeName.isNotBlank()) {
                 item.volumeName != MediaStore.VOLUME_EXTERNAL_PRIMARY && item.volumeName != "external"
@@ -801,6 +810,7 @@ fun AlbumScreen(
             }
         }.map { it.bucketId }.toSet()
     }
+
     val dynamicList = remember { mutableStateListOf<Album>() }
 
     LaunchedEffect(displayAlbums) {
@@ -1298,12 +1308,13 @@ fun AlbumDetailScreen(
     var mediaFilter by remember { mutableStateOf(MediaTypeFilter.ALL) }
     var isSelectionMode by remember { mutableStateOf(false) }
 
-    var openedMediaItem by remember {
-        mutableStateOf<MediaItem?>(null)
-    }
+    var openedMediaItem by remember { mutableStateOf<MediaItem?>(null) }
 
     val pagedMediaFlow = remember(albumId, mediaFilter, debouncedSearchQuery) {
         viewModel.getPagedMediaForAlbumStream(albumId, mediaFilter, debouncedSearchQuery)
+            .map { pagingData ->
+                pagingData.filter { it is GalleryGridItem.Media }
+            }
     }
     val pagedMedia = pagedMediaFlow.collectAsLazyPagingItems()
 
@@ -1920,7 +1931,6 @@ fun AlbumDetailScreen(
         )
     }
 
-
     val snapshotItems = remember(pagedMedia.itemSnapshotList) {
         pagedMedia.itemSnapshotList.items.filterIsInstance<GalleryGridItem.Media>().map { mediaMap[it.item.id] ?: it.item }
     }
@@ -2178,7 +2188,8 @@ fun StatelessAlbumGrid(
                                     change.consume()
                                     dragOffset += delta
                                     val now = System.currentTimeMillis()
-                                    if (now - lastSwapCheckMs > 32) {
+                                    val swapInterval = if (deviceTier == DeviceTier.LOW) 48 else 32
+                                    if (now - lastSwapCheckMs > swapInterval) {
                                         checkAndPerformSwap()
                                         lastSwapCheckMs = now
                                     }

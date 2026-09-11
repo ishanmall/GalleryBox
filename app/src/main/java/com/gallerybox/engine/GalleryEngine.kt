@@ -78,9 +78,36 @@ class GalleryEngine @Inject constructor(@ApplicationContext private val context:
     }
 
     @Deprecated("Loads entire gallery into memory. Use getMediaPagingSource() for UI displaying.")
-    suspend fun fetchAllMedia(): List<MediaItem> = fetchMedia(null, null, null, null)
+    suspend fun fetchAllMedia(): List<MediaItem> = withContext(Dispatchers.IO) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            fetchMedia(null, null, null, null)
+        } else {
+            // LIMIT-based paged fallback for pre-R devices instead of loading everything into a single cursor
+            // This prevents the 1-3 sec freeze caused by CursorWindow allocation on massive sets
+            val allMedia = mutableListOf<MediaItem>()
+            var afterDate: Long? = null
+            var afterId: Long? = null
+            while (isActive) {
+                val chunk = fetchMedia(null, afterDate, afterId, 1000)
+                if (chunk.isEmpty()) break
+                allMedia.addAll(chunk)
+                val lastItem = chunk.last()
+                afterDate = lastItem.dateAdded
+                afterId = lastItem.id
+            }
+            allMedia
+        }
+    }
 
-    suspend fun fetchIncrementalMedia(lastGeneration: Long): List<MediaItem> = fetchMedia(lastGeneration, null, null, null)
+    suspend fun fetchIncrementalMedia(lastGeneration: Long): List<MediaItem> = withContext(Dispatchers.IO) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            fetchMedia(lastGeneration, null, null, null)
+        } else {
+            // On pre-R devices, we don't have generation tracking, so incremental syncs fall back
+            // to pulling just the latest N items instead of doing a full table scan every time.
+            fetchMedia(null, null, null, 500)
+        }
+    }
 
     suspend fun fetchMedia(minGeneration: Long?, afterDateAdded: Long?, afterId: Long?, limit: Int?): List<MediaItem> = withContext(Dispatchers.IO) {
         val mediaList = mutableListOf<MediaItem>()

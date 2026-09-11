@@ -176,17 +176,13 @@ class PlayerGestureEngine(private val context: Context, private val activity: Ac
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).toFloat()
 
-    fun onStart(state: PlayerGestureState, currentPosition: Long) {
+    fun onStart(state: PlayerGestureState, currentPosition: Long, cachedSystemBrightness: Float) {
         state.mode = GestureMode.NONE
         accumulatedX = 0f
         accumulatedY = 0f
         state.volume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) / maxVolume
         val currentBright = activity?.window?.attributes?.screenBrightness ?: -1f
-        state.brightness = if (currentBright >= 0f) currentBright else {
-            try {
-                Settings.System.getInt(activity?.contentResolver, Settings.System.SCREEN_BRIGHTNESS) / 255f
-            } catch (_: Exception) { 0.5f }
-        }
+        state.brightness = if (currentBright >= 0f) currentBright else cachedSystemBrightness
     }
 
     fun onDrag(state: PlayerGestureState, change: PointerInputChange, dragAmount: Offset, width: Float, height: Float, currentPosition: Long) {
@@ -340,6 +336,15 @@ fun VideoPlayerContent(
     var manualRotateOverride by remember { mutableStateOf(false) }
     var originalBrightness by remember { mutableFloatStateOf(-1f) }
 
+    var cachedSystemBrightness by remember { mutableFloatStateOf(-1f) }
+
+    LaunchedEffect(Unit) {
+        cachedSystemBrightness = withContext(Dispatchers.IO) {
+            try { Settings.System.getInt(context.contentResolver, Settings.System.SCREEN_BRIGHTNESS) / 255f }
+            catch (_: Exception) { 0.5f }
+        }
+    }
+
     var videoSize by remember { mutableStateOf(VideoSize.UNKNOWN) }
 
     DisposableEffect(activity) {
@@ -446,20 +451,24 @@ fun VideoPlayerContent(
         }
     }
 
-    val resetControlsTimer: () -> Unit = remember(scope, isPlaying, isLocked, isInPiPMode) {
+    val isPlayingState = rememberUpdatedState(isPlaying)
+    val isLockedState = rememberUpdatedState(isLocked)
+    val isInPiPState = rememberUpdatedState(isInPiPMode)
+
+    val resetControlsTimer: () -> Unit = remember(scope) {
         {
             showControls = true
             hideJob?.cancel()
             hideJob = scope.launch {
                 delay(3000)
-                if (isPlaying && !isLocked && !isInPiPMode) {
+                if (isPlayingState.value && !isLockedState.value && !isInPiPState.value) {
                     showControls = false
                 }
             }
         }
     }
 
-    val onTogglePlay = remember(viewModel, haptic, resetControlsTimer) {
+    val onTogglePlay = remember(viewModel, haptic) {
         {
             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
             viewModel.togglePlayPause()
@@ -467,21 +476,21 @@ fun VideoPlayerContent(
         }
     }
 
-    val onNextClick = remember(viewModel, resetControlsTimer) {
+    val onNextClick = remember(viewModel) {
         {
             viewModel.playNextVideo()
             resetControlsTimer()
         }
     }
 
-    val onPrevClick = remember(viewModel, resetControlsTimer) {
+    val onPrevClick = remember(viewModel) {
         {
             viewModel.playPreviousVideo()
             resetControlsTimer()
         }
     }
 
-    val onSeekAction: (Float) -> Unit = remember(gestureState, resetControlsTimer) {
+    val onSeekAction: (Float) -> Unit = remember(gestureState) {
         {
             gestureState.seekPosition = it
             gestureState.isSeeking = true
@@ -489,7 +498,7 @@ fun VideoPlayerContent(
         }
     }
 
-    val onSeekFinishedAction = remember(viewModel, gestureState, resetControlsTimer) {
+    val onSeekFinishedAction = remember(viewModel, gestureState) {
         {
             viewModel.seekTo(gestureState.seekPosition.toLong())
             gestureState.isSeeking = false
@@ -504,14 +513,14 @@ fun VideoPlayerContent(
         }
     }
 
-    val onRotateAction = remember(resetControlsTimer) {
+    val onRotateAction = remember {
         {
             manualRotateOverride = !manualRotateOverride
             resetControlsTimer()
         }
     }
 
-    val onAspectRatioAction = remember(resetControlsTimer) {
+    val onAspectRatioAction = remember {
         {
             val modes = PremiumResizeMode.entries.toTypedArray()
             resizeMode = modes[(resizeMode.ordinal + 1) % modes.size]
@@ -644,7 +653,7 @@ fun VideoPlayerContent(
                     if (isLocked) return@pointerInput
                     detectDragGestures(
                         onDragStart = {
-                            gestureEngine.onStart(gestureState, currentPosition)
+                            gestureEngine.onStart(gestureState, currentPosition, cachedSystemBrightness)
                             scope.launch(Dispatchers.IO) {
                                 currentVideoUri?.let { uri -> frameLoader.setSource(Uri.parse(uri)) }
                             }
@@ -1038,7 +1047,13 @@ private fun PlaybackMenuSheet(
 
     @kotlin.OptIn(ExperimentalMaterial3Api::class)
     ModalBottomSheet(onDismissRequest = onDismissRequest, shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)) {
-        AnimatedContent(targetState = currentSubMenu, label = "MenuTransition") { subMenu ->
+        AnimatedContent(
+            targetState = currentSubMenu,
+            transitionSpec = {
+                (slideInHorizontally { it } + fadeIn()) togetherWith (slideOutHorizontally { -it } + fadeOut())
+            },
+            label = "MenuTransition"
+        ) { subMenu ->
             when (subMenu) {
                 "SPEED" -> {
                     LazyColumn(Modifier.padding(horizontal = 24.dp, vertical = 12.dp)) {

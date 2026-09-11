@@ -520,7 +520,10 @@ class RadioViewModel @Inject constructor(private val app: Application) : Android
         observeJob?.cancel()
         digitalSearchJob?.cancel()
         if (isBound) {
-            app.unbindService(serviceConnection)
+            try {
+                app.unbindService(serviceConnection)
+            } catch (e: IllegalArgumentException) {
+            }
             isBound = false
         }
         super.onCleared()

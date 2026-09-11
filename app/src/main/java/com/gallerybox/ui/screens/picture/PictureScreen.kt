@@ -104,6 +104,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
@@ -111,6 +112,10 @@ import java.util.ArrayList
 import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
+
+private val PremiumSpring = spring<Float>(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMediumLow)
+private val PremiumEnter = scaleIn(PremiumSpring) + fadeIn(tween(180, easing = FastOutSlowInEasing))
+private val PremiumExit = scaleOut(tween(120)) + fadeOut(tween(120))
 
 enum class UiMediaFilter(val label: String) {
     ALL("All"),
@@ -239,10 +244,9 @@ fun SamsungFastScrollbar(
     }
 
     LaunchedEffect(gridState) {
-        snapshotFlow {
-            gridState.firstVisibleItemIndex
-        }.collect { index ->
-            if (!isDragging && trackHeightPx > 0f) {
+        snapshotFlow { gridState.firstVisibleItemIndex }
+            .filter { !isDragging && !gridState.isScrollInProgress && trackHeightPx > 0f }
+            .collect { index ->
                 val count = pagedMedia.itemCount.coerceAtLeast(1)
                 val adjusted = (index - indexOffset).coerceIn(0, count - 1)
 
@@ -251,7 +255,6 @@ fun SamsungFastScrollbar(
 
                 thumbOffsetPx = (fraction * maxThumbOffset).coerceIn(0f, maxThumbOffset)
             }
-        }
     }
 
     var lastDragUpdateMs by remember { mutableLongStateOf(0L) }
@@ -645,8 +648,8 @@ fun PictureScreen(
                 if (!isSelectionMode && showScrollToTop) {
                     AnimatedVisibility(
                         visible = true,
-                        enter = if (deviceTier == DeviceTier.LOW) fadeIn(tween(80)) else fadeIn() + scaleIn(),
-                        exit = if (deviceTier == DeviceTier.LOW) fadeOut(tween(80)) else fadeOut() + scaleOut()
+                        enter = if (deviceTier == DeviceTier.LOW) fadeIn(tween(80)) else PremiumEnter,
+                        exit = if (deviceTier == DeviceTier.LOW) fadeOut(tween(80)) else PremiumExit
                     ) {
                         FloatingActionButton(
                             onClick = { scope.launch { gridState.scrollToItem(0) } },
@@ -676,7 +679,7 @@ fun PictureScreen(
                         targetState = activeFilter,
                         transitionSpec = {
                             if (deviceTier == DeviceTier.LOW) fadeIn(tween(0)) togetherWith fadeOut(tween(0))
-                            else fadeIn() togetherWith fadeOut()
+                            else PremiumEnter togetherWith PremiumExit
                         },
                         label = "filter_transition"
                     ) { targetFilter: UiMediaFilter ->
@@ -1936,6 +1939,9 @@ fun GalleryGridContent(
     val currentIsSelectionMode by rememberUpdatedState(isSelectionMode)
     val currentOnSelectionModeChange by rememberUpdatedState(onSelectionModeChange)
 
+    val placeholderColor = MaterialTheme.colorScheme.surfaceContainerHighest
+    val placeholderPainter = remember(placeholderColor) { ColorPainter(placeholderColor) }
+
     fun indexAt(offset: Offset): Int {
         val layoutInfo = gridState.layoutInfo
         val itemInfo = layoutInfo.visibleItemsInfo.find {
@@ -2132,6 +2138,7 @@ fun GalleryGridContent(
                             isSelected = selectedIds.contains(mediaId),
                             isSelectionMode = isSelectionMode,
                             deviceTier = deviceTier,
+                            placeholderPainter = placeholderPainter,
                             onClick = { onItemClick(mediaItem) },
                             onLongClick = { onItemLongClick(mediaItem) }
                         )
@@ -2159,6 +2166,7 @@ fun ModernMediaGridTile(
     isSelected: Boolean,
     isSelectionMode: Boolean,
     deviceTier: DeviceTier,
+    placeholderPainter: ColorPainter,
     onClick: () -> Unit,
     onLongClick: () -> Unit
 ) {
@@ -2202,12 +2210,9 @@ fun ModernMediaGridTile(
                 .build()
         }
 
-        val placeholderColor = MaterialTheme.colorScheme.surfaceContainerHighest
-        val placeholder = remember(placeholderColor) { ColorPainter(placeholderColor) }
-
         AsyncImage(
             model = request,
-            placeholder = placeholder,
+            placeholder = placeholderPainter,
             contentDescription = null,
             contentScale = ContentScale.Crop,
             filterQuality = FilterQuality.Low,
@@ -2279,8 +2284,8 @@ fun SelectionOverlay(
                     .fillMaxSize()
                     .background(if (isSelected) Color.White.copy(alpha = 0.25f) else Color.Transparent)
             )
-            val enterAnim = if (deviceTier == DeviceTier.LOW) fadeIn(tween(100)) else scaleIn() + fadeIn()
-            val exitAnim = if (deviceTier == DeviceTier.LOW) fadeOut(tween(100)) else scaleOut() + fadeOut()
+            val enterAnim = if (deviceTier == DeviceTier.LOW) fadeIn(tween(100)) else PremiumEnter
+            val exitAnim = if (deviceTier == DeviceTier.LOW) fadeOut(tween(100)) else PremiumExit
             AnimatedVisibility(
                 visible = isSelected,
                 enter = enterAnim,

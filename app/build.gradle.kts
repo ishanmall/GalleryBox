@@ -23,7 +23,7 @@ android {
         applicationId = "com.gallerybox"
         minSdk = 31
         targetSdk = 36
-        versionCode = 93
+        versionCode = 94
 
         versionName = "1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -262,8 +262,6 @@ dependencies {
     implementation("androidx.paging:paging-compose:$pagingVersion")
     implementation("androidx.paging:paging-common:$pagingVersion")
 
-    implementation("androidx.core:core-splashscreen:1.0.1")
-
     // Testing
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
@@ -271,4 +269,5 @@ dependencies {
     androidTestImplementation("androidx.test:runner:1.5.2")
     androidTestImplementation("androidx.test:rules:1.5.0")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.5.1")
+
 }
