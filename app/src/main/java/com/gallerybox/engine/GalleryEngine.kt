@@ -1,7 +1,12 @@
+// These annotations tell the Android compiler to ignore certain warnings.
+// Think of it as telling an overly strict spell-checker to ignore specific words because we know what we are doing.
 @file:Suppress("unused", "DEPRECATION", "UnstableApiUsage", "MemberVisibilityCanBePrivate")
 @file:OptIn(androidx.media3.common.util.UnstableApi::class)
 package com.gallerybox.engine
 
+// --- IMPORTS ---
+// This is the "toolbox" area. We are fetching all the tools we need to build this file.
+// We are bringing in tools for connecting to the phone's hard drive, managing video playback, and sending push notifications.
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -63,27 +68,35 @@ import kotlin.math.floor
 import kotlin.math.log2
 import kotlin.random.Random
 
+/**
+ * --- THE FILE CABINET SEARCHER (GalleryEngine) ---
+ * This class is responsible for digging through the deep Android file system (`MediaStore`)
+ * to find all the photos and videos on the phone.
+ *
+ * `@Singleton` means only ONE instance of this searcher exists in the entire app. It's shared by everyone.
+ */
 @UnstableApi
 @Singleton
 class GalleryEngine @Inject constructor(@ApplicationContext private val context: Context) {
 
+    // A small digital notebook to save user settings, like which albums they have chosen to hide.
     private val prefs = context.getSharedPreferences("gallery_engine_prefs", Context.MODE_PRIVATE)
 
     /**
-     * Provides a robust PagingSource to load media directly from MediaStore in chunks.
-     * Use this in the ViewModel instead of `fetchAllMedia()` to prevent memory explosion on large galleries.
+     * Provides a "Waiter" (`PagingSource`) to the screen.
+     * Instead of grabbing 10,000 photos at once and crashing the phone, the Waiter grabs them in small chunks.
      */
     fun getMediaPagingSource(): PagingSource<GalleryPagingSource.Cursor, MediaItem> {
         return GalleryPagingSource(context, this)
     }
 
+    // Older code that tries to load every single photo at once. We marked it "Deprecated" to warn ourselves not to use it anymore.
     @Deprecated("Loads entire gallery into memory. Use getMediaPagingSource() for UI displaying.")
     suspend fun fetchAllMedia(): List<MediaItem> = withContext(Dispatchers.IO) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             fetchMedia(null, null, null, null)
         } else {
-            // LIMIT-based paged fallback for pre-R devices instead of loading everything into a single cursor
-            // This prevents the 1-3 sec freeze caused by CursorWindow allocation on massive sets
+            // Older phones crash if you ask for too much at once, so we break it into chunks of 1000.
             val allMedia = mutableListOf<MediaItem>()
             var afterDate: Long? = null
             var afterId: Long? = null
@@ -99,16 +112,21 @@ class GalleryEngine @Inject constructor(@ApplicationContext private val context:
         }
     }
 
+    // Only fetches NEW photos that were taken since the last time we checked.
     suspend fun fetchIncrementalMedia(lastGeneration: Long): List<MediaItem> = withContext(Dispatchers.IO) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            // Android 11+ supports tracking exactly which files are new
             fetchMedia(lastGeneration, null, null, null)
         } else {
-            // On pre-R devices, we don't have generation tracking, so incremental syncs fall back
-            // to pulling just the latest N items instead of doing a full table scan every time.
+            // Older phones don't know what is new, so we just grab the last 500 photos and hope that's enough.
             fetchMedia(null, null, null, 500)
         }
     }
 
+    /**
+     * THE MASTER DATABASE QUERY.
+     * This is where we ask Android's internal database (`MediaStore`) to give us information about the photos.
+     */
     suspend fun fetchMedia(minGeneration: Long?, afterDateAdded: Long?, afterId: Long?, limit: Int?): List<MediaItem> = withContext(Dispatchers.IO) {
         val mediaList = mutableListOf<MediaItem>()
         val resolver = context.contentResolver
@@ -119,6 +137,7 @@ class GalleryEngine @Inject constructor(@ApplicationContext private val context:
             MediaStore.Files.getContentUri("external")
         }
 
+        // What pieces of information do we want about each file? (Name, Date, Size, etc.)
         val proj = mutableListOf(
             MediaStore.Files.FileColumns._ID,
             MediaStore.Files.FileColumns.DISPLAY_NAME,
@@ -126,10 +145,11 @@ class GalleryEngine @Inject constructor(@ApplicationContext private val context:
             MediaStore.Files.FileColumns.SIZE,
             MediaStore.Files.FileColumns.MIME_TYPE,
             MediaStore.Files.FileColumns.MEDIA_TYPE,
-            MediaStore.Files.FileColumns.BUCKET_ID,
-            MediaStore.Files.FileColumns.BUCKET_DISPLAY_NAME,
-            MediaStore.MediaColumns.DURATION
+            MediaStore.Files.FileColumns.BUCKET_ID, // The ID of the folder it's in
+            MediaStore.Files.FileColumns.BUCKET_DISPLAY_NAME, // The Name of the folder it's in
+            MediaStore.MediaColumns.DURATION // How long the video is
         ).apply {
+            // Ask for newer Android features if the phone supports them
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 add(MediaStore.MediaColumns.RELATIVE_PATH)
                 add(MediaStore.MediaColumns.VOLUME_NAME)
@@ -144,6 +164,7 @@ class GalleryEngine @Inject constructor(@ApplicationContext private val context:
             }
         }
 
+        // The filter: "Only give us files that are Photos or Videos"
         var sel = "(${MediaStore.Files.FileColumns.MEDIA_TYPE}=${MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE} OR " +
                 "${MediaStore.Files.FileColumns.MEDIA_TYPE}=${MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO})"
         val args = mutableListOf<String>()
@@ -153,7 +174,7 @@ class GalleryEngine @Inject constructor(@ApplicationContext private val context:
             args.add(minGeneration.toString())
         }
 
-        // Keyset instead of OFFSET: strictly "older than the last row we saw"
+        // Paging Logic: "Only give us photos that are OLDER than the last photo we looked at."
         if (afterDateAdded != null && afterId != null) {
             sel += " AND (${MediaStore.Files.FileColumns.DATE_ADDED} < ? OR " +
                     "(${MediaStore.Files.FileColumns.DATE_ADDED} = ? AND ${MediaStore.Files.FileColumns._ID} < ?))"
@@ -162,6 +183,7 @@ class GalleryEngine @Inject constructor(@ApplicationContext private val context:
             args.add(afterId.toString())
         }
 
+        // Send the request to Android
         val cursor = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && limit != null) {
             val bundle = Bundle().apply {
                 putInt(android.content.ContentResolver.QUERY_ARG_LIMIT, limit)
@@ -177,7 +199,9 @@ class GalleryEngine @Inject constructor(@ApplicationContext private val context:
             resolver.query(uri, proj.toTypedArray(), sel, if (args.isEmpty()) null else args.toTypedArray(), sortOrder)
         }
 
+        // Read the results
         cursor?.use { c ->
+            // Find which column holds which piece of data
             val idC = c.getColumnIndexOrThrow(MediaStore.Files.FileColumns._ID)
             val nameC = c.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DISPLAY_NAME)
             val dateC = c.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DATE_ADDED)
@@ -198,8 +222,8 @@ class GalleryEngine @Inject constructor(@ApplicationContext private val context:
             val hiddenItemsSet = getHiddenItems()
 
             while (c.moveToNext()) {
-                if (trashC != -1 && c.getInt(trashC) == 1) continue
-                if (mediaList.size % 200 == 0) coroutineContext.ensureActive()
+                if (trashC != -1 && c.getInt(trashC) == 1) continue // Skip files that are in the trash bin
+                if (mediaList.size % 200 == 0) coroutineContext.ensureActive() // Make sure the user didn't close the app while we were loading
 
                 val type = c.getInt(typeC)
                 val isImg = type == MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE
@@ -219,11 +243,14 @@ class GalleryEngine @Inject constructor(@ApplicationContext private val context:
                     path.substringBeforeLast('/', "")
                 }
 
+                // If a file or folder starts with a period (.), it's a hidden system file. Don't show it.
                 val isFileHidden = name.startsWith(".") || relP.split("/").any { it.startsWith(".") }
                 if (isFileHidden) continue
+
+                // If the user manually hit the "Hide" button on this item, skip it.
                 if (hiddenItemsSet.contains(id.toString())) continue
 
-                // Proper multi-volume URI support
+                // Build the clickable link (URI) so we can open the photo later.
                 val baseUri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && volumeName.isNotBlank()) {
                     if (isImg) MediaStore.Images.Media.getContentUri(volumeName) else MediaStore.Video.Media.getContentUri(volumeName)
                 } else {
@@ -233,6 +260,7 @@ class GalleryEngine @Inject constructor(@ApplicationContext private val context:
                 val cUri = ContentUris.withAppendedId(baseUri, id)
                 val dSec = c.getLong(dateC)
 
+                // Box all this data up and put it in our final list.
                 mediaList.add(
                     MediaItem(
                         id = id,
@@ -260,6 +288,7 @@ class GalleryEngine @Inject constructor(@ApplicationContext private val context:
         return@withContext mediaList
     }
 
+    // Helper functions for reading/writing to the digital notebook
     fun getHiddenItems(): Set<String> = prefs.getStringSet("hidden_items", emptySet()) ?: emptySet()
     fun getHiddenAlbums(): Set<String> = prefs.getStringSet("hidden_albums", emptySet()) ?: emptySet()
 
@@ -271,12 +300,17 @@ class GalleryEngine @Inject constructor(@ApplicationContext private val context:
         prefs.edit { putStringSet("hidden_albums", (getHiddenAlbums() + ids).toSet()) }
     }
 
+    // Math to figure out how much to shrink a giant photo so it fits on screen without crashing.
     fun calculateInSampleSize(origW: Int, origH: Int, targetW: Int, targetH: Int): Int {
         if (origH <= targetH && origW <= targetW) return 1
         val ratio = Math.max(origW.toFloat() / targetW, origH.toFloat() / targetH)
         return Math.pow(2.0, floor(log2(ratio.toDouble()))).toInt().coerceAtLeast(1)
     }
 
+    /**
+     * DUPLICATE FINDER - PASS 1 (The Quick Glance)
+     * Reads just the first little bit of a file and creates a short fingerprint. Very fast.
+     */
     private fun getQuickHash(item: MediaItem): String {
         return try {
             val md = MessageDigest.getInstance("MD5")
@@ -291,6 +325,10 @@ class GalleryEngine @Inject constructor(@ApplicationContext private val context:
         }
     }
 
+    /**
+     * DUPLICATE FINDER - PASS 2 (The Deep Inspection)
+     * Reads the ENTIRE file start to finish to create a perfect fingerprint. Very slow, so we only do it if the Quick Glance found a match.
+     */
     private fun getFullHash(item: MediaItem): String {
         return try {
             val md = MessageDigest.getInstance("SHA-256")
@@ -307,17 +345,20 @@ class GalleryEngine @Inject constructor(@ApplicationContext private val context:
         }
     }
 
+    // The Master Duplicate Scanner
     suspend fun findDuplicates(media: List<MediaItem>): List<List<MediaItem>> = withContext(Dispatchers.IO) {
+        // Step 1: Only look at files that have the EXACT same file size. If they are 1 byte off, they aren't duplicates.
         val bySize = media.groupBy { it.size }.filter { it.value.size > 1 }.values
+        // Step 2: Out of those, only look at files with the EXACT same Width and Height resolution.
         val byRes = bySize.flatMap { group -> group.groupBy { "${it.width}x${it.height}" }.filter { it.value.size > 1 }.values }
 
         val duplicates = mutableListOf<List<MediaItem>>()
-        val cores = Runtime.getRuntime().availableProcessors()
+        val cores = Runtime.getRuntime().availableProcessors() // Use all the phone's CPU brains to do this fast
         val activeThreads = maxOf(1, cores - 1)
         val dispatcher = Dispatchers.IO.limitedParallelism(activeThreads)
 
         byRes.forEach { group ->
-            // Staged duplicate detection: Pass 1 - Quick hash (first 4KB)
+            // Staged duplicate detection: Pass 1 - Quick hash
             val byQuickHash = ConcurrentHashMap<String, MutableList<MediaItem>>()
             withContext(dispatcher) {
                 group.map { item ->
@@ -350,16 +391,22 @@ class GalleryEngine @Inject constructor(@ApplicationContext private val context:
     }
 }
 
+/**
+ * --- THE WAITER (GalleryPagingSource) ---
+ * Grabs chunks of photos from the database and delivers them to the screen so it doesn't freeze.
+ */
 class GalleryPagingSource(
     private val context: Context,
     private val engine: GalleryEngine
 ) : PagingSource<GalleryPagingSource.Cursor, MediaItem>() {
 
+    // A bookmark telling the Waiter exactly where they left off
     data class Cursor(val dateAdded: Long, val id: Long)
 
     override suspend fun load(params: LoadParams<Cursor>): LoadResult<Cursor, MediaItem> {
-        val after = params.key
+        val after = params.key // The bookmark
         return try {
+            // Run to the kitchen (database) and grab the next chunk
             val media = engine.fetchMedia(
                 minGeneration = null,
                 afterDateAdded = after?.dateAdded,
@@ -367,20 +414,26 @@ class GalleryPagingSource(
                 limit = params.loadSize
             )
             val last = media.lastOrNull()
+
+            // Return the tray of photos to the screen, and write a new bookmark for next time.
             LoadResult.Page(
                 data = media,
-                prevKey = null, // DESC-only feed; no meaningful "newer" page to prepend
+                prevKey = null,
                 nextKey = if (media.isEmpty() || media.size < params.loadSize) null
                 else Cursor(last!!.dateAdded, last.id)
             )
         } catch (e: Exception) {
-            LoadResult.Error(e)
+            LoadResult.Error(e) // Dropped the tray!
         }
     }
 
     override fun getRefreshKey(state: PagingState<Cursor, MediaItem>): Cursor? = null
 }
 
+/**
+ * --- THE DVD PLAYER (VideoPlaybackService) ---
+ * Runs in the background and plays video audio even if you swipe the video down to the corner of your screen.
+ */
 class VideoPlaybackService : MediaSessionService() {
     private var mediaSession: MediaSession? = null
     private var player: ExoPlayer? = null
@@ -390,10 +443,11 @@ class VideoPlaybackService : MediaSessionService() {
         super.onCreate()
 
         val rFactory = DefaultRenderersFactory(this).apply {
-            setEnableDecoderFallback(true)
+            setEnableDecoderFallback(true) // Try hard to play weird video formats
             setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
         }
 
+        // How much of the video should we load ahead of time so it doesn't buffer?
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(2000, 5000, 500, 1000)
             .build()
@@ -401,7 +455,7 @@ class VideoPlaybackService : MediaSessionService() {
         player = ExoPlayer.Builder(this)
             .setRenderersFactory(rFactory)
             .setLoadControl(loadControl)
-            .setSeekBackIncrementMs(10000)
+            .setSeekBackIncrementMs(10000) // Double tap goes back 10 sec
             .setSeekForwardIncrementMs(10000)
             .build()
             .apply {
@@ -412,9 +466,10 @@ class VideoPlaybackService : MediaSessionService() {
                         .build(),
                     true
                 )
-                setHandleAudioBecomingNoisy(true)
+                setHandleAudioBecomingNoisy(true) // Pause if headphones are unplugged
             }
 
+        // Connect the DVD player to the Android operating system so it shows up in the phone's notification bar
         val callback = object : MediaSession.Callback {
             override fun onAddMediaItems(
                 mediaSession: MediaSession,
@@ -448,6 +503,8 @@ class VideoPlaybackService : MediaSessionService() {
     }
 }
 
+// --- STATE MACHINES ---
+// A list of possible outcomes when trying to move or copy files.
 sealed class MediaOpResult {
     data class Success(
         val uris: List<Uri> = emptyList(),
@@ -474,6 +531,7 @@ sealed class MediaOpResult {
     data object Cancelled : MediaOpResult()
 }
 
+// A box holding info about the Folder we want to move photos into.
 data class TargetAlbum(
     val id: String = "",
     val name: String,
@@ -485,11 +543,16 @@ data class TargetAlbum(
     val isSdCard: Boolean = false
 )
 
+/**
+ * --- THE MOVER (MediaOperationEngine) ---
+ * Physically handles copying, pasting, and deleting massive files on the hard drive.
+ */
 @Singleton
 class MediaOperationEngine @Inject constructor(@ApplicationContext private val context: Context) {
 
     private val prefs = context.getSharedPreferences("saf_prefs", Context.MODE_PRIVATE)
 
+    // Remembers if a specific folder is located on an external SD card (which requires special rules to access).
     fun markAlbumAsSdCard(bucketId: String) {
         if (bucketId.isBlank()) return
         val current = prefs.getStringSet("sd_card_album_ids", emptySet()) ?: emptySet()
@@ -499,6 +562,7 @@ class MediaOperationEngine @Inject constructor(@ApplicationContext private val c
     fun isSdCardAlbum(bucketId: String): Boolean =
         (prefs.getStringSet("sd_card_album_ids", emptySet()) ?: emptySet()).contains(bucketId)
 
+    // Saves the "Master Key" to the SD card so we don't have to ask the user for permission every single time.
     fun saveSafTreeUri(uri: Uri) {
         context.contentResolver.takePersistableUriPermission(
             uri,
@@ -512,12 +576,14 @@ class MediaOperationEngine @Inject constructor(@ApplicationContext private val c
         return Uri.parse(uriStr)
     }
 
+    // Creates the popup asking the user to select their SD card folder.
     private fun createSafIntent(): Intent {
         return Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
         }
     }
 
+    // Navigates through the SD card using the Master Key to find or create a specific folder.
     private fun getOrCreateSafDirectory(relativePath: String): DocumentFile? {
         val treeUri = getSafTreeUri() ?: return null
         var currentDoc = DocumentFile.fromTreeUri(context, treeUri) ?: return null
@@ -559,23 +625,26 @@ class MediaOperationEngine @Inject constructor(@ApplicationContext private val c
         return if (isVideo) "Movies/${targetAlbum.name}/" else "Pictures/${targetAlbum.name}/"
     }
 
+    // Creates a new, completely empty folder on the phone.
     suspend fun createAlbum(targetAlbum: TargetAlbum): MediaOpResult = withContext(Dispatchers.IO) {
         val safePath = getResolvedRelativePath(targetAlbum, false)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            // Android Q+: Relies on MediaStore relative path mapping during media insertion.
+            // Android 10+: You don't need to manually create folders. They just magically exist when you put a file in them.
             return@withContext MediaOpResult.Success()
         }
 
+        // Older Android: Actually build the physical folder
         val root = Environment.getExternalStorageDirectory()
         val albumDir = File(root, safePath)
 
         if (!albumDir.exists() && !albumDir.mkdirs()) {
+            // If it failed, maybe they are trying to build it on an SD card?
             val safDir = getOrCreateSafDirectory(safePath)
             if (safDir == null) {
                 val safUri = getSafTreeUri()
                 if (safUri == null) {
-                    return@withContext MediaOpResult.SafPermissionRequired(createSafIntent())
+                    return@withContext MediaOpResult.SafPermissionRequired(createSafIntent()) // We need the Master Key!
                 }
                 return@withContext MediaOpResult.Failed("Could not create physical directory on external storage.")
             }
@@ -583,6 +652,7 @@ class MediaOperationEngine @Inject constructor(@ApplicationContext private val c
         MediaOpResult.Success()
     }
 
+    // Copies files from one folder to another.
     suspend fun copyMedia(
         items: List<MediaItem>,
         targetAlbum: TargetAlbum,
@@ -598,8 +668,9 @@ class MediaOperationEngine @Inject constructor(@ApplicationContext private val c
         try {
             for ((index, item) in items.withIndex()) {
                 if (!isActive) throw CancellationException("Operation cancelled by user")
-                onProgress("Copying", index + 1, items.size)
+                onProgress("Copying", index + 1, items.size) // Update the progress bar
 
+                // If a file named "dog.jpg" already exists in the destination folder, rename this one to "dog (1).jpg"
                 val uniqueName = getUniqueName(item.name, existingNames)
                 existingNames.add(uniqueName)
                 val relativePath = getResolvedRelativePath(targetAlbum, item.isVideo)
@@ -622,12 +693,13 @@ class MediaOperationEngine @Inject constructor(@ApplicationContext private val c
                             else MediaStore.Images.Media.EXTERNAL_CONTENT_URI
                         }
 
+                        // Create the empty blank file in the new location
                         val contentValues = ContentValues().apply {
                             put(MediaStore.MediaColumns.DISPLAY_NAME, uniqueName)
                             put(MediaStore.MediaColumns.MIME_TYPE, item.mimeType)
                             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                                 put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath)
-                                put(MediaStore.MediaColumns.IS_PENDING, 1)
+                                put(MediaStore.MediaColumns.IS_PENDING, 1) // Mark it as "Currently being written to" so other apps don't touch it.
                             } else {
                                 val root = Environment.getExternalStorageDirectory()
                                 val destDir = File(root, relativePath)
@@ -641,6 +713,7 @@ class MediaOperationEngine @Inject constructor(@ApplicationContext private val c
                     }
                 }
 
+                // If it's an SD card...
                 if (destUri == null) {
                     val safDir = getOrCreateSafDirectory(relativePath)
                     if (safDir != null) {
@@ -655,25 +728,28 @@ class MediaOperationEngine @Inject constructor(@ApplicationContext private val c
                 if (destUri == null) throw IOException("Failed to create destination record for $uniqueName")
                 newUris.add(destUri)
 
+                // Actually stream the data byte-by-byte from the old file into the new blank file we just created.
                 resolver.openInputStream(item.uri)?.use { input ->
                     resolver.openOutputStream(destUri)?.use { output ->
                         input.copyTo(output, 1024 * 1024)
                     }
                 } ?: throw IOException("Failed to open streams for copying $uniqueName")
 
+                // Remove the "Currently being written to" lock.
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && destUri.scheme == "content" && destUri.authority == MediaStore.AUTHORITY) {
                     val updateValues = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }
                     resolver.update(destUri, updateValues, null, null)
                 }
             }
 
+            // Verification phase: Check that the new file is exactly the same size as the old file.
+            // If it's smaller, the copy failed or got corrupted!
             for ((index, destUri) in newUris.withIndex()) {
                 if (!isActive) throw CancellationException("Operation cancelled by user")
                 onProgress("Verifying", index + 1, newUris.size)
 
                 val originalItem = items[index]
 
-                // Rigorous File Size Verification
                 resolver.openFileDescriptor(destUri, "r")?.use { pfd ->
                     val copiedSize = pfd.statSize
                     if (copiedSize == 0L || (originalItem.size > 0 && copiedSize != originalItem.size)) {
@@ -683,7 +759,7 @@ class MediaOperationEngine @Inject constructor(@ApplicationContext private val c
             }
 
         } catch (e: CancellationException) {
-            rollback(newUris)
+            rollback(newUris) // If they hit cancel, delete all the half-copied files immediately!
             return@withContext MediaOpResult.Cancelled
         } catch (e: Exception) {
             rollback(newUris)
@@ -693,6 +769,7 @@ class MediaOperationEngine @Inject constructor(@ApplicationContext private val c
         MediaOpResult.Success(newUris, newUris.size, skipped, 0)
     }
 
+    // Moving is just Copying, followed immediately by Deleting the originals.
     suspend fun moveMedia(
         items: List<MediaItem>,
         targetAlbum: TargetAlbum,
@@ -716,9 +793,11 @@ class MediaOperationEngine @Inject constructor(@ApplicationContext private val c
         val resolver = context.contentResolver
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            // Android 11+: Ask the OS to delete the old ones.
             val pendingIntent = MediaStore.createDeleteRequest(resolver, originalUris)
             return@withContext MediaOpResult.PermissionRequired(pendingIntent.intentSender, copiedUris, autoDeleteHandledByOs = true)
         } else {
+            // Older Android: Delete them manually ourselves.
             var failureCount = 0
             for ((index, item) in itemsToMove.withIndex()) {
                 onProgress("Deleting", index + 1, itemsToMove.size)
@@ -752,6 +831,8 @@ class MediaOperationEngine @Inject constructor(@ApplicationContext private val c
                 if (!deleted) failureCount++
             }
 
+            // If we copied the files, but were unable to delete the originals, we have to abort
+            // and delete the copies so we don't accidentally fill up the user's hard drive with duplicates!
             if (failureCount > 0) {
                 rollback(copiedUris)
                 return@withContext MediaOpResult.Failed("Failed to delete $failureCount original items. Move reverted.")
@@ -802,6 +883,7 @@ class MediaOperationEngine @Inject constructor(@ApplicationContext private val c
         MediaOpResult.Success(uris, 0, 0, uris.size)
     }
 
+    // THE SAFETY NET: Deletes newly copied files if a Move or Copy operation crashes or gets cancelled.
     suspend fun rollback(uris: List<Uri>) = withContext(Dispatchers.IO) {
         if (uris.isEmpty()) return@withContext
         val resolver = context.contentResolver
@@ -818,6 +900,7 @@ class MediaOperationEngine @Inject constructor(@ApplicationContext private val c
         }
     }
 
+    // Looks inside a folder and gets a list of all the file names that already exist inside it.
     private suspend fun fetchExistingItemNames(targetAlbum: TargetAlbum): List<String> = withContext(Dispatchers.IO) {
         val existingNames = mutableListOf<String>()
         val picPath = getResolvedRelativePath(targetAlbum, false)
@@ -850,6 +933,7 @@ class MediaOperationEngine @Inject constructor(@ApplicationContext private val c
         return@withContext existingNames
     }
 
+    // If "dog.jpg" already exists, rename it to "dog (1).jpg"
     private fun getUniqueName(originalName: String, existingNames: Set<String>): String {
         if (!existingNames.contains(originalName)) return originalName
 
@@ -868,6 +952,10 @@ class MediaOperationEngine @Inject constructor(@ApplicationContext private val c
 }
 
 
+/**
+ * --- THE MESSENGER PIGEON (NotificationHelper) ---
+ * Schedules the random daily popup notifications (like "Capture the moment before it's gone.")
+ */
 object NotificationHelper {
     const val WORK_NAME_SCHEDULER = "DailySchedulerWork"
     const val WORK_NAME_DISPLAY = "DisplayNotificationWork"
@@ -890,6 +978,7 @@ object NotificationHelper {
     }
 }
 
+// Wakes up once a day, then picks a completely random time in the next 23 hours to send the notification.
 class DailySchedulerWorker(
     context: Context,
     workerParams: WorkerParameters
@@ -912,6 +1001,7 @@ class DailySchedulerWorker(
     }
 }
 
+// Actually displays the popup notification when the random timer goes off.
 class NotificationDisplayWorker(
     private val context: Context,
     workerParams: WorkerParameters
@@ -946,6 +1036,7 @@ class NotificationDisplayWorker(
             notificationManager.createNotificationChannel(channel)
         }
 
+        // If the user taps the notification, open the app.
         val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)?.apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
         }
@@ -967,7 +1058,7 @@ class NotificationDisplayWorker(
             .setContentText(randomQuote)
             .setStyle(NotificationCompat.BigTextStyle().bigText(randomQuote))
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
-            .setAutoCancel(true)
+            .setAutoCancel(true) // Disappear when clicked
 
         if (pendingIntent != null) {
             notificationBuilder.setContentIntent(pendingIntent)

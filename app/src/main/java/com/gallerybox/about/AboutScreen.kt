@@ -37,6 +37,21 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.gallerybox.R
 
+// ---------------------------------------------------------------------------
+// 🧠 ADAPTIVE LOGIC IMPORTS
+// ---------------------------------------------------------------------------
+import com.gallerybox.ui.screens.adaptive.AdaptiveState
+import com.gallerybox.ui.screens.adaptive.rememberAdaptiveState
+import com.gallerybox.ui.screens.adaptive.WindowWidthSize
+
+/**
+ * =========================================================================================
+ * 📑 THE TABS MENU (The Table of Contents)
+ * =========================================================================================
+ * This is a simple list of the 4 pages available on this screen.
+ * We use an "enum" (a fixed list of options) so the app never accidentally
+ * tries to open a page that doesn't exist.
+ */
 enum class AboutTab(val title: String) {
     ABOUT("About"),
     TERMS("Terms"),
@@ -44,12 +59,22 @@ enum class AboutTab(val title: String) {
     LICENSE("License")
 }
 
+/**
+ * =========================================================================================
+ * 🖼️ THE MAIN ABOUT SCREEN WRAPPER
+ * =========================================================================================
+ * This is the outer shell of the screen. It holds the Top Bar (with the back button),
+ * the row of tabs, and the empty space where the content of the selected tab will go.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AboutScreen(
     onNavigateUp: () -> Unit = {},
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    // We bring in our smart AdaptiveState here to know if we are on a phone, tablet, or foldable!
+    adaptiveState: AdaptiveState = rememberAdaptiveState()
 ) {
+    // This remembers which tab the user is currently looking at. It starts at 0 ("About").
     var selectedTabIndex by remember { mutableIntStateOf(0) }
     val tabs = AboutTab.entries
 
@@ -59,7 +84,9 @@ fun AboutScreen(
                 title = {
                     Text(
                         text = "About GalleryBox",
-                        fontWeight = FontWeight.SemiBold
+                        fontWeight = FontWeight.SemiBold,
+                        // Scale the title slightly on huge screens
+                        fontSize = (22 * adaptiveState.textScaleFactor).sp
                     )
                 },
                 navigationIcon = {
@@ -78,11 +105,14 @@ fun AboutScreen(
         },
         modifier = modifier
     ) { innerPadding ->
+
+        // This column stacks the Tabs on top and the Content on the bottom.
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
+            // 1. Draw the row of clickable tabs at the top
             PrimaryScrollableTabRow(
                 selectedTabIndex = selectedTabIndex,
                 modifier = Modifier.fillMaxWidth(),
@@ -100,70 +130,101 @@ fun AboutScreen(
                             Text(
                                 text = tab.title,
                                 fontWeight = if (selectedTabIndex == index) FontWeight.Bold else FontWeight.Medium,
-                                style = MaterialTheme.typography.titleSmall
+                                fontSize = (14 * adaptiveState.textScaleFactor).sp
                             )
                         }
                     )
                 }
             }
 
-            AnimatedContent(
-                targetState = tabs[selectedTabIndex],
-                transitionSpec = { fadeIn(tween(300)) togetherWith fadeOut(tween(300)) },
-                label = "TabContentAnimation",
-                modifier = Modifier.fillMaxSize()
-            ) { targetTab ->
-                when (targetTab) {
-                    AboutTab.ABOUT -> AboutAppContent()
-                    AboutTab.TERMS -> LegalTextContent(getTermsText())
-                    AboutTab.PRIVACY -> LegalTextContent(getPrivacyText())
-                    AboutTab.LICENSE -> LegalTextContent(getLicenseText())
+            // 2. The Content Area
+            // We center the content on huge screens (like desktop monitors) so the text
+            // doesn't stretch 20 inches wide, which is very hard for human eyes to read.
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.TopCenter
+            ) {
+                // If the screen is huge, we restrict the max width. Otherwise, fill it.
+                val contentModifier = if (adaptiveState.widthSize == WindowWidthSize.EXPANDED) {
+                    Modifier.width(800.dp) // Looks like a nice clean document on tablets
+                } else {
+                    Modifier.fillMaxWidth() // Fills edge-to-edge on normal phones
+                }
+
+                // 3. Smooth Animations
+                // When the user clicks a new tab, this slowly fades the old text out
+                // and fades the new text in.
+                AnimatedContent(
+                    targetState = tabs[selectedTabIndex],
+                    transitionSpec = { fadeIn(tween(300)) togetherWith fadeOut(tween(300)) },
+                    label = "TabContentAnimation",
+                    modifier = contentModifier.fillMaxHeight()
+                ) { targetTab ->
+
+                    // Look at which tab was clicked, and load the correct screen below.
+                    when (targetTab) {
+                        AboutTab.ABOUT -> AboutAppContent(adaptiveState)
+                        AboutTab.TERMS -> LegalTextContent(getTermsText(), adaptiveState)
+                        AboutTab.PRIVACY -> LegalTextContent(getPrivacyText(), adaptiveState)
+                        AboutTab.LICENSE -> LegalTextContent(getLicenseText(), adaptiveState)
+                    }
                 }
             }
         }
     }
 }
 
+/**
+ * =========================================================================================
+ * 📱 PAGE 1: THE FEATURES & DEVELOPER INFO
+ * =========================================================================================
+ * This is the first tab. It scrolls through a list of all the cool things the app can do,
+ * and ends with a card showing who built it.
+ */
 @Composable
-private fun AboutAppContent() {
+private fun AboutAppContent(adaptiveState: AdaptiveState) {
     val features = remember { getFeatureList() }
 
+    // LazyColumn is a smart list. It only draws the items you can currently see on the screen,
+    // which saves battery and memory.
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(24.dp),
+        // We use adaptive padding so it breathes well on tablets but stays tight on phones.
+        contentPadding = PaddingValues(adaptiveState.recommendedPadding),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         item {
             Text(
                 text = "📱 GalleryBox — Complete Feature List",
-                style = MaterialTheme.typography.headlineSmall,
+                fontSize = (24 * adaptiveState.textScaleFactor).sp,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.padding(bottom = 8.dp)
             )
         }
 
+        // Loops through our giant list of features and draws a nice rounded card for each one.
         items(features) { feature ->
-            FeatureSectionCard(feature)
+            FeatureSectionCard(feature, adaptiveState)
         }
 
         item {
             Spacer(modifier = Modifier.height(24.dp))
             Text(
                 text = "👨‍💻 Developer & Open Source",
-                style = MaterialTheme.typography.titleLarge,
+                fontSize = (22 * adaptiveState.textScaleFactor).sp,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.padding(bottom = 8.dp)
             )
-            DeveloperProfileCard()
+            DeveloperProfileCard(adaptiveState)
         }
 
         item {
             Spacer(modifier = Modifier.height(32.dp))
             Text(
-                text = "© 2026 Ishan Mall. All rights reserved.\nLicensed under Apache 2.0",
-                style = MaterialTheme.typography.labelMedium,
+                text = "© 2026 Balanand Mishra. All rights reserved.\nLicensed under Apache 2.0",
+                fontSize = (12 * adaptiveState.textScaleFactor).sp,
                 color = MaterialTheme.colorScheme.outline,
                 modifier = Modifier.fillMaxWidth(),
                 textAlign = TextAlign.Center
@@ -173,8 +234,11 @@ private fun AboutAppContent() {
     }
 }
 
+/**
+ * A helper function that draws one specific Feature Card (like "Trash" or "Video Player").
+ */
 @Composable
-private fun FeatureSectionCard(section: FeatureSection) {
+private fun FeatureSectionCard(section: FeatureSection, adaptiveState: AdaptiveState) {
     ElevatedCard(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
@@ -186,12 +250,13 @@ private fun FeatureSectionCard(section: FeatureSection) {
         Column(modifier = Modifier.padding(16.dp)) {
             Text(
                 text = "${section.emoji} ${section.title}",
-                style = MaterialTheme.typography.titleMedium,
+                fontSize = (16 * adaptiveState.textScaleFactor).sp,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.primary
             )
             Spacer(modifier = Modifier.height(12.dp))
 
+            // Draws the bullet points for this specific feature
             section.items.forEach { item ->
                 Row(
                     modifier = Modifier.padding(vertical = 4.dp),
@@ -199,15 +264,15 @@ private fun FeatureSectionCard(section: FeatureSection) {
                 ) {
                     Text(
                         text = "•",
-                        style = MaterialTheme.typography.bodyMedium,
+                        fontSize = (14 * adaptiveState.textScaleFactor).sp,
                         color = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.padding(end = 8.dp)
                     )
                     Text(
                         text = item,
-                        style = MaterialTheme.typography.bodyMedium,
+                        fontSize = (14 * adaptiveState.textScaleFactor).sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        lineHeight = 20.sp
+                        lineHeight = (20 * adaptiveState.textScaleFactor).sp
                     )
                 }
             }
@@ -215,8 +280,14 @@ private fun FeatureSectionCard(section: FeatureSection) {
     }
 }
 
+/**
+ * =========================================================================================
+ * 🧑‍💻 DEVELOPER PROFILE CARD
+ * =========================================================================================
+ * Shows the author's picture, name, and clickable links to their Github and Website.
+ */
 @Composable
-private fun DeveloperProfileCard() {
+private fun DeveloperProfileCard(adaptiveState: AdaptiveState) {
     val context = LocalContext.current
 
     ElevatedCard(
@@ -228,10 +299,12 @@ private fun DeveloperProfileCard() {
         elevation = CardDefaults.elevatedCardElevation(defaultElevation = 2.dp)
     ) {
         Column(modifier = Modifier.padding(20.dp)) {
+
+            // The top row with the circular profile picture and name
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Image(
                     painter = painterResource(id = R.drawable.isha_ndisha_1785611777_3954320604862031420_77465641188),
-                    contentDescription = "Ishan Mall",
+                    contentDescription = "Balanand Mishra",
                     contentScale = ContentScale.Crop,
                     modifier = Modifier
                         .size(56.dp)
@@ -241,14 +314,14 @@ private fun DeveloperProfileCard() {
                 Spacer(modifier = Modifier.width(16.dp))
                 Column {
                     Text(
-                        text = "Ishan Mall",
-                        style = MaterialTheme.typography.titleLarge,
+                        text = "Balanand Mishra",
+                        fontSize = (22 * adaptiveState.textScaleFactor).sp,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
                         text = "Android Software Developer",
-                        style = MaterialTheme.typography.bodyMedium,
+                        fontSize = (14 * adaptiveState.textScaleFactor).sp,
                         color = MaterialTheme.colorScheme.primary,
                         fontWeight = FontWeight.Medium
                     )
@@ -257,6 +330,7 @@ private fun DeveloperProfileCard() {
 
             Spacer(modifier = Modifier.height(20.dp))
 
+            // The Open Source Box
             Surface(
                 shape = RoundedCornerShape(12.dp),
                 color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f),
@@ -265,24 +339,26 @@ private fun DeveloperProfileCard() {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text(
                         text = "Open Source Code",
-                        style = MaterialTheme.typography.labelLarge,
+                        fontSize = (14 * adaptiveState.textScaleFactor).sp,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSecondaryContainer
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
                         text = "The entire source code for this application is freely available. You can use and modify it under the Apache 2.0 License, provided that you give proper credit to the original developer wherever the code is utilized.",
-                        style = MaterialTheme.typography.bodySmall,
+                        fontSize = (12 * adaptiveState.textScaleFactor).sp,
                         color = MaterialTheme.colorScheme.onSecondaryContainer,
-                        lineHeight = 18.sp
+                        lineHeight = (18 * adaptiveState.textScaleFactor).sp
                     )
                     Spacer(modifier = Modifier.height(12.dp))
                     SocialLinkItem(
                         icon = Icons.Outlined.Code,
                         platform = "GitHub Repository",
-                        handle = "github.com/ishanmall",
+                        handle = "github.com/balanandmishra",
+                        adaptiveState = adaptiveState,
                         onClick = {
-                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/ishanmall"))
+                            // This opens the web browser on the user's phone!
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/balanandmishra"))
                             context.startActivity(intent)
                         }
                     )
@@ -291,6 +367,7 @@ private fun DeveloperProfileCard() {
 
             Spacer(modifier = Modifier.height(12.dp))
 
+            // The Portfolio Box
             Surface(
                 shape = RoundedCornerShape(12.dp),
                 color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.5f),
@@ -299,22 +376,23 @@ private fun DeveloperProfileCard() {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text(
                         text = "Developer Portfolio",
-                        style = MaterialTheme.typography.labelLarge,
+                        fontSize = (14 * adaptiveState.textScaleFactor).sp,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onTertiaryContainer
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
                         text = "Visit my official website for detailed developer information, professional experience, education, training, certificates, and contact details.",
-                        style = MaterialTheme.typography.bodySmall,
+                        fontSize = (12 * adaptiveState.textScaleFactor).sp,
                         color = MaterialTheme.colorScheme.onTertiaryContainer,
-                        lineHeight = 18.sp
+                        lineHeight = (18 * adaptiveState.textScaleFactor).sp
                     )
                     Spacer(modifier = Modifier.height(12.dp))
                     SocialLinkItem(
                         icon = Icons.Outlined.Language,
                         platform = "Official Website",
                         handle = "portfolio-b1973.web.app",
+                        adaptiveState = adaptiveState,
                         onClick = {
                             val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://portfolio-b1973.web.app/"))
                             context.startActivity(intent)
@@ -326,8 +404,11 @@ private fun DeveloperProfileCard() {
     }
 }
 
+/**
+ * A tiny reusable button that looks like a row with an Icon, a title, and a subtitle.
+ */
 @Composable
-private fun SocialLinkItem(icon: ImageVector, platform: String, handle: String, onClick: () -> Unit) {
+private fun SocialLinkItem(icon: ImageVector, platform: String, handle: String, adaptiveState: AdaptiveState, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -346,12 +427,12 @@ private fun SocialLinkItem(icon: ImageVector, platform: String, handle: String, 
         Column {
             Text(
                 text = platform,
-                style = MaterialTheme.typography.labelMedium,
+                fontSize = (12 * adaptiveState.textScaleFactor).sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Text(
                 text = handle,
-                style = MaterialTheme.typography.bodyMedium,
+                fontSize = (14 * adaptiveState.textScaleFactor).sp,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurface
             )
@@ -359,26 +440,36 @@ private fun SocialLinkItem(icon: ImageVector, platform: String, handle: String, 
     }
 }
 
+/**
+ * =========================================================================================
+ * 📄 PAGES 2, 3, & 4: THE LEGAL DOCUMENTS
+ * =========================================================================================
+ * This is a highly optimized text viewer. It allows the user to select/copy text,
+ * and formats everything cleanly.
+ */
 @Composable
-private fun LegalTextContent(text: String) {
+private fun LegalTextContent(text: String, adaptiveState: AdaptiveState) {
     val scrollState = rememberScrollState()
 
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.background
     ) {
+        // SelectionContainer allows the user to long-press and copy text
         SelectionContainer {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
                     .verticalScroll(scrollState)
-                    .padding(horizontal = 24.dp, vertical = 24.dp)
+                    .padding(
+                        horizontal = adaptiveState.recommendedPadding,
+                        vertical = adaptiveState.recommendedPadding
+                    )
             ) {
                 Text(
                     text = text,
-                    style = MaterialTheme.typography.bodyMedium.copy(
-                        lineHeight = 24.sp
-                    ),
+                    fontSize = (14 * adaptiveState.textScaleFactor).sp,
+                    lineHeight = (24 * adaptiveState.textScaleFactor).sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Start
                 )
@@ -388,6 +479,9 @@ private fun LegalTextContent(text: String) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// 📦 RAW DATA STORAGE
+// ---------------------------------------------------------------------------
 
 data class FeatureSection(val title: String, val emoji: String, val items: List<String>)
 
@@ -565,9 +659,9 @@ Any updated version will be made available within GalleryBox or through the appl
 
 13. Contact
 For questions regarding these Terms of Use:
-Developer: Ishan Mall
+Developer: Balanand Mishra
 Website: https://portfolio-b1973.web.app
-© 2026 Ishan Mall. All rights reserved.
+© 2026 Balanand Mishra. All rights reserved.
 """.trimIndent()
 
 private fun getPrivacyText(): String = """
@@ -659,9 +753,9 @@ The latest version will be made available within GalleryBox or through its offic
 
 15. Contact
 If you have questions, concerns, or requests regarding this Privacy Policy, contact:
-Developer: Ishan Mall
+Developer: Balanand Mishra
 Website: https://portfolio-b1973.web.app
-© 2026 Ishan Mall. All rights reserved.
+© 2026 Balanand Mishra. All rights reserved.
 """.trimIndent()
 
 private fun getLicenseText(): String = """

@@ -1,6 +1,11 @@
+// These annotations tell the Android compiler to ignore certain warnings.
+// Think of it as telling an overly strict grammar checker to ignore specific words because we know what we are doing.
 @file:Suppress("BlockingMethodInNonBlockingContext", "UNUSED_PARAMETER", "unused", "FunctionName", "MemberVisibilityCanBePrivate", "UnsafeOptInUsageError")
 package com.gallerybox.ui.screens.file
 
+// --- IMPORTS ---
+// This is the "toolbox" area. We are fetching all the tools we need to build this file.
+// We are bringing in tools for drawing grids, showing popups, feeling physical vibrations (haptics), doing math on file sizes, and background processing.
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
@@ -86,14 +91,30 @@ import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
 
+/**
+ * =========================================================================================
+ * 📦 DATA MODELS & CONSTANTS
+ * =========================================================================================
+ */
+// The different types of duplicates we can find
 enum class MatchType { EXACT, SIMILAR, VIDEO }
+// What the Duplicate Scanner is currently doing
 private enum class ScanState { IDLE, SCANNING, COMPLETE, CANCELLED }
+// Are we moving a file, or copying a file?
 enum class OperationMode { MOVE, COPY }
+
+// A box holding a group of identical photos (e.g., 5 identical pictures of a dog), and how much space we will save by deleting 4 of them.
 data class DuplicateGroup(val items: List<MediaItem>, val type: MatchType, val wastedSize: Long)
 
 private const val MIN_GRID_COLUMNS = 1
 private const val MAX_GRID_COLUMNS = 8
 
+/**
+ * =========================================================================================
+ * 🕵️ THE DIGITAL DETECTIVE (DuplicatesScreen)
+ * =========================================================================================
+ * Scans the entire phone looking for exact copies of photos, or burst shots that look extremely similar.
+ */
 @RequiresApi(Build.VERSION_CODES.ECLAIR)
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -104,43 +125,55 @@ fun DuplicatesScreen(
     onNavigateToTrash: () -> Unit = {}
 ) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
+    val scope = rememberCoroutineScope() // Tool for launching background workers
     val snackbarHostState = remember { SnackbarHostState() }
+
+    // Grab the massive list of every photo/video on the phone
     val allMedia by viewModel.media.collectAsState()
 
+    // Local scoreboards for tracking the scan
     var scanState by remember { mutableStateOf(ScanState.IDLE) }
     var allGroups by remember { mutableStateOf<List<DuplicateGroup>>(emptyList()) }
-    var activeTab by remember { mutableStateOf(MatchType.EXACT) }
+    var activeTab by remember { mutableStateOf(MatchType.EXACT) } // Which tab are they looking at? (Exact Matches, Similar, etc.)
     var cancelScan by remember { mutableStateOf(false) }
 
+    // `mutableStateMapOf` is a dictionary tracking which files the user has checked to delete.
     val selectedIds = remember { mutableStateMapOf<Long, Long>() }
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var scannedCount by remember { mutableIntStateOf(0) }
     val totalToScan = allMedia.size
 
+    // Math: Adds up the file size of every single photo the user has checked.
     val sizeToDelete: Long by remember(selectedIds.size) { derivedStateOf { selectedIds.values.sumOf { it } } }
-    var scanTrigger by remember { mutableIntStateOf(1) }
+    var scanTrigger by remember { mutableIntStateOf(1) } // Used to restart the scan if they hit cancel
 
+    // If two photos were taken within 5 seconds of each other, they are probably "Burst" or "Similar" photos
     val burstTimeWindowSec = 5L
 
+    // The Permission Bouncer: Asks the Android OS for permission to delete files
     val intentSenderLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
         val isGranted = result.resultCode == Activity.RESULT_OK
         trashViewModel.onPermissionResultGlobal(isGranted)
         if (!isGranted) Toast.makeText(context, "Permission denied", Toast.LENGTH_SHORT).show()
     }
 
+    // Connects the ViewModels' Walkie-Talkies to the screen so we can hear when a deletion finishes
     LaunchedEffect(Unit) {
         trashViewModel.onRefreshGallery = { scope.launch { viewModel.forceSync() } }
         trashViewModel.events.collectLatest { event ->
             when (event) {
                 is GalleryEvent.RequestPermission -> intentSenderLauncher.launch(IntentSenderRequest.Builder(event.intentSender).build())
                 is GalleryEvent.OperationSuccess -> {
+                    // We successfully deleted the duplicates! Now we need to remove them from the screen.
                     val idsToDelete = selectedIds.keys.toList()
                     allGroups = allGroups.mapNotNull { group ->
                         val kept = group.items.filter { !idsToDelete.contains(it.id) }
+                        // If the group still has more than 1 photo, keep it on screen. Otherwise, the group is resolved! Remove it.
                         if (kept.size > 1) group.copy(items = kept, wastedSize = kept.drop(1).sumOf { it.size }) else null
                     }
                     selectedIds.clear()
+
+                    // Show a success banner. If they click it, take them to the Trash screen.
                     scope.launch {
                         if (snackbarHostState.showSnackbar("Moved to Trash", "View Trash", duration = SnackbarDuration.Short) == SnackbarResult.ActionPerformed) {
                             onNavigateToTrash()
@@ -153,6 +186,8 @@ fun DuplicatesScreen(
         }
     }
 
+    // --- THE SCAN ENGINE ---
+    // This heavy worker runs in the background to analyze tens of thousands of photos.
     LaunchedEffect(scanTrigger, allMedia.isNotEmpty()) {
         if (allMedia.isNotEmpty() && scanState != ScanState.SCANNING) {
             scanState = ScanState.SCANNING
@@ -160,32 +195,41 @@ fun DuplicatesScreen(
             cancelScan = false
             selectedIds.clear()
 
+            // Send the worker to the warehouse
             val results = withContext(Dispatchers.IO) {
                 val foundGroups = mutableListOf<DuplicateGroup>()
                 val processedIds = mutableSetOf<Long>()
                 var processed = 0
                 val mediaSnapshot = allMedia.toList()
 
+                // Step 1: Filter out tiny system icons and videos. We only want normal photos.
                 val candidates = mediaSnapshot.filter { it.size > 51200L && !it.isVideo }
+
+                // Step 2: The Quick Filter. If two photos have different file sizes, they CANNOT be exact duplicates!
+                // This instantly filters out 99% of the gallery without doing any heavy math.
                 val sizeGroups = candidates.groupBy { it.size }.filter { it.value.size > 1 }
 
+                // Step 3: Exact Matches (Photos)
+                // For the ones with identical sizes, we read pieces of the file (Partial Hash) to see if the pixels match.
                 sizeGroups.values.chunked(200).forEach { batch ->
                     for (potentialDuplicates in batch) {
                         if (cancelScan) return@withContext emptyList<DuplicateGroup>()
                         processed += potentialDuplicates.size
-                        withContext(Dispatchers.Main) { scannedCount = processed }
-                        yield()
+                        withContext(Dispatchers.Main) { scannedCount = processed } // Update progress bar
+                        yield() // Let the phone breathe so it doesn't freeze
 
                         val hashGroups = potentialDuplicates.groupBy { calculatePartialHash(it.path) }
                         hashGroups.values.filter { it.size > 1 }.forEach { group ->
                             val sorted = group.sortedByDescending { it.size + it.dateAdded }
                             val wasted = group.drop(1).sumOf { it.size }
                             foundGroups.add(DuplicateGroup(sorted, MatchType.EXACT, wasted))
-                            processedIds.addAll(group.map { it.id })
+                            processedIds.addAll(group.map { it.id }) // Mark them as processed so we don't scan them again
                         }
                     }
                 }
 
+                // Step 4: Video Duplicates
+                // Videos are huge, so we just compare their Length + Resolution + File Size + Quick Hash.
                 val videoCandidates = mediaSnapshot.filter { it.isVideo && !processedIds.contains(it.id) }
                 val videoGroups = videoCandidates.groupBy {
                     val partialVideoHash = calculatePartialHash(it.path)
@@ -202,9 +246,13 @@ fun DuplicatesScreen(
                     withContext(Dispatchers.Main) { scannedCount = processed }
                 }
 
+                // Step 5: Similar Burst Shots
+                // This is the hardest part. It looks for photos taken within seconds of each other.
                 val remaining = candidates.filter { !processedIds.contains(it.id) }.sortedBy { it.dateAdded }
                 if (remaining.isNotEmpty()) {
-                    val hashCache = mutableMapOf<Long, Long>()
+                    val hashCache = mutableMapOf<Long, Long>() // Memory box to store math so we don't do it twice
+
+                    // `averageHash` literally shrinks a photo to 8x8 pixels, turns it black and white, and creates a simple math signature for it.
                     fun getHash(item: MediaItem): Long? {
                         if (hashCache.containsKey(item.id)) return hashCache[item.id]
                         val h = averageHash(item.path)
@@ -219,12 +267,16 @@ fun DuplicatesScreen(
                         val curr = remaining[i]
                         val anchor = currentBurst.first()
                         val timeDiff = abs(curr.dateAdded - anchor.dateAdded)
+
+                        // If it has "(1)" or "copy" in the file name, it's definitely a duplicate!
                         val nameMatch = curr.name.contains("edit", true) || curr.name.contains("copy", true) || curr.name.contains("(1)")
                         var isSimilar = false
 
+                        // If it was taken within 5 seconds...
                         if (timeDiff < burstTimeWindowSec || nameMatch) {
                             val hAnchor = getHash(anchor)
                             val hCurr = getHash(curr)
+                            // We compare the two 8x8 black and white signatures. If they are more than 90% identical, it's a Similar Burst!
                             if (hAnchor != null && hCurr != null && hammingDistance(hAnchor, hCurr) <= 10) {
                                 isSimilar = true
                             }
@@ -234,10 +286,9 @@ fun DuplicatesScreen(
                             currentBurst.add(curr)
                         } else {
                             if (currentBurst.size > 1) {
-                                val sorted = currentBurst.sortedBy { it.dateAdded }
                                 foundGroups.add(DuplicateGroup(currentBurst.sortedBy { it.dateAdded }, MatchType.SIMILAR, currentBurst.drop(1).sumOf { it.size }))
                             }
-                            currentBurst = mutableListOf(curr)
+                            currentBurst = mutableListOf(curr) // Start a new group
                         }
 
                         processed++
@@ -250,8 +301,10 @@ fun DuplicatesScreen(
                         foundGroups.add(DuplicateGroup(currentBurst.sortedBy { it.dateAdded }, MatchType.SIMILAR, currentBurst.drop(1).sumOf { it.size }))
                     }
                 }
+                // Sort the groups so the ones wasting the most Gigabytes of space are at the top of the screen!
                 foundGroups.sortedByDescending { it.wastedSize }
             }
+            // Update the screen when finished
             if (!cancelScan) {
                 allGroups = results
                 scanState = ScanState.COMPLETE
@@ -263,12 +316,15 @@ fun DuplicatesScreen(
         }
     }
 
+    // Get only the groups that belong to the tab the user currently clicked
     val displayedGroups = remember(allGroups, activeTab) { allGroups.filter { it.type == activeTab } }
 
+    // Android back-button handlers
     BackHandler(enabled = showDeleteConfirm) { showDeleteConfirm = false }
     BackHandler(enabled = selectedIds.isNotEmpty()) { selectedIds.clear() }
     BackHandler(enabled = scanState == ScanState.SCANNING) { cancelScan = true }
 
+    // --- DRAWING THE SCREEN ---
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
@@ -293,6 +349,8 @@ fun DuplicatesScreen(
                                 Text("Cancel", color = MaterialTheme.colorScheme.error)
                             }
                         } else if (scanState == ScanState.COMPLETE && displayedGroups.isNotEmpty()) {
+                            // "Auto Select" Button
+                            // This smartly selects every duplicate photo, leaving exactly 1 "Best" original unselected in every group.
                             TextButton(onClick = {
                                 selectedIds.clear()
                                 displayedGroups.forEach { group ->
@@ -306,6 +364,7 @@ fun DuplicatesScreen(
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)
                 )
 
+                // The 3 tabs at the top (Exact Copies, Similar Shots, Videos)
                 if (scanState == ScanState.COMPLETE) {
                     ScrollableTabRow(
                         selectedTabIndex = when(activeTab) {
@@ -350,6 +409,7 @@ fun DuplicatesScreen(
             }
         },
         bottomBar = {
+            // The massive red "Delete" button that pops up from the bottom when you check a box
             AnimatedVisibility(visible = selectedIds.isNotEmpty(), enter = slideInVertically { it } + fadeIn(), exit = slideOutVertically { it } + fadeOut()) {
                 Surface(tonalElevation = 8.dp, shadowElevation = 8.dp, color = MaterialTheme.colorScheme.surface) {
                     Button(
@@ -369,6 +429,7 @@ fun DuplicatesScreen(
     ) { padding ->
         Box(modifier = Modifier.fillMaxSize().padding(padding)) {
             when (scanState) {
+                // If the background worker is currently scanning...
                 ScanState.IDLE, ScanState.SCANNING -> {
                     Column(Modifier.align(Alignment.Center).padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
                         CircularProgressIndicator(strokeWidth = 4.dp, modifier = Modifier.size(48.dp), color = MaterialTheme.colorScheme.primary)
@@ -382,6 +443,7 @@ fun DuplicatesScreen(
                         )
                     }
                 }
+                // If they hit cancel
                 ScanState.CANCELLED -> {
                     Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
                         Icon(Icons.Outlined.Cancel, null, modifier = Modifier.size(64.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -390,11 +452,14 @@ fun DuplicatesScreen(
                         TextButton(onClick = { scanTrigger++ }) { Text("Restart Scan", color = MaterialTheme.colorScheme.primary) }
                     }
                 }
+                // When finished!
                 ScanState.COMPLETE -> {
                     if (displayedGroups.isEmpty()) {
-                        EmptyDuplicatesState(activeTab)
+                        EmptyDuplicatesState(activeTab) // Pretty empty illustration
                     } else {
+                        // The scrolling list of duplicate groups
                         LazyColumn(contentPadding = PaddingValues(bottom = 100.dp)) {
+                            // Info banner at the top
                             item {
                                 Surface(color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.3f), modifier = Modifier.fillMaxWidth()) {
                                     Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -408,12 +473,14 @@ fun DuplicatesScreen(
                                 }
                             }
 
+                            // Draw each group of matching photos
                             items(displayedGroups) { group ->
                                 DuplicateGroupItem(
                                     group = group,
                                     selectedIds = selectedIds,
                                     onToggleSelection = { id, size -> if (selectedIds.containsKey(id)) selectedIds.remove(id) else selectedIds[id] = size },
                                     onSelectAllInGroup = {
+                                        // Helper button that checks every box EXCEPT the first (best) photo in this specific group.
                                         val originalId = group.items.first().id
                                         val others = group.items.filter { it.id != originalId }
                                         if (others.all { selectedIds.containsKey(it.id) }) {
@@ -423,6 +490,7 @@ fun DuplicatesScreen(
                                         }
                                     }
                                 )
+                                // Thick divider line between groups
                                 HorizontalDivider(thickness = 8.dp, color = MaterialTheme.colorScheme.surfaceVariant.copy(0.3f))
                             }
                         }
@@ -432,6 +500,7 @@ fun DuplicatesScreen(
         }
     }
 
+    // Popup confirming deletion
     if (showDeleteConfirm) {
         AlertDialog(
             onDismissRequest = { showDeleteConfirm = false },
@@ -457,13 +526,17 @@ fun DuplicatesScreen(
     }
 }
 
+/**
+ * The horizontal scrolling row that holds all the identical photos for one specific group.
+ */
 @RequiresApi(Build.VERSION_CODES.ECLAIR)
 @Composable
 fun DuplicateGroupItem(group: DuplicateGroup, selectedIds: Map<Long, Long>, onToggleSelection: (Long, Long) -> Unit, onSelectAllInGroup: () -> Unit) {
     val context = LocalContext.current
-    val bestItem = group.items.first()
+    val bestItem = group.items.first() // The first item is always the largest/highest quality one
 
     Column(modifier = Modifier.padding(vertical = 12.dp)) {
+        // Group Header text
         Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(if (bestItem.isVideo) "Video Group" else if (group.type == MatchType.SIMILAR) "Similar Burst" else "Exact Matches", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onBackground)
@@ -474,12 +547,14 @@ fun DuplicateGroupItem(group: DuplicateGroup, selectedIds: Map<Long, Long>, onTo
             }
         }
 
+        // Horizontal list of the identical photos
         LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
             items(group.items) { item ->
                 val isSelected = selectedIds.containsKey(item.id)
-                val isBest = item.id == bestItem.id
+                val isBest = item.id == bestItem.id // We prevent checking the box on the "Best" item.
 
                 Column(modifier = Modifier.width(140.dp)) {
+                    // The photo box
                     Box(modifier = Modifier.aspectRatio(1f).clip(RoundedCornerShape(12.dp)).border(if (isSelected) 3.dp else 0.dp, MaterialTheme.colorScheme.error, RoundedCornerShape(12.dp)).clickable { if (!isBest) onToggleSelection(item.id, item.size) }) {
                         AsyncImage(
                             model = ImageRequest.Builder(LocalContext.current)
@@ -498,6 +573,7 @@ fun DuplicateGroupItem(group: DuplicateGroup, selectedIds: Map<Long, Long>, onTo
                             modifier = Modifier.fillMaxSize()
                         )
 
+                        // Play icon for videos
                         if (item.isVideo) {
                             Icon(Icons.Rounded.PlayCircle, null, tint = Color.White, modifier = Modifier.align(Alignment.Center).size(32.dp))
                             Box(modifier = Modifier.align(Alignment.BottomEnd).padding(4.dp).background(Color.Black.copy(0.6f), RoundedCornerShape(4.dp)).padding(horizontal = 4.dp, vertical = 2.dp)) {
@@ -505,6 +581,7 @@ fun DuplicateGroupItem(group: DuplicateGroup, selectedIds: Map<Long, Long>, onTo
                             }
                         }
 
+                        // The checkmark. (Hidden entirely if this is the "Best" photo)
                         if (!isBest) {
                             Box(modifier = Modifier.align(Alignment.TopEnd).padding(6.dp).background(if (isSelected) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.scrim.copy(0.4f), CircleShape).border(1.dp, Color.White, CircleShape)) {
                                 Icon(if (isSelected) Icons.Default.Check else Icons.Outlined.Circle, null, tint = if (isSelected) MaterialTheme.colorScheme.onError else Color.Transparent, modifier = Modifier.padding(2.dp).size(16.dp))
@@ -512,6 +589,7 @@ fun DuplicateGroupItem(group: DuplicateGroup, selectedIds: Map<Long, Long>, onTo
                         }
                     }
                     Spacer(Modifier.height(4.dp))
+                    // Exact file size and date below the picture
                     Text(Formatter.formatShortFileSize(context, item.size), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
                     Text(remember(item.dateAdded) { SimpleDateFormat("MMM dd, yyyy", Locale.getDefault()).format(Date(item.dateAdded * 1000)) }, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
@@ -520,6 +598,7 @@ fun DuplicateGroupItem(group: DuplicateGroup, selectedIds: Map<Long, Long>, onTo
     }
 }
 
+// Pretty illustration when there are no duplicates found
 @Composable
 fun EmptyDuplicatesState(type: MatchType) {
     Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
@@ -529,6 +608,13 @@ fun EmptyDuplicatesState(type: MatchType) {
         Text("Your gallery is optimized!", color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
+
+/**
+ * =========================================================================================
+ * 🚚 THE MAILROOM (MoveCopyScreen)
+ * =========================================================================================
+ * This screen lets the user select an Album folder to Move or Copy photos into.
+ */
 @RequiresApi(Build.VERSION_CODES.Q)
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -543,12 +629,13 @@ fun MoveCopyScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
-    val albums by viewModel.albumsState.collectAsState(initial = emptyList())
+    val albums by viewModel.albumsState.collectAsState(initial = emptyList()) // The list of destination folders
     val fileOpState by viewModel.fileOperationState.collectAsState()
 
-    var showCreateDialog by remember { mutableStateOf(false) }
-    var targetAlbumForConfirmation by remember { mutableStateOf<Album?>(null) }
+    var showCreateDialog by remember { mutableStateOf(false) } // Popup to create a brand new folder
+    var targetAlbumForConfirmation by remember { mutableStateOf<Album?>(null) } // Popup asking "Are you sure?"
 
+    // The progress bar status
     var isProcessing by remember { mutableStateOf(false) }
     var currentProgress by remember { mutableFloatStateOf(0f) }
     var processedCount by remember { mutableIntStateOf(0) }
@@ -559,6 +646,7 @@ fun MoveCopyScreen(
         viewModel.forceSync()
     }
 
+    // Listens to the Manager to update the progress bar as the 5,000 files are copied byte-by-byte
     LaunchedEffect(fileOpState) {
         when (val state = fileOpState) {
             is FileOperationState.Processing -> {
@@ -569,9 +657,10 @@ fun MoveCopyScreen(
             }
             is FileOperationState.WaitingForPermission -> {
                 isProcessing = true
-                isWaitingForPermission = true
+                isWaitingForPermission = true // The process paused to ask the user a system question ("Allow Move?")
             }
             is FileOperationState.Idle -> {
+                // If it was processing and is now Idle, we are done!
                 if (isProcessing && !isWaitingForPermission) {
                     currentProgress = 0f
                     processedCount = 0
@@ -583,6 +672,7 @@ fun MoveCopyScreen(
         }
     }
 
+    // Permission Bouncer
     val intentSenderLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
         val isGranted = result.resultCode == Activity.RESULT_OK
         viewModel.onPermissionResult(isGranted)
@@ -601,7 +691,7 @@ fun MoveCopyScreen(
                 is GalleryEvent.OperationSuccess -> {
                     isProcessing = false
                     isWaitingForPermission = false
-                    onOperationComplete()
+                    onOperationComplete() // Leave the screen
                 }
 
                 is GalleryEvent.ShowToast -> {
@@ -617,6 +707,7 @@ fun MoveCopyScreen(
         }
     }
 
+    // Don't let them hit the back button and break the app while files are currently copying!
     BackHandler(enabled = !isProcessing) { onBack() }
 
     Scaffold(
@@ -630,6 +721,7 @@ fun MoveCopyScreen(
                     }
                 },
                 actions = {
+                    // "Create Folder" button in the top right
                     IconButton(onClick = { showCreateDialog = true }, enabled = !isProcessing) {
                         Icon(Icons.Default.CreateNewFolder, "New Album")
                     }
@@ -638,6 +730,7 @@ fun MoveCopyScreen(
         }
     ) { padding ->
         Box(modifier = Modifier.padding(padding).fillMaxSize()) {
+            // A 3-column grid of all the folders on the phone
             LazyVerticalGrid(
                 columns = GridCells.Fixed(3),
                 contentPadding = PaddingValues(16.dp),
@@ -645,12 +738,15 @@ fun MoveCopyScreen(
                 horizontalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 item {
+                    // Big '+' button to make a new folder
                     CreateNewAlbumTile(onClick = { if (!isProcessing) showCreateDialog = true })
                 }
                 items(
+                    // Filter out "Virtual" folders (like 'Recent' or 'Favorites') because they aren't physical places you can move files to.
                     albums.filter { !it.id.startsWith("virtual_") && it.id != sourceAlbumId }.sortedBy { it.name.lowercase() },
                     key = { it.id }
                 ) { album ->
+                    // Dim the folder the photos are currently inside
                     val isSource = sourceAlbumId != null && album.id == sourceAlbumId
                     Box(modifier = Modifier.graphicsLayer { alpha = if (isSource) 0.4f else 1f }) {
                         AlbumTargetTile(
@@ -658,7 +754,7 @@ fun MoveCopyScreen(
                             onClick = {
                                 if (!isProcessing) {
                                     if (isSource) Toast.makeText(context, "Source and destination are the same", Toast.LENGTH_SHORT).show()
-                                    else targetAlbumForConfirmation = album
+                                    else targetAlbumForConfirmation = album // Show the confirmation popup
                                 }
                             }
                         )
@@ -666,7 +762,9 @@ fun MoveCopyScreen(
                 }
             }
 
+            // The massive Progress Bar overlay that locks the screen while copying
             AnimatedVisibility(visible = isProcessing, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.align(Alignment.Center)) {
+                // Clickable(enabled=false) prevents touches from passing through the black background
                 Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(0.7f)).clickable(enabled = false) {}, contentAlignment = Alignment.Center) {
                     Card(modifier = Modifier.fillMaxWidth(0.85f), shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
                         Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -689,6 +787,7 @@ fun MoveCopyScreen(
                                 )
 
                             } else {
+                                // Waiting on the user to hit "Allow" on the system popup
                                 CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
                             }
                             Spacer(Modifier.height(24.dp))
@@ -702,6 +801,7 @@ fun MoveCopyScreen(
         }
     }
 
+    // Confirmation Popup
     if (targetAlbumForConfirmation != null) {
         val album = targetAlbumForConfirmation!!
         val actionVerb = if (operationMode == OperationMode.MOVE) "Move" else "Copy"
@@ -712,7 +812,7 @@ fun MoveCopyScreen(
             confirmButton = {
                 Button(onClick = {
                     targetAlbumForConfirmation = null
-                    isProcessing = true
+                    isProcessing = true // Lock the screen
                     if (operationMode == OperationMode.MOVE) viewModel.moveData(selectedMediaIds, album.id)
                     else viewModel.copyData(selectedMediaIds, album.id)
                 }) { Text(actionVerb) }
@@ -721,6 +821,7 @@ fun MoveCopyScreen(
         )
     }
 
+    // Create New Folder Popup
     if (showCreateDialog) {
         var newName by remember { mutableStateOf("") }
         AlertDialog(
@@ -732,8 +833,8 @@ fun MoveCopyScreen(
                     if (newName.isNotBlank()) {
                         showCreateDialog = false
                         isProcessing = true
-                        if (operationMode == OperationMode.MOVE) viewModel.createAndMove(selectedMediaIds, newName)
-                        else viewModel.createAndCopy(selectedMediaIds, newName)
+                        if (operationMode == OperationMode.MOVE) viewModel.createAndMove(selectedMediaIds, newName) // Make folder, then Move
+                        else viewModel.createAndCopy(selectedMediaIds, newName) // Make folder, then Copy
                     }
                 }) { Text("Create") }
             },
@@ -742,10 +843,12 @@ fun MoveCopyScreen(
     }
 }
 
+// Visual drawing for a destination folder
 @Composable
 fun AlbumTargetTile(album: Album, onClick: () -> Unit) {
     Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable { onClick() }) {
         Box(Modifier.aspectRatio(1f).clip(RoundedCornerShape(16.dp)).background(MaterialTheme.colorScheme.surfaceVariant)) {
+            // Put a tiny preview picture of the folder
             AsyncImage(model = ImageRequest.Builder(LocalContext.current).data(album.coverUri).crossfade(true).size(400).build(), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
         }
         Spacer(Modifier.height(8.dp))
@@ -754,6 +857,7 @@ fun AlbumTargetTile(album: Album, onClick: () -> Unit) {
     }
 }
 
+// Visual drawing for the "+" New Folder button
 @Composable
 fun CreateNewAlbumTile(onClick: () -> Unit) {
     Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable { onClick() }) {
@@ -765,6 +869,12 @@ fun CreateNewAlbumTile(onClick: () -> Unit) {
     }
 }
 
+/**
+ * =========================================================================================
+ * 📌 THE SIMPLE PICKER
+ * =========================================================================================
+ * This is used when the Video Editor or Live Wallpaper screen just needs the user to quickly select ONE photo/video.
+ */
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun GalleryPickerScreen(viewModel: GalleryViewModel = hiltViewModel(), onBack: () -> Unit, onMediaSelected: (MediaItem) -> Unit) {
@@ -774,7 +884,9 @@ fun GalleryPickerScreen(viewModel: GalleryViewModel = hiltViewModel(), onBack: (
     var isSearchActive by rememberSaveable { mutableStateOf(false) }
     var searchQuery by rememberSaveable { mutableStateOf("") }
     val animatedGridCount by animateIntAsState(targetValue = gridCount, animationSpec = spring(stiffness = Spring.StiffnessLow), label = "GridCountAnim")
+
     val allMedia by viewModel.media.collectAsState(initial = emptyList())
+    // Local filter instead of using the heavy database search
     val filteredMedia = remember(allMedia, searchQuery) { if (searchQuery.isNotEmpty()) allMedia.filter { it.name.contains(searchQuery, true) } else allMedia }
 
     Scaffold(
@@ -798,6 +910,7 @@ fun GalleryPickerScreen(viewModel: GalleryViewModel = hiltViewModel(), onBack: (
                     contentPadding = PaddingValues(bottom = 32.dp, start = 2.dp, end = 2.dp),
                     horizontalArrangement = Arrangement.spacedBy(2.dp),
                     verticalArrangement = Arrangement.spacedBy(2.dp),
+                    // Magic: Let the user pinch the screen with two fingers to change how many columns are in the grid!
                     modifier = Modifier.fillMaxSize().pointerInput(Unit) {
                         detectTransformGestures { _, _, zoom, _ ->
                             if (abs(zoom - 1f) > 0.15f) {
@@ -819,12 +932,14 @@ fun GalleryPickerScreen(viewModel: GalleryViewModel = hiltViewModel(), onBack: (
     }
 }
 
+// The tiny photo drawn inside the simple picker grid
 @Composable
 fun GalleryPickerThumbnail(modifier: Modifier = Modifier, media: MediaItem, gridCount: Int, onClick: () -> Unit) {
     Box(modifier = modifier.aspectRatio(1f).clip(RoundedCornerShape(4.dp)).background(MaterialTheme.colorScheme.surfaceVariant).clickable { onClick() }) {
         AsyncImage(
             model = ImageRequest.Builder(LocalContext.current)
                 .data(media.uri)
+                // Ask for higher quality if there are fewer columns, lower quality if there are lots of columns.
                 .size(when { gridCount <= 2 -> 600; gridCount <= 4 -> 400; else -> 200 })
                 .precision(Precision.INEXACT)
                 .crossfade(true)
@@ -843,6 +958,7 @@ fun GalleryPickerThumbnail(modifier: Modifier = Modifier, media: MediaItem, grid
     }
 }
 
+// Top Bar for the Simple Picker
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun GalleryPickerTopBar(isSearchActive: Boolean, searchQuery: String, onBack: () -> Unit, onSearchQueryChange: (String) -> Unit, onSearchToggle: () -> Unit) {
@@ -871,6 +987,12 @@ fun GalleryPickerTopBar(isSearchActive: Boolean, searchQuery: String, onBack: ()
     )
 }
 
+/**
+ * =========================================================================================
+ * 🎞️ THE SLIDE PROJECTOR (SlideshowScreen)
+ * =========================================================================================
+ * An automatic presentation that flips through photos on a timer.
+ */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun SlideshowScreen(albumId: String?, viewModel: GalleryViewModel = hiltViewModel(), onBack: () -> Unit) {
@@ -879,39 +1001,44 @@ fun SlideshowScreen(albumId: String?, viewModel: GalleryViewModel = hiltViewMode
     val activity = remember { context.findActivityForSlideshow() }
     val allMedia by viewModel.media.collectAsState(initial = emptyList())
     var isShuffleEnabled by remember { mutableStateOf(false) }
-    var slideDelayMs by remember { mutableLongStateOf(4000L) }
+    var slideDelayMs by remember { mutableLongStateOf(4000L) } // Default 4 seconds per photo
 
+    // Get the right list of photos (either everything, or just the specific album) and remove videos.
     val slideshowItems = remember(allMedia, albumId, isShuffleEnabled) {
         val filtered = (if (albumId != null) allMedia.filter { it.bucketId == albumId } else allMedia).filter { !it.isVideo }
-        if (isShuffleEnabled) filtered.shuffled() else filtered
+        if (isShuffleEnabled) filtered.shuffled() else filtered // Shuffle them up if requested
     }
 
     val pagerState = rememberPagerState(pageCount = { slideshowItems.size })
     var isPlaying by remember { mutableStateOf(true) }
     var showControls by remember { mutableStateOf(false) }
     var showSpeedMenu by remember { mutableStateOf(false) }
-    var isTouched by remember { mutableStateOf(false) }
-    var isAutoScrolling by remember { mutableStateOf(false) }
+    var isTouched by remember { mutableStateOf(false) } // Is the user touching the screen right now?
+    var isAutoScrolling by remember { mutableStateOf(false) } // Is the app currently doing the sliding animation?
 
+    // Force true full screen (Hide clock and battery)
     DisposableEffect(showControls) {
         val window = activity?.window
         if (window != null) {
             val controller = WindowCompat.getInsetsController(window, view)
             if (showControls) {
-                controller.show(WindowInsetsCompat.Type.systemBars())
+                controller.show(WindowInsetsCompat.Type.systemBars()) // Show clock if buttons are visible
             } else {
-                controller.hide(WindowInsetsCompat.Type.systemBars())
+                controller.hide(WindowInsetsCompat.Type.systemBars()) // Hide it if watching photos
                 controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             }
         }
         onDispose { activity?.window?.let { WindowCompat.getInsetsController(it, view).show(WindowInsetsCompat.Type.systemBars()) } }
     }
 
+    // Tell the Android OS: "Do not let the screen turn black and lock the phone while this is running!"
     DisposableEffect(Unit) {
         activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         onDispose { activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
     }
 
+    // THE TICKING CLOCK
+    // This loops continuously. It waits 4 seconds, then tells the Pager to slide to the next photo.
     LaunchedEffect(isPlaying, slideshowItems.size, slideDelayMs, isTouched) {
         if (!isPlaying || slideshowItems.isEmpty() || isTouched) return@LaunchedEffect
         while (isActive) {
@@ -920,6 +1047,7 @@ fun SlideshowScreen(albumId: String?, viewModel: GalleryViewModel = hiltViewMode
             if (!pagerState.isScrollInProgress) {
                 isAutoScrolling = true
                 try {
+                    // Start the 1.2 second long sliding animation to the next picture
                     pagerState.animateScrollToPage(
                         (pagerState.currentPage + 1) % slideshowItems.size,
                         animationSpec = tween(1200, easing = FastOutSlowInEasing)
@@ -931,6 +1059,7 @@ fun SlideshowScreen(albumId: String?, viewModel: GalleryViewModel = hiltViewMode
         }
     }
 
+    // If the user manually swipes to the next photo, pause the automatic slideshow.
     LaunchedEffect(pagerState.isScrollInProgress) {
         if (pagerState.isScrollInProgress && !isAutoScrolling) {
             isPlaying = false
@@ -938,6 +1067,7 @@ fun SlideshowScreen(albumId: String?, viewModel: GalleryViewModel = hiltViewMode
         }
     }
 
+    // If the user hasn't touched the screen in 3 seconds, hide the buttons and start playing again!
     LaunchedEffect(isTouched) {
         if (!isTouched && !isPlaying && !showSpeedMenu) {
             delay(3000)
@@ -946,6 +1076,7 @@ fun SlideshowScreen(albumId: String?, viewModel: GalleryViewModel = hiltViewMode
         }
     }
 
+    // If the buttons are visible, but the user does nothing for 3 seconds, hide the buttons.
     LaunchedEffect(showControls, showSpeedMenu) {
         if (showControls && !showSpeedMenu && !isTouched) {
             delay(3000)
@@ -958,6 +1089,7 @@ fun SlideshowScreen(albumId: String?, viewModel: GalleryViewModel = hiltViewMode
             .fillMaxSize()
             .background(Color.Black)
             .pointerInput(Unit) {
+                // If they touch the screen, show the pause button and menu
                 awaitEachGesture {
                     awaitFirstDown()
                     isTouched = true
@@ -965,7 +1097,7 @@ fun SlideshowScreen(albumId: String?, viewModel: GalleryViewModel = hiltViewMode
                     if (showControls) isPlaying = false
                     do {
                         val event = awaitPointerEvent()
-                    } while (event.changes.any { it.pressed })
+                    } while (event.changes.any { it.pressed }) // Wait for them to lift their finger
                     isTouched = false
                 }
             }
@@ -973,21 +1105,24 @@ fun SlideshowScreen(albumId: String?, viewModel: GalleryViewModel = hiltViewMode
         if (slideshowItems.isEmpty()) {
             Text("No photos to show", color = Color.White, modifier = Modifier.align(Alignment.Center))
         } else {
+            // The Horizontal Pager handles the left/right swiping
             HorizontalPager(
                 state = pagerState,
                 modifier = Modifier.fillMaxSize()
             ) { page ->
                 val safePage = page.coerceIn(0, slideshowItems.lastIndex)
                 val item = slideshowItems[safePage]
-                val scale = remember { Animatable(1f) }
+                val scale = remember { Animatable(1f) } // "Ken Burns" effect scale
 
+                // Math to calculate how to fade the photo out slightly as it slides off the screen
                 val pageOffset = (pagerState.currentPage - page) + pagerState.currentPageOffsetFraction
                 val alphaValue = 1f - abs(pageOffset).coerceIn(0f, 1f)
 
+                // The "Ken Burns Effect". This makes the photo very slowly zoom in while it is on screen, giving it a cinematic look.
                 LaunchedEffect(pagerState.currentPage, isPlaying, isTouched) {
                     if (pagerState.currentPage == page && isPlaying && !isTouched) {
-                        scale.snapTo(1f)
-                        scale.animateTo(1.15f, tween(slideDelayMs.toInt(), easing = LinearEasing))
+                        scale.snapTo(1f) // Reset zoom
+                        scale.animateTo(1.15f, tween(slideDelayMs.toInt(), easing = LinearEasing)) // Slowly zoom to 115% over 4 seconds
                     } else {
                         scale.snapTo(1f)
                     }
@@ -996,14 +1131,14 @@ fun SlideshowScreen(albumId: String?, viewModel: GalleryViewModel = hiltViewMode
                 AsyncImage(
                     model = ImageRequest.Builder(context)
                         .data(item.uri)
-                        .bitmapConfig(Bitmap.Config.RGB_565)
+                        .bitmapConfig(Bitmap.Config.RGB_565) // Use lower color quality to save massive amounts of RAM
                         .memoryCachePolicy(CachePolicy.ENABLED)
                         .diskCachePolicy(CachePolicy.ENABLED)
-                        .crossfade(1000)
+                        .crossfade(1000) // 1 second fade between images
                         .allowHardware(true)
                         .build(),
                     contentDescription = null,
-                    contentScale = ContentScale.Crop,
+                    contentScale = ContentScale.Crop, // Fill the whole screen
                     modifier = Modifier
                         .fillMaxSize()
                         .graphicsLayer { alpha = alphaValue }
@@ -1011,15 +1146,19 @@ fun SlideshowScreen(albumId: String?, viewModel: GalleryViewModel = hiltViewMode
                 )
             }
 
+            // The Bottom Controls (Play/Pause, Speed, Shuffle)
             AnimatedVisibility(visible = showControls, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.align(Alignment.BottomCenter)) {
                 Box(modifier = Modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(0.8f)))).navigationBarsPadding().padding(vertical = 24.dp)) {
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
+                        // Shuffle Button
                         IconButton(onClick = { isShuffleEnabled = !isShuffleEnabled; isPlaying = true }, modifier = Modifier.size(48.dp)) {
                             Icon(Icons.Rounded.Shuffle, "Shuffle", tint = if (isShuffleEnabled) MaterialTheme.colorScheme.primary else Color.White)
                         }
+                        // Huge Play/Pause Button
                         IconButton(onClick = { isPlaying = !isPlaying }, modifier = Modifier.size(72.dp).background(Color.White.copy(0.2f), CircleShape)) {
                             Icon(if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, null, tint = Color.White, modifier = Modifier.size(36.dp))
                         }
+                        // Speed Menu Button
                         Box {
                             IconButton(onClick = { showSpeedMenu = true; isPlaying = false }, modifier = Modifier.size(48.dp)) {
                                 Icon(Icons.Rounded.Speed, "Speed", tint = Color.White)
@@ -1031,7 +1170,7 @@ fun SlideshowScreen(albumId: String?, viewModel: GalleryViewModel = hiltViewMode
                                             Text(label, fontWeight = if (slideDelayMs == delay) FontWeight.Bold else FontWeight.Normal, color = if (slideDelayMs == delay) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
                                         },
                                         onClick = {
-                                            slideDelayMs = delay
+                                            slideDelayMs = delay // Update the speed timer!
                                             showSpeedMenu = false
                                             isPlaying = true
                                         }
@@ -1043,6 +1182,8 @@ fun SlideshowScreen(albumId: String?, viewModel: GalleryViewModel = hiltViewMode
                 }
             }
         }
+
+        // The Top Back Arrow
         AnimatedVisibility(visible = showControls, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.align(Alignment.TopStart)) {
             IconButton(onClick = onBack, modifier = Modifier.statusBarsPadding().padding(16.dp).size(48.dp).background(Color.Black.copy(0.4f), CircleShape)) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = Color.White)
@@ -1051,33 +1192,41 @@ fun SlideshowScreen(albumId: String?, viewModel: GalleryViewModel = hiltViewMode
     }
 }
 
+/**
+ * =========================================================================================
+ * ⚙️ DUPLICATE DETECTION MATH HELPERS
+ * =========================================================================================
+ */
+
+// Reads the very beginning, middle, and end of a massive video file to generate a quick, unique signature.
 private fun calculatePartialHash(filePath: String): String {
     return try {
         val file = File(filePath)
         val size = file.length()
-        val chunkSize = 65536L
-        val digest = MessageDigest.getInstance("MD5")
+        val chunkSize = 65536L // 64 Kilobytes
+        val digest = MessageDigest.getInstance("MD5") // Math algorithm to generate the signature
         FileInputStream(file).use { fis ->
             val buf = ByteArray(chunkSize.toInt())
-            var read = fis.read(buf)
+            var read = fis.read(buf) // Read the beginning
             if (read > 0) digest.update(buf, 0, read)
             if (size > chunkSize * 2) {
-                fis.channel.position(size / 2)
+                fis.channel.position(size / 2) // Jump to the middle
                 read = fis.read(buf)
                 if (read > 0) digest.update(buf, 0, read)
             }
             if (size > chunkSize) {
-                fis.channel.position(size - chunkSize)
+                fis.channel.position(size - chunkSize) // Jump to the end
                 read = fis.read(buf)
                 if (read > 0) digest.update(buf, 0, read)
             }
         }
-        digest.digest().joinToString("") { "%02x".format(it) }
+        digest.digest().joinToString("") { "%02x".format(it) } // Spits out the signature like "a1b2c3d4e5f6"
     } catch (e: Exception) {
         "err_${System.nanoTime()}"
     }
 }
 
+// Shrinks a picture to exactly 8x8 pixels, turns it black and white, and creates a 64-bit mathematical number.
 private fun averageHash(path: String): Long? {
     return try {
         val options = BitmapFactory.Options().apply {
@@ -1089,12 +1238,15 @@ private fun averageHash(path: String): Long? {
         options.inJustDecodeBounds = false
         val bmp = BitmapFactory.decodeFile(path, options) ?: return null
         val scaled = Bitmap.createScaledBitmap(bmp, 8, 8, true)
-        bmp.recycle()
+        bmp.recycle() // Throw away the big picture to save RAM
+
         val pixels = IntArray(64)
         scaled.getPixels(pixels, 0, 8, 0, 0, 8, 8)
         scaled.recycle()
+
         var sum = 0L
         val grays = IntArray(64)
+        // Convert colors to grayscale based on how human eyes perceive brightness
         for (i in 0 until 64) {
             val p = pixels[i]
             val gray = (android.graphics.Color.red(p) * 299 + android.graphics.Color.green(p) * 587 + android.graphics.Color.blue(p) * 114) / 1000
@@ -1103,6 +1255,7 @@ private fun averageHash(path: String): Long? {
         }
         val avg = sum / 64
         var hash = 0L
+        // If a pixel is brighter than average, mark it as a 1. If darker, a 0.
         for (i in 0 until 64) {
             if (grays[i] >= avg) hash = hash or (1L shl i)
         }
@@ -1110,8 +1263,10 @@ private fun averageHash(path: String): Long? {
     } catch (e: Exception) { null }
 }
 
+// Math that compares two signatures. If the distance is 0, the photos are identical. If it's 3, they are 95% identical (a burst shot).
 private fun hammingDistance(h1: Long, h2: Long): Int = java.lang.Long.bitCount(h1 xor h2)
 
+// A math helper function. Calculates how much we need to "shrink" an image so it fits in memory.
 private fun calculateInSampleSize(options: BitmapFactory.Options, reqWidth: Int, reqHeight: Int): Int {
     val (height: Int, width: Int) = options.outHeight to options.outWidth
     var inSampleSize = 1
@@ -1123,6 +1278,7 @@ private fun calculateInSampleSize(options: BitmapFactory.Options, reqWidth: Int,
     return inSampleSize
 }
 
+// Converts raw milliseconds into "1:05" for the simple picker screen.
 private fun formatPickerDuration(durationMs: Long): String {
     val s = (durationMs / 1000) % 60
     val m = (durationMs / (1000 * 60)) % 60
@@ -1130,6 +1286,7 @@ private fun formatPickerDuration(durationMs: Long): String {
     return if (h > 0) String.format(Locale.US, "%d:%02d:%02d", h, m, s) else String.format(Locale.US, "%d:%02d", m, s)
 }
 
+// Unwraps the Russian Nesting Dolls to find the main Activity screen for the Slideshow.
 private fun Context.findActivityForSlideshow(): Activity? {
     var currentContext = this
     while (currentContext is ContextWrapper) {

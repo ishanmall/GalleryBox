@@ -1,8 +1,14 @@
+// These annotations tell the Android compiler to ignore certain warnings.
+// Think of it as telling an overly strict grammar checker to ignore specific words because we know what we are doing.
 @file:Suppress("UnsafeOptInUsageError", "UnstableApiUsage", "OPT_IN_USAGE", "unused", "DEPRECATION")
 @file:androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 
 package com.gallerybox.ui.screens.vault
 
+// --- IMPORTS ---
+// This is the "toolbox" area. We are fetching all the tools we need to build this file.
+// We are bringing in tools for fingerprint scanning, reading the phone's physical movement sensors,
+// playing encrypted video, and stripping GPS metadata from photos.
 import android.content.Context
 import android.content.Intent
 import android.hardware.Sensor
@@ -86,40 +92,56 @@ import java.util.Date
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
+/**
+ * =========================================================================================
+ * 🛡️ THE MASTER VAULT SCREEN
+ * =========================================================================================
+ * This is the parent screen that decides if the user should see the Fingerprint Bouncer,
+ * the Loading Screen, or the actual grid of secure photos.
+ */
 @Composable
 fun VaultSecureScreen(
-    viewModel: GalleryViewModel = hiltViewModel(),
-    securityViewModel: SecurityViewModel = hiltViewModel(),
-    isGlobalAppGuard: Boolean = false,
+    viewModel: GalleryViewModel = hiltViewModel(), // Manager of the actual photo files
+    securityViewModel: SecurityViewModel = hiltViewModel(), // The Security Guard manager
+    isGlobalAppGuard: Boolean = false, // True if the entire app is locked. False if just the Vault is locked.
     onBack: () -> Unit,
     onNavigateToPicker: () -> Unit = {},
     onUnlockGlobalSuccess: () -> Unit = {}
 ) {
     val context = LocalContext.current
-    val lifecycleOwner = LocalLifecycleOwner.current
+    val lifecycleOwner = LocalLifecycleOwner.current // Knows if the app is currently on-screen or minimized
     val activity = remember(context) { context.findActivity() }
 
+    // Check the Security Guard's scoreboards
     val unlocked by securityViewModel.isUnlocked.collectAsState()
-    var isUnlocking by remember { mutableStateOf(false) }
-    val autoLockTimeout by securityViewModel.autoLockTimeout.collectAsState(initial = 5)
+    var isUnlocking by remember { mutableStateOf(false) } // Shows a spinner while scanning fingerprint
+    val autoLockTimeout by securityViewModel.autoLockTimeout.collectAsState(initial = 5) // "Lock after 5 minutes"
 
+    // 📳 THE PANIC SHAKE
+    // If someone walks in the room, the user can literally shake their phone violently to instantly lock the Vault!
     VaultShakeDetector {
         securityViewModel.lock()
-        viewModel.clearTempVaultCache()
-        if (!isGlobalAppGuard) onBack()
+        viewModel.clearTempVaultCache() // Destroy any temporary decrypted video files instantly
+        if (!isGlobalAppGuard) onBack() // Throw them out of the vault back to the main app screen
     }
 
+    // Every time this screen opens, sweep the floor for left-over decrypted files from the last session.
     LaunchedEffect(Unit) {
         viewModel.clearTempVaultCache()
     }
 
+    // Ask the manager for the list of hidden photos
     val hiddenItems by viewModel.hiddenMedia.collectAsState(emptyList())
 
-    // FIX: Do NOT re-lock when unmounting VaultSecureScreen during Global App Guard mode!
+    // 🚫 THE SCREENSHOT BLOCKER
+    // This tells Android: "Do NOT allow the user to take a screenshot or screen-record while this screen is open!"
+    // It also turns the app completely black if the user opens the "Recent Apps" menu to peek.
     DisposableEffect(isGlobalAppGuard) {
         activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         onDispose {
+            // When leaving the vault, remove the screenshot blocker so the main app works normally
             activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+            // Relock the door automatically when they leave
             if (!isGlobalAppGuard) {
                 securityViewModel.lock()
                 viewModel.clearTempVaultCache()
@@ -127,19 +149,26 @@ fun VaultSecureScreen(
         }
     }
 
+    // THE TIMEOUT WATCHER
+    // If the user minimizes the app to check a text message, this starts a stopwatch.
     DisposableEffect(lifecycleOwner, autoLockTimeout) {
         val obs = LifecycleEventObserver { _, ev ->
+            // If the app is minimized (PAUSE or STOP)...
             if (ev == Lifecycle.Event.ON_PAUSE || ev == Lifecycle.Event.ON_STOP) {
+                // If they set "Lock Instantly" (0 minutes), lock the door right now!
                 if (autoLockTimeout == 0) {
                     securityViewModel.lock()
                     viewModel.clearTempVaultCache()
                 }
             }
+            // If they open the app back up again...
             if (ev == Lifecycle.Event.ON_RESUME) {
+                // Ask the guard if they were gone longer than the 5-minute timeout limit
                 if (securityViewModel.shouldRelock(autoLockTimeout)) {
-                    securityViewModel.lock()
+                    securityViewModel.lock() // Too slow! Lock the door.
                 }
             }
+            // If the app is killed completely...
             if (ev == Lifecycle.Event.ON_DESTROY) {
                 securityViewModel.lock()
                 viewModel.clearTempVaultCache()
@@ -151,10 +180,11 @@ fun VaultSecureScreen(
         }
     }
 
+    // A simple traffic light that decides what screen to draw
     val state = when {
-        isUnlocking -> "PROCESSING"
-        !unlocked -> "AUTH_GUARD"
-        else -> "GRANTED"
+        isUnlocking -> "PROCESSING" // Scanning finger...
+        !unlocked -> "AUTH_GUARD" // Show the big Lock icon...
+        else -> "GRANTED" // Show the photos!
     }
 
     when (state) {
@@ -171,6 +201,7 @@ fun VaultSecureScreen(
             }
         }
         "AUTH_GUARD" -> {
+            // Draw the lock screen
             StandardAppLockScreen(
                 viewModel = securityViewModel,
                 isGlobalAppGuard = isGlobalAppGuard,
@@ -182,6 +213,7 @@ fun VaultSecureScreen(
                 isUnlocking = false
                 if (isGlobalAppGuard) onUnlockGlobalSuccess()
             }
+            // Draw the secret photos!
             if (!isGlobalAppGuard) {
                 VaultGridScreen(
                     items = hiddenItems,
@@ -194,6 +226,12 @@ fun VaultSecureScreen(
     }
 }
 
+/**
+ * =========================================================================================
+ * 🔐 THE BOUNCER (StandardAppLockScreen)
+ * =========================================================================================
+ * Shows the padlock icon and triggers the Android Fingerprint/Face ID pop-up.
+ */
 @Composable
 fun StandardAppLockScreen(
     viewModel: SecurityViewModel,
@@ -201,13 +239,15 @@ fun StandardAppLockScreen(
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
-    val activity = remember(context) { context.findFragmentActivity() }
+    val activity = remember(context) { context.findFragmentActivity() } // Biometrics requires a special type of Activity
     var bioShown by rememberSaveable { mutableStateOf(false) }
 
+    // If the ENTIRE app is locked, hitting the back button just minimizes the app (sends it to the home screen).
     BackHandler(enabled = isGlobalAppGuard) {
         activity?.moveTaskToBack(true)
     }
 
+    // The function that actually calls Android's built-in Fingerprint scanner
     val triggerBiometrics = {
         if (!viewModel.canUseSystemAuthentication()) {
             Toast.makeText(context, "System authentication unavailable", Toast.LENGTH_SHORT).show()
@@ -218,10 +258,11 @@ fun StandardAppLockScreen(
                 object : BiometricPrompt.AuthenticationCallback() {
                     override fun onAuthenticationSucceeded(res: BiometricPrompt.AuthenticationResult) {
                         super.onAuthenticationSucceeded(res)
-                        viewModel.onAuthenticationSuccess()
+                        viewModel.onAuthenticationSuccess() // Tell the Guard they passed!
                     }
                     override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
                         super.onAuthenticationError(errorCode, errString)
+                        // If they hit "Cancel" on the fingerprint scanner, throw them out.
                         if (isGlobalAppGuard) {
                             activity.moveTaskToBack(true)
                         } else {
@@ -229,14 +270,16 @@ fun StandardAppLockScreen(
                         }
                     }
                     override fun onAuthenticationFailed() {
-                        super.onAuthenticationFailed()
+                        super.onAuthenticationFailed() // Fingerprint didn't match. Wait for them to try again.
                     }
                 }
             ).authenticate(
+                // Setup the text that appears on the Android fingerprint pop-up
                 BiometricPrompt.PromptInfo.Builder()
                     .setTitle("GalleryBox")
                     .setSubtitle("Confirm your identity")
                     .setAllowedAuthenticators(
+                        // Allow them to use Fingerprint, Face ID, OR their phone's lock screen PIN code.
                         androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_STRONG or
                                 androidx.biometric.BiometricManager.Authenticators.DEVICE_CREDENTIAL
                     )
@@ -247,6 +290,7 @@ fun StandardAppLockScreen(
         }
     }
 
+    // Pop the fingerprint scanner up automatically as soon as this screen is drawn.
     LaunchedEffect(Unit) {
         if (!bioShown) {
             bioShown = true
@@ -254,6 +298,7 @@ fun StandardAppLockScreen(
         }
     }
 
+    // Draw the UI behind the fingerprint scanner
     Column(
         modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -293,6 +338,12 @@ fun StandardAppLockScreen(
     }
 }
 
+/**
+ * =========================================================================================
+ * 🖼️ THE SECURE GRID (VaultGridScreen)
+ * =========================================================================================
+ * Draws the actual thumbnails of the secret photos once the user makes it inside the vault.
+ */
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun VaultGridScreen(
@@ -302,18 +353,19 @@ fun VaultGridScreen(
     onAdd: () -> Unit
 ) {
     val context = LocalContext.current
-    var selectionMode by remember { mutableStateOf(false) }
+    var selectionMode by remember { mutableStateOf(false) } // Is the user checking boxes?
     val selectedIds = remember { mutableStateMapOf<Long, Long>() }
-    var viewerItemId by remember { mutableStateOf<Long?>(null) }
+    var viewerItemId by remember { mutableStateOf<Long?>(null) } // The specific photo they tapped to view full screen
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
     val haptic = LocalHapticFeedback.current
 
+    // Handle the Android Back Button safely
     BackHandler(enabled = viewerItemId != null || selectionMode) {
         if (viewerItemId != null) {
-            viewerItemId = null
+            viewerItemId = null // Close the full screen photo
         } else if (selectionMode) {
-            selectionMode = false
+            selectionMode = false // Cancel selection
             selectedIds.clear()
         }
     }
@@ -336,7 +388,7 @@ fun VaultGridScreen(
                                 selectionMode = false
                                 selectedIds.clear()
                             } else {
-                                onBack()
+                                onBack() // Leave the vault
                             }
                         }) {
                             Icon(
@@ -347,6 +399,7 @@ fun VaultGridScreen(
                     },
                     actions = {
                         if (!selectionMode) {
+                            // "Add" button to pull photos from the main gallery INTO the vault
                             IconButton(onClick = onAdd) {
                                 Icon(imageVector = Icons.Default.Add, contentDescription = "Add")
                             }
@@ -356,6 +409,7 @@ fun VaultGridScreen(
                 )
             },
             bottomBar = {
+                // The Action Menu that slides up from the bottom when you select photos
                 AnimatedVisibility(
                     visible = selectionMode,
                     enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
@@ -375,6 +429,7 @@ fun VaultGridScreen(
                                 icon = Icons.Outlined.LockOpen,
                                 label = "Unhide"
                             ) {
+                                // Put them back in the normal public gallery
                                 viewModel.unhideMedia(selectedIds.keys.toList())
                                 selectedIds.clear()
                                 selectionMode = false
@@ -386,6 +441,7 @@ fun VaultGridScreen(
                             ) {
                                 val exportItems = items.filter { selectedIds.containsKey(it.id) }
                                 scope.launch {
+                                    // Remove GPS data and share to WhatsApp!
                                     stripExifAndShare(context, exportItems, viewModel)
                                     selectedIds.clear()
                                     selectionMode = false
@@ -406,6 +462,7 @@ fun VaultGridScreen(
                 }
             }
         ) { padding ->
+            // If the vault is empty, show a big lock icon
             if (items.isEmpty()) {
                 Box(
                     modifier = Modifier.fillMaxSize(),
@@ -423,6 +480,7 @@ fun VaultGridScreen(
                     }
                 }
             } else {
+                // The 3-column grid of secret photos
                 LazyVerticalGrid(
                     columns = GridCells.Fixed(3),
                     modifier = Modifier.padding(padding).fillMaxSize(),
@@ -433,7 +491,7 @@ fun VaultGridScreen(
                     items(items, key = { it.id }) { item ->
                         val isSelected = selectedIds.containsKey(item.id)
                         val tileScale by animateFloatAsState(
-                            targetValue = if (isSelected) 0.90f else 1f,
+                            targetValue = if (isSelected) 0.90f else 1f, // Shrink slightly if selected
                             label = "tileScale"
                         )
                         Box(
@@ -456,7 +514,7 @@ fun VaultGridScreen(
                                             }
                                             haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                         } else {
-                                            viewerItemId = item.id
+                                            viewerItemId = item.id // Open full screen!
                                         }
                                     },
                                     onLongClick = {
@@ -468,10 +526,11 @@ fun VaultGridScreen(
                                     }
                                 )
                         ) {
+                            // Draws the encrypted thumbnail
                             SecureAsyncImage(
                                 item = item,
                                 viewModel = viewModel,
-                                isThumbnail = true,
+                                isThumbnail = true, // We only need a tiny, blurry version for the grid
                                 modifier = Modifier.fillMaxSize()
                             )
 
@@ -484,6 +543,7 @@ fun VaultGridScreen(
                                 )
                             }
 
+                            // The blue checkmark
                             if (selectionMode) {
                                 Box(
                                     modifier = Modifier
@@ -517,6 +577,7 @@ fun VaultGridScreen(
             }
         }
 
+        // --- FULL SCREEN VIEWER OVERLAY ---
         AnimatedVisibility(
             visible = viewerItemId != null,
             enter = fadeIn(),
@@ -534,6 +595,13 @@ fun VaultGridScreen(
     }
 }
 
+/**
+ * =========================================================================================
+ * 🕵️ THE DECRYPTION ROOM (SecureFullscreenViewer)
+ * =========================================================================================
+ * Shows a full-resolution photo or video. Because the files are encrypted with military grade encryption,
+ * standard tools like ExoPlayer or Coil cannot read them! We have to decrypt them in RAM (Memory) first.
+ */
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun SecureFullscreenViewer(
@@ -551,8 +619,9 @@ fun SecureFullscreenViewer(
 
     val pagerState = rememberPagerState(initialPage = initialIndex, pageCount = { items.size })
     var showControls by remember { mutableStateOf(true) }
-    var showMeta by remember { mutableStateOf(false) }
+    var showMeta by remember { mutableStateOf(false) } // The metadata details menu
 
+    // Build a private Video Player engine just for this screen
     val exoPlayer = remember {
         ExoPlayer.Builder(context).build().apply {
             repeatMode = Player.REPEAT_MODE_OFF
@@ -562,10 +631,11 @@ fun SecureFullscreenViewer(
 
     DisposableEffect(exoPlayer) {
         onDispose {
-            exoPlayer.release()
+            exoPlayer.release() // Destroy the engine when we close the full screen
         }
     }
 
+    // Hide the clock and battery bar at the top of the phone
     DisposableEffect(context.findActivity()) {
         val w = context.findActivity()?.window
         if (w != null) {
@@ -588,26 +658,32 @@ fun SecureFullscreenViewer(
     }
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+        // The swiping carousel
         HorizontalPager(
             state = pagerState,
             pageSpacing = 16.dp,
             modifier = Modifier.fillMaxSize()
         ) { page ->
             val item = items[page]
-            var tempFile by remember(item.id) { mutableStateOf<File?>(null) }
-            var videoLoading by remember(item.id) { mutableStateOf(item.isVideo) }
+            var tempFile by remember(item.id) { mutableStateOf<File?>(null) } // A temporary decrypted video file
+            var videoLoading by remember(item.id) { mutableStateOf(item.isVideo) } // Is the video currently being decrypted?
             var trigger by remember { mutableIntStateOf(0) }
+
+            // Pinch-to-zoom and swipe-down-to-close math
             var dragOffsetY by remember { mutableFloatStateOf(0f) }
             var scale by remember { mutableFloatStateOf(1f) }
             var offset by remember { mutableStateOf(Offset.Zero) }
             var isVideoPlaying by remember(item.id) { mutableStateOf(false) }
 
+            // Whenever the user swipes AWAY from this photo/video...
             DisposableEffect(item.id) {
                 onDispose {
                     if (exoPlayer.currentMediaItem?.mediaId == item.id.toString()) {
                         exoPlayer.stop()
                         exoPlayer.clearMediaItems()
                     }
+                    // VERY IMPORTANT: If we decrypted a secret video to the hard drive so the player could read it,
+                    // we MUST destroy the decrypted file immediately so it doesn't leak!
                     tempFile?.let {
                         it.delete()
                         viewModel.deleteTempFile(it)
@@ -616,17 +692,20 @@ fun SecureFullscreenViewer(
                 }
             }
 
+            // The Video Decryption Process
             LaunchedEffect(item.id, trigger) {
                 if (item.isVideo) {
                     videoLoading = true
+                    // Go to the background warehouse. Take the encrypted gibberish video, unlock it, and write a temporary unencrypted version.
                     tempFile = withContext(Dispatchers.IO) {
                         viewModel.decryptToTempFile(item.path)
                     }
-                    tempFile?.deleteOnExit()
+                    tempFile?.deleteOnExit() // Failsafe: Tell Android to delete it if the app crashes
                     videoLoading = false
                 }
             }
 
+            // The Pinch to Zoom area
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -643,7 +722,7 @@ fun SecureFullscreenViewer(
                             onTap = { showControls = !showControls },
                             onDoubleTap = {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                scale = if (scale > 1f) 1f else 2.5f
+                                scale = if (scale > 1f) 1f else 2.5f // Zoom to 250%
                                 offset = Offset.Zero
                             }
                         )
@@ -658,7 +737,7 @@ fun SecureFullscreenViewer(
                                 offset = Offset.Zero
                                 dragOffsetY += pan.y
                                 if (abs(dragOffsetY) > 50f) {
-                                    showControls = false
+                                    showControls = false // Hide the top bar if they start dragging it down
                                 }
                             }
                         }
@@ -668,32 +747,41 @@ fun SecureFullscreenViewer(
                             awaitFirstDown()
                             do {
                                 val ev = awaitPointerEvent()
-                            } while (ev.changes.any { it.pressed })
+                            } while (ev.changes.any { it.pressed }) // Wait for them to lift their finger
+
+                            // If they dragged the photo down past 25% of the screen height, close it!
                             if (scale <= 1.05f && abs(dragOffsetY) > containerHeightPx * 0.25f) {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 onBack()
                             } else {
-                                dragOffsetY = 0f
+                                dragOffsetY = 0f // Snap it back up like a rubber band
                             }
                         }
                     },
                 contentAlignment = Alignment.Center
             ) {
+                // Actually displaying the decrypted file!
                 when {
+                    // Still unlocking the video...
                     videoLoading -> CircularProgressIndicator()
+
+                    // It's a photo! Decrypt it entirely in RAM (Memory) so it never touches the hard drive.
                     !item.isVideo -> SecureAsyncImage(
                         item = item,
                         viewModel = viewModel,
-                        isThumbnail = false,
+                        isThumbnail = false, // We want the full 4K image
                         modifier = Modifier.fillMaxSize()
                     )
+
+                    // It's a decrypted video ready to play!
                     item.isVideo && tempFile != null -> {
                         if (isVideoPlaying) {
+                            // Render the video
                             AndroidView(
                                 factory = {
                                     PlayerView(context).apply {
                                         player = exoPlayer
-                                        useController = true
+                                        useController = true // Give them a play bar so they can rewind
                                         setShutterBackgroundColor(android.graphics.Color.BLACK)
                                     }
                                 },
@@ -702,7 +790,7 @@ fun SecureFullscreenViewer(
                                         exoPlayer.clearMediaItems()
                                         exoPlayer.setMediaItem(
                                             ExoMediaItem.Builder()
-                                                .setUri(Uri.fromFile(tempFile))
+                                                .setUri(Uri.fromFile(tempFile)) // Hand the player the temporary decrypted file
                                                 .setMediaId(item.id.toString())
                                                 .build()
                                         )
@@ -713,6 +801,7 @@ fun SecureFullscreenViewer(
                                 modifier = Modifier.fillMaxSize()
                             )
                         } else {
+                            // Show a still photo preview of the video with a giant Play button over it
                             Box(
                                 modifier = Modifier.fillMaxSize(),
                                 contentAlignment = Alignment.Center
@@ -720,7 +809,7 @@ fun SecureFullscreenViewer(
                                 SecureAsyncImage(
                                     item = item,
                                     viewModel = viewModel,
-                                    isThumbnail = true,
+                                    isThumbnail = true, // Just a low-res preview
                                     modifier = Modifier.fillMaxSize()
                                 )
                                 IconButton(
@@ -741,6 +830,7 @@ fun SecureFullscreenViewer(
                             }
                         }
                     }
+                    // Oh no, the password was wrong or the file is corrupted.
                     else -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Icon(
                             imageVector = Icons.Default.ErrorOutline,
@@ -757,6 +847,7 @@ fun SecureFullscreenViewer(
             }
         }
 
+        // The Top Bar
         AnimatedVisibility(
             visible = showControls,
             modifier = Modifier.align(Alignment.TopCenter),
@@ -766,7 +857,7 @@ fun SecureFullscreenViewer(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(Brush.verticalGradient(listOf(Color.Black.copy(0.7f), Color.Transparent)))
+                    .background(Brush.verticalGradient(listOf(Color.Black.copy(0.7f), Color.Transparent))) // Gradient shadow to make text readable
                     .statusBarsPadding()
                     .padding(16.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -781,11 +872,12 @@ fun SecureFullscreenViewer(
                 }
                 if (items.isNotEmpty()) {
                     Text(
-                        text = items[pagerState.currentPage].dateHeader,
+                        text = items[pagerState.currentPage].dateHeader, // e.g. "Today"
                         color = Color.White,
                         fontWeight = FontWeight.Bold
                     )
                 }
+                // The "i" button for metadata
                 IconButton(onClick = { showMeta = true }) {
                     Icon(
                         imageVector = Icons.Outlined.Info,
@@ -797,12 +889,14 @@ fun SecureFullscreenViewer(
         }
     }
 
+    // The Slide-up Metadata Details Menu
     if (showMeta) {
         val currentItem = items.getOrNull(pagerState.currentPage)
         val context = LocalContext.current
         val locale = androidx.compose.ui.text.intl.Locale.current.platformLocale
 
         if (currentItem != null) {
+            // Translate raw milliseconds into "Sunday, August 12, 2026 at 2:00 PM"
             val dateString = remember(currentItem.dateAdded, locale) {
                 val pattern = if (android.text.format.DateFormat.is24HourFormat(context)) {
                     "EEEE, MMMM dd, yyyy 'at' HH:mm"
@@ -843,6 +937,7 @@ fun SecureFullscreenViewer(
                     )
                     Spacer(modifier = Modifier.height(16.dp))
 
+                    // A red warning box explaining how the Vault works
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -869,6 +964,12 @@ fun SecureFullscreenViewer(
     }
 }
 
+/**
+ * 🔒 A custom image loader specifically for the Vault.
+ * Because the images are encrypted on the hard drive, standard loading tools won't work.
+ * This function asks the Manager to decrypt the file directly into a `ByteArray` (pure RAM),
+ * then feeds that raw RAM directly to the screen to draw.
+ */
 @Composable
 fun SecureAsyncImage(
     item: MediaItem,
@@ -881,6 +982,7 @@ fun SecureAsyncImage(
     var trigger by remember { mutableIntStateOf(0) }
     val context = LocalContext.current
 
+    // Wipe the RAM immediately when the image is closed!
     DisposableEffect(item.id) {
         onDispose {
             bytes = null
@@ -891,6 +993,7 @@ fun SecureAsyncImage(
         loading = true
         if (!item.isVideo) {
             bytes = withContext(Dispatchers.IO) {
+                // Decrypt it!
                 if (isThumbnail) viewModel.decryptThumbnailToMemory(item.path) else viewModel.decryptToMemory(item.path)
             }
         }
@@ -909,12 +1012,14 @@ fun SecureAsyncImage(
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()
             )
+            // Feed the decrypted RAM (bytes) into the image drawing tool! We disable all caching so it never writes the decrypted image to the hard drive.
             bytes != null -> AsyncImage(
                 model = ImageRequest.Builder(context).data(bytes).memoryCachePolicy(CachePolicy.DISABLED).diskCachePolicy(CachePolicy.DISABLED).allowHardware(false).build(),
                 contentScale = if (isThumbnail) ContentScale.Crop else ContentScale.Fit,
                 contentDescription = null,
                 modifier = Modifier.fillMaxSize()
             )
+            // Error!
             else -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Icon(imageVector = Icons.Default.BrokenImage, contentDescription = null)
                 if (!isThumbnail) {
@@ -927,6 +1032,7 @@ fun SecureAsyncImage(
     }
 }
 
+// Blueprint for the buttons on the bottom action bar
 @Composable
 fun ActionItem(
     icon: ImageVector,
@@ -961,6 +1067,7 @@ fun ActionItem(
     }
 }
 
+// Blueprint for the rows in the Metadata menu
 @Composable
 fun MetadataRow(
     icon: ImageVector,
@@ -992,6 +1099,11 @@ fun MetadataRow(
     }
 }
 
+/**
+ * 📳 THE PANIC SHAKE SENSOR
+ * This connects directly to the phone's physical hardware accelerometer chip.
+ * It measures the gravity and motion forces on the X, Y, and Z axis.
+ */
 @Composable
 fun VaultShakeDetector(onShakeDetected: () -> Unit) {
     val context = LocalContext.current
@@ -1000,7 +1112,7 @@ fun VaultShakeDetector(onShakeDetected: () -> Unit) {
 
     DisposableEffect(sensorManager, accelerometer) {
         if (accelerometer == null) {
-            return@DisposableEffect onDispose { }
+            return@DisposableEffect onDispose { } // Phone doesn't have an accelerometer (very rare)
         }
 
         val listener = object : SensorEventListener {
@@ -1008,21 +1120,27 @@ fun VaultShakeDetector(onShakeDetected: () -> Unit) {
             private var lastX = 0f
             private var lastY = 0f
             private var lastZ = 0f
-            private val SHAKE_THRESHOLD = 800f
+            private val SHAKE_THRESHOLD = 800f // The speed required to trigger a "Panic"
 
             override fun onSensorChanged(event: SensorEvent?) {
                 if (event == null) return
                 val currentTime = System.currentTimeMillis()
+
+                // Read the chip 10 times a second
                 if ((currentTime - lastUpdate) > 100) {
                     val diffTime = currentTime - lastUpdate
                     lastUpdate = currentTime
                     val x = event.values[0]
                     val y = event.values[1]
                     val z = event.values[2]
+
+                    // The Physics Formula: Calculate absolute speed change across all 3 dimensions
                     val speed: Float = kotlin.math.abs(x + y + z - lastX - lastY - lastZ) / diffTime * 10000f
+
                     if (speed > SHAKE_THRESHOLD) {
-                        onShakeDetected()
+                        onShakeDetected() // TRIGGER LOCKDOWN!
                     }
+
                     lastX = x
                     lastY = y
                     lastZ = z
@@ -1033,18 +1151,26 @@ fun VaultShakeDetector(onShakeDetected: () -> Unit) {
 
         sensorManager.registerListener(listener, accelerometer, SensorManager.SENSOR_DELAY_NORMAL)
         onDispose {
-            sensorManager.unregisterListener(listener)
+            sensorManager.unregisterListener(listener) // Stop draining battery when they leave the vault
         }
     }
 }
 
+/**
+ * 💥 THE MILITARY WIPE
+ * When you "Delete" a file on a computer, it doesn't actually delete it. It just marks the space as "empty",
+ * meaning hackers with recovery tools can get the photo back.
+ * This function OVERWRITES the photo byte-by-byte with random, meaningless garbage before deleting it,
+ * guaranteeing it can never be recovered.
+ */
 suspend fun secureWipeFile(file: File) = withContext(Dispatchers.IO) {
     if (!file.exists()) return@withContext
     try {
-        val random = SecureRandom()
-        RandomAccessFile(file, "rws").use { raf ->
+        val random = SecureRandom() // Cryptographically secure random number generator
+        RandomAccessFile(file, "rws").use { raf -> // "rws" forces the hard drive to physically write the data instantly
             val b = ByteArray(4096)
             var w = 0L
+            // Write pure garbage over the entire file
             while (w < file.length()) {
                 random.nextBytes(b)
                 val t = minOf(b.size.toLong(), file.length() - w).toInt()
@@ -1053,38 +1179,48 @@ suspend fun secureWipeFile(file: File) = withContext(Dispatchers.IO) {
             }
         }
     } finally {
-        file.delete()
+        file.delete() // Now delete the garbage!
     }
 }
 
+/**
+ * 🕵️ THE WITNESS PROTECTION PROGRAM (stripExifAndShare)
+ * When you take a photo, the camera secretly stamps exactly what phone model you use, the date and time,
+ * and your exact GPS coordinates into the file (EXIF Metadata).
+ * Before letting the user share a Vault photo to WhatsApp, this function violently strips all that tracking data off.
+ */
 private suspend fun stripExifAndShare(
     context: Context,
     items: List<MediaItem>,
     viewModel: GalleryViewModel
 ) {
-    withContext(Dispatchers.IO) {
+    withContext(Dispatchers.IO) { // Go to the background warehouse
         val uris = mutableListOf<Uri>()
         for (item in items) {
             val f = viewModel.decryptToTempFile(item.path) ?: continue
-            f.deleteOnExit()
+            f.deleteOnExit() // Guarantee deletion later
+
+            // If it's a JPG photo, scrub the metadata!
             if (!item.isVideo && (item.mimeType.contains("jpeg") || item.mimeType.contains("jpg"))) {
                 try {
                     ExifInterface(f.absolutePath).apply {
-                        setAttribute(ExifInterface.TAG_GPS_LATITUDE, null)
+                        setAttribute(ExifInterface.TAG_GPS_LATITUDE, null) // Nuke GPS
                         setAttribute(ExifInterface.TAG_GPS_LONGITUDE, null)
-                        setAttribute(ExifInterface.TAG_DATETIME, null)
-                        setAttribute(ExifInterface.TAG_MAKE, "SecureVault")
-                        setAttribute(ExifInterface.TAG_MODEL, "SecureVault")
-                        saveAttributes()
+                        setAttribute(ExifInterface.TAG_DATETIME, null) // Nuke Time
+                        setAttribute(ExifInterface.TAG_MAKE, "SecureVault") // Fake the phone brand
+                        setAttribute(ExifInterface.TAG_MODEL, "SecureVault") // Fake the phone model
+                        saveAttributes() // Save the scrubbed photo
                     }
                 } catch (e: Exception) {
                     Log.e("VaultShare", "EXIF clean skipped", e)
                 }
             }
+            // Put the clean file in the "Secure Courier" (FileProvider) pouch so WhatsApp can receive it
             uris.add(FileProvider.getUriForFile(context, "${context.packageName}.provider", f))
         }
-        withContext(Dispatchers.Main) {
+        withContext(Dispatchers.Main) { // Go back to the main screen
             if (uris.isNotEmpty()) {
+                // Call Android's system Share Sheet menu
                 val intent = Intent().apply {
                     action = if (uris.size > 1) Intent.ACTION_SEND_MULTIPLE else Intent.ACTION_SEND
                     type = "*/*"

@@ -101,22 +101,9 @@ import coil.request.CachePolicy
 import coil.request.ImageRequest
 import coil.size.Precision
 import coil.size.Size
-import com.gallerybox.data.Album
-import com.gallerybox.data.MediaItem
-import com.gallerybox.ui.screens.picture.GalleryGridItem
-import com.gallerybox.viewmodel.AlbumSort
-import com.gallerybox.viewmodel.GalleryEvent
-import com.gallerybox.viewmodel.GalleryViewModel
-import com.gallerybox.viewmodel.GalleryViewerState
-import com.gallerybox.viewmodel.MergeMode
-import com.gallerybox.viewmodel.MediaTypeFilter
-import com.gallerybox.viewmodel.PhotoSort
-import com.gallerybox.viewmodel.SecurityViewModel
-import com.gallerybox.viewmodel.TrashViewModel
 import kotlinx.collections.immutable.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.map
@@ -130,6 +117,33 @@ import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
+// ---------------------------------------------------------------------------
+// 🖼️ GALLERY DATA & VIEWMODELS
+// ---------------------------------------------------------------------------
+import com.gallerybox.data.Album
+import com.gallerybox.data.MediaItem
+import com.gallerybox.ui.screens.picture.GalleryGridItem
+import com.gallerybox.viewmodel.AlbumSort
+import com.gallerybox.viewmodel.GalleryEvent
+import com.gallerybox.viewmodel.GalleryViewModel
+import com.gallerybox.viewmodel.GalleryViewerState
+import com.gallerybox.viewmodel.MergeMode
+import com.gallerybox.viewmodel.MediaTypeFilter
+import com.gallerybox.viewmodel.PhotoSort
+import com.gallerybox.viewmodel.SecurityViewModel
+import com.gallerybox.viewmodel.TrashViewModel
+
+// ---------------------------------------------------------------------------
+// 🧠 ADAPTIVE LOGIC IMPORTS
+// ---------------------------------------------------------------------------
+import com.gallerybox.ui.screens.adaptive.AdaptiveState
+import com.gallerybox.ui.screens.adaptive.rememberAdaptiveState
+import com.gallerybox.ui.screens.adaptive.WindowWidthSize
+
+/**
+ * Constants used to identify "Virtual" albums (albums that aren't real folders,
+ * but act like them—such as the "Favorites" folder or "Recent" folder).
+ */
 const val ID_CAMERA = "virtual_camera"
 const val ID_RECENT = "virtual_recent"
 const val ID_FAVORITES = "virtual_favorites"
@@ -144,6 +158,12 @@ enum class DeviceTier { LOW, MID, HIGH }
 
 private val monthYearFormatter by lazy { SimpleDateFormat("MMM yyyy", Locale.getDefault()) }
 
+/**
+ * =========================================================================================
+ * 🛠️ HELPER CLASSES
+ * =========================================================================================
+ * These keep track of the different menus/dialogs the user can open.
+ */
 @Stable
 data class AlbumActions(
     val onAlbumClick: (Album) -> Unit,
@@ -190,6 +210,10 @@ sealed class DetailUiDialog {
     data class Delete(val mediaIds: List<Long>) : DetailUiDialog()
 }
 
+/**
+ * Helper to dig through Android's system to find the actual Activity.
+ * Needed for showing Dialogs and Biometric Prompts.
+ */
 fun Context.findFragmentActivity(): FragmentActivity? {
     var context = this
     while (context is ContextWrapper) {
@@ -228,6 +252,10 @@ fun getFolderName(path: String): String {
     }
 }
 
+/**
+ * Checks how much RAM the phone has to decide if we should load high-quality
+ * images or low-quality images to prevent the app from crashing on cheap phones.
+ */
 fun getDeviceTier(context: Context): DeviceTier {
     val m = ActivityManager.MemoryInfo()
     (context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).getMemoryInfo(m)
@@ -285,6 +313,9 @@ fun shareMediaItems(context: Context, items: List<MediaItem>) {
     }
 }
 
+/**
+ * Safely asks the user for their fingerprint before enabling/disabling the App Lock.
+ */
 fun toggleAppLock(
     context: Context,
     securityViewModel: SecurityViewModel,
@@ -349,6 +380,11 @@ private fun refreshAndClearCache(context: Context, viewModel: GalleryViewModel, 
     }
 }
 
+/**
+ * =========================================================================================
+ * 🏎️ CUSTOM SCROLLBARS
+ * =========================================================================================
+ */
 @Composable
 fun PagedSamsungFastScrollbar(
     gridState: LazyGridState,
@@ -685,6 +721,12 @@ fun SamsungFastScrollbar(
     }
 }
 
+/**
+ * =========================================================================================
+ * 🖼️ MAIN ALBUM LIST SCREEN
+ * =========================================================================================
+ * This screen shows the grid of all your albums (folders).
+ */
 @RequiresApi(Build.VERSION_CODES.HONEYCOMB_MR2)
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -696,6 +738,10 @@ fun AlbumScreen(
     actions: AlbumActions
 ) {
     val context = LocalContext.current
+
+    // 🧠 1. Bring in the Adaptive Engine to know if this is a phone or tablet!
+    val adaptiveState = rememberAdaptiveState()
+
     val deviceTier = remember { getDeviceTier(context) }
     val snackbarHostState = remember { SnackbarHostState() }
     val scrollBehavior = TopAppBarDefaults.enterAlwaysScrollBehavior(rememberTopAppBarState())
@@ -832,7 +878,21 @@ fun AlbumScreen(
 
     val screenWidthDp = LocalConfiguration.current.screenWidthDp.toFloat()
     val prefs = remember { context.getSharedPreferences("gallery_prefs", Context.MODE_PRIVATE) }
-    var columnCount by remember { mutableIntStateOf(prefs.getInt("gallery_album_grid_columns", 3)) }
+
+    // 🎨 2. SMART ADAPTIVE GRID COLUMNS
+    // If the user hasn't explicitly set a custom grid size, we use the Adaptive State
+    // to automatically pick the best size for their specific screen!
+    var columnCount by remember {
+        mutableIntStateOf(
+            prefs.getInt("gallery_album_grid_columns",
+                when (adaptiveState.widthSize) {
+                    WindowWidthSize.COMPACT -> 2  // Normal phones get 2 big folders per row
+                    WindowWidthSize.MEDIUM -> 3   // Small tablets get 3
+                    WindowWidthSize.EXPANDED -> 5 // Huge tablets get 5
+                }
+            )
+        )
+    }
     val gridState = rememberLazyGridState()
 
     val intentSenderLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
@@ -1269,6 +1329,12 @@ fun AlbumScreen(
     }
 }
 
+/**
+ * =========================================================================================
+ * 🖼️ ALBUM DETAILS SCREEN (When you open a specific folder)
+ * =========================================================================================
+ * Shows all the photos and videos inside a specific album.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AlbumDetailScreen(
@@ -1280,6 +1346,10 @@ fun AlbumDetailScreen(
     actions: DetailActions
 ) {
     val context = LocalContext.current
+
+    // 🧠 1. Bring in the Adaptive Engine!
+    val adaptiveState = rememberAdaptiveState()
+
     val haptic = LocalHapticFeedback.current
     val snackbarHostState = remember { SnackbarHostState() }
     val gridState = rememberLazyGridState()
@@ -1381,7 +1451,22 @@ fun AlbumDetailScreen(
     val screenWidthPx = with(density) { configuration.screenWidthDp.dp.roundToPx() }
 
     val prefs = remember { context.getSharedPreferences("gallery_prefs", Context.MODE_PRIVATE) }
-    var detailColumns by remember { mutableIntStateOf(prefs.getInt("gallery_media_grid_columns", 4)) }
+
+    // 🎨 2. SMART ADAPTIVE MEDIA COLUMNS
+    // If inside an album, we want photos to be smaller so we can see more of them.
+    // We adjust the grid based on the device width!
+    var detailColumns by remember {
+        mutableIntStateOf(
+            prefs.getInt("gallery_media_grid_columns",
+                when (adaptiveState.widthSize) {
+                    WindowWidthSize.COMPACT -> 4  // Normal phones get 4 squares per row
+                    WindowWidthSize.MEDIUM -> 6   // Small tablets get 6
+                    WindowWidthSize.EXPANDED -> 8 // Huge tablets get 8
+                }
+            )
+        )
+    }
+
     val scrollBehavior = TopAppBarDefaults.enterAlwaysScrollBehavior(rememberTopAppBarState())
 
     BackHandler(enabled = localSearchQuery.isNotEmpty()) { localSearchQuery = "" }

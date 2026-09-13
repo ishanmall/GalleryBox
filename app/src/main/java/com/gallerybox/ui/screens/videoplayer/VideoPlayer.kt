@@ -43,6 +43,7 @@ import androidx.compose.material.icons.outlined.*
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -93,6 +94,19 @@ import kotlinx.coroutines.flow.debounce
 import kotlin.math.roundToInt
 import java.util.Locale
 
+// ---------------------------------------------------------------------------
+// 🧠 ADAPTIVE LOGIC IMPORTS
+// ---------------------------------------------------------------------------
+import com.gallerybox.ui.screens.adaptive.AdaptiveState
+import com.gallerybox.ui.screens.adaptive.DevicePosture
+import com.gallerybox.ui.screens.adaptive.rememberAdaptiveState
+import com.gallerybox.ui.screens.adaptive.WindowWidthSize
+
+/**
+ * =========================================================================================
+ * 🛠️ HELPER CLASSES
+ * =========================================================================================
+ */
 fun Context.findActivity(): Activity? {
     var context = this
     while (context is ContextWrapper) {
@@ -243,6 +257,9 @@ class PlayerGestureEngine(private val context: Context, private val activity: Ac
     }
 }
 
+/**
+ * A reusable button wrapper that shrinks slightly when you press it, like a real physical button.
+ */
 @Composable
 fun ScaleButton(onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true, content: @Composable () -> Unit) {
     var pressed by remember { mutableStateOf(false) }
@@ -275,6 +292,11 @@ fun ScaleButton(onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boo
     }
 }
 
+/**
+ * =========================================================================================
+ * 🎬 MAIN VIDEO PLAYER WRAPPER
+ * =========================================================================================
+ */
 @Composable
 fun VideoPlayerScreen(
     initialVideoUrl: String,
@@ -298,6 +320,11 @@ fun VideoPlayerScreen(
     )
 }
 
+/**
+ * =========================================================================================
+ * 🎬 VIDEO PLAYER CONTENT (Where the magic happens)
+ * =========================================================================================
+ */
 @Composable
 fun VideoPlayerContent(
     viewModel: GalleryViewModel,
@@ -305,6 +332,10 @@ fun VideoPlayerContent(
     onLockApp: () -> Unit
 ) {
     val context = LocalContext.current
+
+    // 🧠 1. Bring in the Adaptive Engine to know if this is a phone, tablet, or foldable!
+    val adaptiveState = rememberAdaptiveState()
+
     val activity = remember { context.findActivity() }
     val view = LocalView.current
     val scope = rememberCoroutineScope()
@@ -554,7 +585,10 @@ fun VideoPlayerContent(
         }
     }
 
-    LaunchedEffect(showControls, isLocked, isInPiPMode) {
+    // 2. Hide System UI based on the Adaptive Posture
+    LaunchedEffect(showControls, isLocked, isInPiPMode, adaptiveState.posture) {
+        // If we are bent in Half-Opened mode (like a laptop), we might want to keep the system bars.
+        // Otherwise, hide them.
         if (showControls && !isLocked && !isInPiPMode) {
             insetsController?.show(WindowInsetsCompat.Type.systemBars())
         } else {
@@ -566,211 +600,266 @@ fun VideoPlayerContent(
     BackHandler { if (!isInPiPMode) onBackPress() }
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-        AndroidView(
-            factory = { ctx ->
-                PlayerView(ctx).apply {
-                    useController = false
-                    setShutterBackgroundColor(android.graphics.Color.BLACK)
+
+        // 3. TABLETOP MODE CHECK (HALF OPENED FOLDABLE)
+        // If the user's foldable phone is bent 90 degrees and resting on a table,
+        // we shove the video to the TOP half, and the controls to the BOTTOM half!
+        if (adaptiveState.posture == DevicePosture.HALF_OPENED) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                // Top Screen: The Video
+                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    AndroidView(
+                        factory = { ctx ->
+                            PlayerView(ctx).apply {
+                                useController = false
+                                setShutterBackgroundColor(android.graphics.Color.BLACK)
+                            }
+                        },
+                        update = { viewParams ->
+                            if (viewParams.player != player) viewParams.player = player
+                            viewParams.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                        },
+                        modifier = Modifier.fillMaxSize()
+                    )
                 }
-            },
-            update = { viewParams ->
-                if (viewParams.player != player) viewParams.player = player
-                viewParams.resizeMode = when(resizeMode) {
-                    PremiumResizeMode.FIT -> AspectRatioFrameLayout.RESIZE_MODE_FIT
-                    PremiumResizeMode.ZOOM -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                    PremiumResizeMode.FILL, PremiumResizeMode.STRETCH -> AspectRatioFrameLayout.RESIZE_MODE_FILL
-                    else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+
+                // Bottom Screen: The Controls (Always visible in Tabletop mode)
+                Box(modifier = Modifier.weight(1f).fillMaxWidth().background(Color.Black)) {
+                    VideoBottomControls(
+                        isPlaying = isPlaying,
+                        playbackState = playbackState,
+                        currentMs = currentPosition,
+                        bufferedMs = bufferedPosition,
+                        durationMs = duration,
+                        isSeeking = gestureState.isSeeking,
+                        previewBitmap = previewBitmap,
+                        seekPosition = gestureState.seekPosition,
+                        gestureText = gestureState.gestureText,
+                        hasNext = viewModel.hasNextVideo(),
+                        hasPrev = viewModel.hasPreviousVideo() || currentPosition > 3000L,
+                        isLandscape = false,
+                        onTogglePlay = onTogglePlay,
+                        onNext = onNextClick,
+                        onPrev = onPrevClick,
+                        onSeek = onSeekAction,
+                        onSeekFinished = onSeekFinishedAction,
+                        onLock = onLockAction,
+                        onRotateToggle = onRotateAction,
+                        onAspectRatioToggle = onAspectRatioAction,
+                        adaptiveState = adaptiveState
+                    )
                 }
-            },
-            modifier = Modifier.fillMaxSize()
-                .then(if (isMirrored) Modifier.graphicsLayer { scaleX = -1f } else Modifier)
-                .then(when(resizeMode){
-                    PremiumResizeMode.RATIO_16_9 -> Modifier.aspectRatio(16f/9f)
-                    PremiumResizeMode.RATIO_4_3 -> Modifier.aspectRatio(4f/3f)
-                    else -> Modifier
-                })
-                .pointerInput(isLocked, configuration.orientation) {
-                    if (isLocked) {
+            }
+        } else {
+            // 4. NORMAL VIEW (Phones, Tablets, Flat Foldables)
+            AndroidView(
+                factory = { ctx ->
+                    PlayerView(ctx).apply {
+                        useController = false
+                        setShutterBackgroundColor(android.graphics.Color.BLACK)
+                    }
+                },
+                update = { viewParams ->
+                    if (viewParams.player != player) viewParams.player = player
+                    viewParams.resizeMode = when(resizeMode) {
+                        PremiumResizeMode.FIT -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+                        PremiumResizeMode.ZOOM -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                        PremiumResizeMode.FILL, PremiumResizeMode.STRETCH -> AspectRatioFrameLayout.RESIZE_MODE_FILL
+                        else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+                    }
+                },
+                modifier = Modifier.fillMaxSize()
+                    .then(if (isMirrored) Modifier.graphicsLayer { scaleX = -1f } else Modifier)
+                    .then(when(resizeMode){
+                        PremiumResizeMode.RATIO_16_9 -> Modifier.aspectRatio(16f/9f)
+                        PremiumResizeMode.RATIO_4_3 -> Modifier.aspectRatio(4f/3f)
+                        else -> Modifier
+                    })
+                    .pointerInput(isLocked, configuration.orientation) {
+                        if (isLocked) {
+                            detectTapGestures(
+                                onTap = {
+                                    if (showControls) {
+                                        showControls = false
+                                    } else {
+                                        showControls = true
+                                        hideJob?.cancel()
+                                        hideJob = scope.launch {
+                                            delay(3000)
+                                            showControls = false
+                                        }
+                                    }
+                                }
+                            )
+                            return@pointerInput
+                        }
                         detectTapGestures(
+                            onPress = { _ ->
+                                val job = scope.launch {
+                                    delay(400)
+                                    isLongPressing = true
+                                    player.playbackParameters = PlaybackParameters((playbackSpeed * 2f).coerceAtMost(8f), viewModel.playbackPitch.value)
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                }
+                                tryAwaitRelease()
+                                job.cancel()
+                                if (isLongPressing) {
+                                    isLongPressing = false
+                                    viewModel.resetSpeed()
+                                }
+                            },
                             onTap = {
                                 if (showControls) {
                                     showControls = false
-                                } else {
-                                    showControls = true
                                     hideJob?.cancel()
-                                    hideJob = scope.launch {
-                                        delay(3000)
-                                        showControls = false
-                                    }
+                                } else {
+                                    resetControlsTimer()
                                 }
+                            },
+                            onDoubleTap = { offset ->
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                val dynamicSeekMs = maxOf(10000L, (duration * 0.01).toLong())
+                                if (offset.x < size.width / 2f) {
+                                    viewModel.seekBackward(dynamicSeekMs)
+                                    showDoubleTapText = "-${dynamicSeekMs / 1000}s"
+                                    doubleTapForward = false
+                                    doubleTapAlignment = Alignment.CenterStart
+                                } else {
+                                    viewModel.seekForward(dynamicSeekMs)
+                                    showDoubleTapText = "+${dynamicSeekMs / 1000}s"
+                                    doubleTapForward = true
+                                    doubleTapAlignment = Alignment.CenterEnd
+                                }
+                                doubleTapJob?.cancel()
+                                doubleTapJob = scope.launch { delay(600); showDoubleTapText = "" }
                             }
                         )
-                        return@pointerInput
                     }
-                    detectTapGestures(
-                        onPress = { _ ->
-                            val job = scope.launch {
-                                delay(400)
-                                isLongPressing = true
-                                player.playbackParameters = PlaybackParameters((playbackSpeed * 2f).coerceAtMost(8f), viewModel.playbackPitch.value)
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            }
-                            tryAwaitRelease()
-                            job.cancel()
-                            if (isLongPressing) {
-                                isLongPressing = false
-                                viewModel.resetSpeed()
-                            }
-                        },
-                        onTap = {
-                            if (showControls) {
-                                showControls = false
-                                hideJob?.cancel()
-                            } else {
-                                resetControlsTimer()
-                            }
-                        },
-                        onDoubleTap = { offset ->
-                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            val dynamicSeekMs = maxOf(10000L, (duration * 0.01).toLong())
-                            if (offset.x < size.width / 2f) {
-                                viewModel.seekBackward(dynamicSeekMs)
-                                showDoubleTapText = "-${dynamicSeekMs / 1000}s"
-                                doubleTapForward = false
-                                doubleTapAlignment = Alignment.CenterStart
-                            } else {
-                                viewModel.seekForward(dynamicSeekMs)
-                                showDoubleTapText = "+${dynamicSeekMs / 1000}s"
-                                doubleTapForward = true
-                                doubleTapAlignment = Alignment.CenterEnd
-                            }
-                            doubleTapJob?.cancel()
-                            doubleTapJob = scope.launch { delay(600); showDoubleTapText = "" }
-                        }
-                    )
-                }
-                .pointerInput(isLocked, configuration.orientation) {
-                    if (isLocked) return@pointerInput
-                    detectDragGestures(
-                        onDragStart = {
-                            gestureEngine.onStart(gestureState, currentPosition, cachedSystemBrightness)
-                            scope.launch(Dispatchers.IO) {
-                                currentVideoUri?.let { uri -> frameLoader.setSource(Uri.parse(uri)) }
-                            }
-                        },
-                        onDragEnd = {
-                            if (gestureState.mode == GestureMode.SCRUB) {
-                                viewModel.seekTo(gestureState.seekPosition.toLong())
+                    .pointerInput(isLocked, configuration.orientation) {
+                        if (isLocked) return@pointerInput
+                        detectDragGestures(
+                            onDragStart = {
+                                gestureEngine.onStart(gestureState, currentPosition, cachedSystemBrightness)
+                                scope.launch(Dispatchers.IO) {
+                                    currentVideoUri?.let { uri -> frameLoader.setSource(Uri.parse(uri)) }
+                                }
+                            },
+                            onDragEnd = {
+                                if (gestureState.mode == GestureMode.SCRUB) {
+                                    viewModel.seekTo(gestureState.seekPosition.toLong())
+                                    gestureState.isSeeking = false
+                                }
+                                gestureEngine.onEnd(gestureState)
+                            },
+                            onDragCancel = {
+                                gestureState.mode = GestureMode.NONE
                                 gestureState.isSeeking = false
                             }
-                            gestureEngine.onEnd(gestureState)
-                        },
-                        onDragCancel = {
-                            gestureState.mode = GestureMode.NONE
-                            gestureState.isSeeking = false
+                        ) { change, dragAmount ->
+                            gestureEngine.onDrag(gestureState, change, dragAmount, size.width.toFloat(), size.height.toFloat(), currentPosition)
                         }
-                    ) { change, dragAmount ->
-                        gestureEngine.onDrag(gestureState, change, dragAmount, size.width.toFloat(), size.height.toFloat(), currentPosition)
+                    }
+            )
+
+            AnimatedVisibility(
+                visible = gestureState.showVolume,
+                enter = fadeIn(),
+                exit = fadeOut(),
+                modifier = Modifier.align(Alignment.CenterEnd).padding(end = 32.dp)
+            ) {
+                VolumeBrightnessBar(value = gestureState.volume, icon = Icons.Rounded.VolumeUp)
+            }
+
+            AnimatedVisibility(
+                visible = gestureState.showBrightness,
+                enter = fadeIn(),
+                exit = fadeOut(),
+                modifier = Modifier.align(Alignment.CenterStart).padding(start = 32.dp)
+            ) {
+                VolumeBrightnessBar(value = gestureState.brightness, icon = Icons.Rounded.BrightnessMedium)
+            }
+
+            AnimatedVisibility(
+                visible = showDoubleTapText.isNotEmpty(),
+                enter = scaleIn(initialScale = 0.8f) + fadeIn(),
+                exit = scaleOut(targetScale = 0.8f) + fadeOut(),
+                modifier = Modifier.align(doubleTapAlignment).padding(horizontal = 48.dp)
+            ) {
+                Surface(color = Color.Black.copy(0.6f), shape = RoundedCornerShape(24.dp)) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp)) {
+                        Icon(if (doubleTapForward) Icons.Rounded.FastForward else Icons.Rounded.FastRewind, contentDescription = null, tint = Color.White)
+                        Text(showDoubleTapText, color = Color.White, fontWeight = FontWeight.Bold)
                     }
                 }
-        )
+            }
 
-        AnimatedVisibility(
-            visible = gestureState.showVolume,
-            enter = fadeIn(),
-            exit = fadeOut(),
-            modifier = Modifier.align(Alignment.CenterEnd).padding(end = 32.dp)
-        ) {
-            VolumeBrightnessBar(value = gestureState.volume, icon = Icons.Rounded.VolumeUp)
-        }
-
-        AnimatedVisibility(
-            visible = gestureState.showBrightness,
-            enter = fadeIn(),
-            exit = fadeOut(),
-            modifier = Modifier.align(Alignment.CenterStart).padding(start = 32.dp)
-        ) {
-            VolumeBrightnessBar(value = gestureState.brightness, icon = Icons.Rounded.BrightnessMedium)
-        }
-
-        AnimatedVisibility(
-            visible = showDoubleTapText.isNotEmpty(),
-            enter = scaleIn(initialScale = 0.8f) + fadeIn(),
-            exit = scaleOut(targetScale = 0.8f) + fadeOut(),
-            modifier = Modifier.align(doubleTapAlignment).padding(horizontal = 48.dp)
-        ) {
-            Surface(color = Color.Black.copy(0.6f), shape = RoundedCornerShape(24.dp)) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp)) {
-                    Icon(if (doubleTapForward) Icons.Rounded.FastForward else Icons.Rounded.FastRewind, contentDescription = null, tint = Color.White)
-                    Text(showDoubleTapText, color = Color.White, fontWeight = FontWeight.Bold)
+            AnimatedVisibility(visible = resizeModeToast.isNotEmpty(), enter = fadeIn(), exit = fadeOut(), modifier = Modifier.align(Alignment.Center)) {
+                Surface(color = Color.Black.copy(0.6f), shape = RoundedCornerShape(24.dp)) {
+                    Text(resizeModeToast, color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp))
                 }
             }
-        }
 
-        AnimatedVisibility(visible = resizeModeToast.isNotEmpty(), enter = fadeIn(), exit = fadeOut(), modifier = Modifier.align(Alignment.Center)) {
-            Surface(color = Color.Black.copy(0.6f), shape = RoundedCornerShape(24.dp)) {
-                Text(resizeModeToast, color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp))
-            }
-        }
-
-        AnimatedVisibility(visible = isLongPressing && isPlaying, enter = fadeIn() + scaleIn(), exit = fadeOut() + scaleOut(), modifier = Modifier.align(Alignment.TopCenter).padding(top = 100.dp)) {
-            Surface(color = Color.Black.copy(0.6f), shape = CircleShape) {
-                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-                    Icon(Icons.Rounded.Bolt, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text("2×", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            AnimatedVisibility(visible = isLongPressing && isPlaying, enter = fadeIn() + scaleIn(), exit = fadeOut() + scaleOut(), modifier = Modifier.align(Alignment.TopCenter).padding(top = 100.dp)) {
+                Surface(color = Color.Black.copy(0.6f), shape = CircleShape) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                        Icon(Icons.Rounded.Bolt, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("2×", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    }
                 }
             }
-        }
 
-        if (!isInPiPMode) {
-            val currentTitle = player.currentMediaItem?.mediaMetadata?.displayTitle?.toString() ?: player.currentMediaItem?.mediaMetadata?.title?.toString() ?: currentVideoUri?.substringAfterLast("/") ?: "Video"
+            if (!isInPiPMode) {
+                val currentTitle = player.currentMediaItem?.mediaMetadata?.displayTitle?.toString() ?: player.currentMediaItem?.mediaMetadata?.title?.toString() ?: currentVideoUri?.substringAfterLast("/") ?: "Video"
 
-            AnimatedVisibility(visible = showControls && !isLocked, enter = fadeIn(), exit = fadeOut()) {
-                VideoTopBar(
-                    title = currentTitle,
-                    format = videoFormat,
-                    onBack = onBackPress,
-                    onMenu = { showMenuSheet = true; showControls = false }
-                )
+                AnimatedVisibility(visible = showControls && !isLocked, enter = fadeIn(), exit = fadeOut()) {
+                    VideoTopBar(
+                        title = currentTitle,
+                        format = videoFormat,
+                        onBack = onBackPress,
+                        onMenu = { showMenuSheet = true; showControls = false },
+                        adaptiveState = adaptiveState
+                    )
+                }
+
+                AnimatedVisibility(visible = showControls && !isLocked, enter = fadeIn(), exit = fadeOut()) {
+                    VideoBottomControls(
+                        isPlaying = isPlaying,
+                        playbackState = playbackState,
+                        currentMs = currentPosition,
+                        bufferedMs = bufferedPosition,
+                        durationMs = duration,
+                        isSeeking = gestureState.isSeeking,
+                        previewBitmap = previewBitmap,
+                        seekPosition = gestureState.seekPosition,
+                        gestureText = gestureState.gestureText,
+                        hasNext = viewModel.hasNextVideo(),
+                        hasPrev = viewModel.hasPreviousVideo() || currentPosition > 3000L,
+                        isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE,
+                        onTogglePlay = onTogglePlay,
+                        onNext = onNextClick,
+                        onPrev = onPrevClick,
+                        onSeek = onSeekAction,
+                        onSeekFinished = onSeekFinishedAction,
+                        onLock = onLockAction,
+                        onRotateToggle = onRotateAction,
+                        onAspectRatioToggle = onAspectRatioAction,
+                        adaptiveState = adaptiveState
+                    )
+                }
             }
 
-            AnimatedVisibility(visible = showControls && !isLocked, enter = fadeIn(), exit = fadeOut()) {
-                VideoBottomControls(
-                    isPlaying = isPlaying,
-                    playbackState = playbackState,
-                    currentMs = currentPosition,
-                    bufferedMs = bufferedPosition,
-                    durationMs = duration,
-                    isSeeking = gestureState.isSeeking,
-                    previewBitmap = previewBitmap,
-                    seekPosition = gestureState.seekPosition,
-                    gestureText = gestureState.gestureText,
-                    hasNext = viewModel.hasNextVideo(),
-                    hasPrev = viewModel.hasPreviousVideo() || currentPosition > 3000L,
-                    isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE,
-                    onTogglePlay = onTogglePlay,
-                    onNext = onNextClick,
-                    onPrev = onPrevClick,
-                    onSeek = onSeekAction,
-                    onSeekFinished = onSeekFinishedAction,
-                    onLock = onLockAction,
-                    onRotateToggle = onRotateAction,
-                    onAspectRatioToggle = onAspectRatioAction
-                )
-            }
-        }
-
-        AnimatedVisibility(visible = isLocked && showControls, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.align(Alignment.CenterStart).padding(start = 32.dp)) {
-            ScaleButton(
-                onClick = {
-                    isLocked = false
-                    showControls = true
-                    resetControlsTimer()
-                },
-                modifier = Modifier.background(Color.Black.copy(0.6f), CircleShape).padding(12.dp)
-            ) {
-                Icon(Icons.Outlined.LockOpen, "Unlock", tint = Color.White, modifier = Modifier.size(28.dp))
+            AnimatedVisibility(visible = isLocked && showControls, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.align(Alignment.CenterStart).padding(start = 32.dp)) {
+                ScaleButton(
+                    onClick = {
+                        isLocked = false
+                        showControls = true
+                        resetControlsTimer()
+                    },
+                    modifier = Modifier.background(Color.Black.copy(0.6f), CircleShape).padding(12.dp)
+                ) {
+                    Icon(Icons.Outlined.LockOpen, "Unlock", tint = Color.White, modifier = Modifier.size(28.dp))
+                }
             }
         }
     }
@@ -809,8 +898,13 @@ fun VideoPlayerContent(
     }
 }
 
+/**
+ * =========================================================================================
+ * 🔘 VIDEO TOP BAR
+ * =========================================================================================
+ */
 @Composable
-fun VideoTopBar(title: String, format: Format?, onBack: () -> Unit, onMenu: () -> Unit) {
+fun VideoTopBar(title: String, format: Format?, onBack: () -> Unit, onMenu: () -> Unit, adaptiveState: AdaptiveState) {
     val height = format?.height ?: 0
     val resBadge = when {
         height >= 2160 -> "4K"
@@ -839,16 +933,16 @@ fun VideoTopBar(title: String, format: Format?, onBack: () -> Unit, onMenu: () -
             Row(verticalAlignment = Alignment.CenterVertically) {
                 hdrBadge?.let {
                     Surface(color = Color.White.copy(alpha = 0.2f), shape = RoundedCornerShape(4.dp), modifier = Modifier.padding(end = 6.dp)) {
-                        Text(it, color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp))
+                        Text(it, color = Color.White, fontSize = (9 * adaptiveState.textScaleFactor).sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp))
                     }
                 }
                 resBadge?.let {
                     Surface(color = Color.White.copy(alpha = 0.2f), shape = RoundedCornerShape(4.dp), modifier = Modifier.padding(end = 6.dp)) {
-                        Text(it, color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp))
+                        Text(it, color = Color.White, fontSize = (9 * adaptiveState.textScaleFactor).sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp))
                     }
                 }
             }
-            Text(title, color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(title, color = Color.White, fontSize = (16 * adaptiveState.textScaleFactor).sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         ScaleButton(onClick = onMenu, modifier = Modifier.size(44.dp).background(Color.Black.copy(0.2f), CircleShape)) {
             Icon(Icons.Default.MoreVert, null, tint = Color.White)
@@ -856,6 +950,11 @@ fun VideoTopBar(title: String, format: Format?, onBack: () -> Unit, onMenu: () -
     }
 }
 
+/**
+ * =========================================================================================
+ * 🔘 VIDEO BOTTOM CONTROLS (Play, Pause, Timeline)
+ * =========================================================================================
+ */
 @Composable
 fun VideoBottomControls(
     isPlaying: Boolean, playbackState: Int,
@@ -864,14 +963,19 @@ fun VideoBottomControls(
     hasNext: Boolean, hasPrev: Boolean, isLandscape: Boolean,
     onTogglePlay: () -> Unit, onNext: () -> Unit, onPrev: () -> Unit,
     onSeek: (Float) -> Unit, onSeekFinished: () -> Unit, onLock: () -> Unit,
-    onRotateToggle: () -> Unit, onAspectRatioToggle: () -> Unit
+    onRotateToggle: () -> Unit, onAspectRatioToggle: () -> Unit,
+    adaptiveState: AdaptiveState
 ) {
     val bottomOffset = if (isLandscape) (-12).dp else 8.dp
 
     Box(Modifier.fillMaxSize()) {
+        // Gradient shadow so white icons are visible on white video backgrounds
         Box(Modifier.fillMaxWidth().height(180.dp).align(Alignment.BottomCenter).background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(0.65f)))))
 
-        Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().navigationBarsPadding().padding(horizontal = 16.dp).offset(y = bottomOffset)) {
+        // Center the controls on giant tablets, fill width on phones
+        val controlWidth = if (adaptiveState.widthSize == WindowWidthSize.EXPANDED) Modifier.width(600.dp) else Modifier.fillMaxWidth()
+
+        Column(Modifier.align(Alignment.BottomCenter).then(controlWidth).navigationBarsPadding().padding(horizontal = 16.dp).offset(y = bottomOffset)) {
 
             Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), horizontalArrangement = Arrangement.End) {
                 ScaleButton(onClick = onAspectRatioToggle) {
@@ -1025,6 +1129,11 @@ fun SamsungSeekBar(current: Float, buffered: Float, total: Float, modifier: Modi
     }
 }
 
+/**
+ * =========================================================================================
+ * ⚙️ VIDEO SETTINGS MENU
+ * =========================================================================================
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun PlaybackMenuSheet(

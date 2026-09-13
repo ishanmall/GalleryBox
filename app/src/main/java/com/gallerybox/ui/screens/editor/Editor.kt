@@ -58,9 +58,22 @@ import kotlinx.coroutines.*
 import java.util.Locale
 import kotlin.math.*
 
+// --- IMPORTING THE ADAPTIVE ENGINE ---
+// This tells the app how to handle folding phones, big tablet screens, and landscape rotation.
+import com.gallerybox.ui.screens.adaptive.rememberAdaptiveState
+import com.gallerybox.ui.screens.adaptive.DevicePosture
+import com.gallerybox.ui.screens.adaptive.WindowWidthSize
+
+/**
+ * THE EDITOR MENUS
+ * These define what tabs exist (Crop, Adjust, Text, etc.) and what screen the user is currently looking at.
+ */
 enum class EditorTab { ADJUST, CROP, LUT, TEXT, STICKER, TRIM }
 enum class EditorMode { HOME, TOOL }
 
+/**
+ * A tiny data package holding info about sliders (like Brightness or Contrast).
+ */
 @Immutable
 data class AdjustTool(
     val name: String,
@@ -70,6 +83,13 @@ data class AdjustTool(
     val onValueChange: (Float) -> Unit
 )
 
+/**
+ * =========================================================================================
+ * 🎨 THE MAIN EDITOR SCREEN
+ * =========================================================================================
+ * This is the core file. It acts as the "Manager". It decides whether to draw the tools
+ * on the bottom (for normal phones) or on the right side (for tablets/landscape).
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun EditorScreen(
@@ -79,12 +99,15 @@ fun EditorScreen(
     onBack: () -> Unit
 ) {
     val ctx = LocalContext.current
+
+    // 1. Find the photo or video the user wants to edit
     val mediaMap by galleryViewModel.mediaMap.collectAsState()
     val rawMedia by galleryViewModel.rawMedia.collectAsState()
     val mediaItem = remember(mediaId, mediaMap, rawMedia) {
         mediaMap[mediaId] ?: rawMedia.find { it.id == mediaId }
     }
 
+    // 2. Listen to all the changes (cropping, brightness, zooming, etc.)
     val editState by editorViewModel.currentEditState.collectAsState()
     val previewBitmap by editorViewModel.previewBitmap.collectAsState()
     val fileOpState by editorViewModel.fileOperationState.collectAsState()
@@ -93,6 +116,7 @@ fun EditorScreen(
     val isPreviewUpdating by editorViewModel.isPreviewUpdating.collectAsState()
     val isComparing by editorViewModel.isComparing.collectAsState()
 
+    // 3. Keep track of what tool the user clicked on
     var editorMode by rememberSaveable { mutableStateOf(EditorMode.HOME) }
     var activeTab by rememberSaveable { mutableStateOf(if (mediaItem?.isVideo == true) EditorTab.TRIM else EditorTab.ADJUST) }
 
@@ -108,12 +132,20 @@ fun EditorScreen(
     val lutCategories = remember(lutItems) { lutItems.map { it.category }.distinct() }
     var selectedLutCategory by remember { mutableStateOf<String?>(null) }
 
+    // --- 📱 ADAPTIVE CHECK ---
+    // Ask the phone: "Are you a tablet? Are you held sideways? Are you unfolded?"
+    val adaptiveState = rememberAdaptiveState()
+    val isWideScreen = adaptiveState.widthSize != WindowWidthSize.COMPACT ||
+            adaptiveState.isLandscape ||
+            adaptiveState.posture == DevicePosture.BOOK_MODE
+
     LaunchedEffect(lutCategories) {
         if (selectedLutCategory == null && lutCategories.isNotEmpty()) {
             selectedLutCategory = lutCategories.first()
         }
     }
 
+    // Controls what the "Back" button does. It closes menus first, before leaving the editor completely.
     val handleBack = {
         when {
             selectedLayerId != null -> {
@@ -138,6 +170,7 @@ fun EditorScreen(
         }
     }
 
+    // Watch the export status to auto-close the screen when finished saving.
     LaunchedEffect(fileOpState) {
         if (fileOpState is FileOperationState.Editing) {
             wasExporting = true
@@ -149,6 +182,7 @@ fun EditorScreen(
         }
     }
 
+    // Show a loading circle if the image hasn't loaded yet.
     if (mediaItem == null) {
         Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background), Alignment.Center) {
             CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
@@ -156,6 +190,7 @@ fun EditorScreen(
         return
     }
 
+    // Pops up a box asking the user what quality they want to save their video in.
     if (showExportDialog) {
         ExportSettingsDialog(
             isVideo = mediaItem.isVideo,
@@ -181,117 +216,126 @@ fun EditorScreen(
         }
     }
 
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
-        topBar = {
-            ModernEditorTopBar(
-                onBack = handleBack,
-                onUndo = { editorViewModel.undo() },
-                onRedo = { editorViewModel.redo() },
-                onReset = { editorViewModel.resetEditor() },
-                onSave = { showExportDialog = true },
-                isExporting = isExporting
-            )
-        },
-        bottomBar = {
-            if (!isExporting) {
-                Column(Modifier.background(MaterialTheme.colorScheme.surface).navigationBarsPadding()) {
-                    AnimatedVisibility(selectedLayerId != null && !mediaItem.isVideo) {
-                        LayerControlToolbar(
-                            onDelete = {
-                                selectedLayerId?.let { id ->
-                                    editorViewModel.removeText(id)
-                                    editorViewModel.removeSticker(id)
-                                    selectedLayerId = null
-                                }
-                            },
-                            onDuplicate = {
-                                selectedLayerId?.let { id ->
-                                    editorViewModel.duplicateText(id)
-                                    editorViewModel.duplicateSticker(id)
-                                }
-                            },
-                            onMoveUp = {
-                                selectedLayerId?.let { id ->
-                                    editorViewModel.moveTextLayer(id, true)
-                                    editorViewModel.moveStickerLayer(id, true)
-                                }
-                            }
-                        )
-                    }
+    // =========================================================================================
+    // 🧱 UI BUILDING BLOCKS
+    // =========================================================================================
 
-                    AnimatedContent(
-                        targetState = editorMode,
-                        transitionSpec = {
-                            if (targetState == EditorMode.TOOL) {
-                                slideInHorizontally(tween(250)) { it } + fadeIn() togetherWith slideOutHorizontally(tween(250)) { -it } + fadeOut()
-                            } else {
-                                slideInHorizontally(tween(250)) { -it } + fadeIn() togetherWith slideOutHorizontally(tween(250)) { it } + fadeOut()
+    // 1. THE TOP ACTION BAR (Undo, Redo, Save)
+    val topBarBlock: @Composable () -> Unit = {
+        ModernEditorTopBar(
+            onBack = handleBack,
+            onUndo = { editorViewModel.undo() },
+            onRedo = { editorViewModel.redo() },
+            onReset = { editorViewModel.resetEditor() },
+            onSave = { showExportDialog = true },
+            isExporting = isExporting
+        )
+    }
+
+    // 2. THE TOOLBOX (The sliders, stickers, text tools, and bottom menu tabs)
+    val controlsBlock: @Composable () -> Unit = {
+        if (!isExporting) {
+            Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface).navigationBarsPadding()) {
+
+                // If a sticker or text is tapped, show options to delete, duplicate, or move it.
+                AnimatedVisibility(selectedLayerId != null && !mediaItem.isVideo) {
+                    LayerControlToolbar(
+                        onDelete = {
+                            selectedLayerId?.let { id ->
+                                editorViewModel.removeText(id)
+                                editorViewModel.removeSticker(id)
+                                selectedLayerId = null
                             }
                         },
-                        label = "mode_panel"
-                    ) { mode ->
-                        if (mode == EditorMode.HOME) {
-                            LazyRow(
-                                Modifier.fillMaxWidth().padding(vertical = 16.dp),
-                                horizontalArrangement = Arrangement.SpaceEvenly,
-                                contentPadding = PaddingValues(horizontal = 16.dp)
-                            ) {
-                                val tabs = if (mediaItem.isVideo) {
-                                    listOf(
-                                        EditorTab.TRIM to Icons.Rounded.ContentCut,
-                                        EditorTab.CROP to Icons.Rounded.Crop,
-                                        EditorTab.ADJUST to Icons.Rounded.Tune
-                                    )
-                                } else {
-                                    listOf(
-                                        EditorTab.ADJUST to Icons.Rounded.Tune,
-                                        EditorTab.CROP to Icons.Rounded.Crop,
-                                        EditorTab.LUT to Icons.Rounded.AutoAwesome,
-                                        EditorTab.TEXT to Icons.Rounded.TextFields,
-                                        EditorTab.STICKER to Icons.Rounded.EmojiEmotions
-                                    )
-                                }
+                        onDuplicate = {
+                            selectedLayerId?.let { id ->
+                                editorViewModel.duplicateText(id)
+                                editorViewModel.duplicateSticker(id)
+                            }
+                        },
+                        onMoveUp = {
+                            selectedLayerId?.let { id ->
+                                editorViewModel.moveTextLayer(id, true)
+                                editorViewModel.moveStickerLayer(id, true)
+                            }
+                        }
+                    )
+                }
 
-                                items(tabs) { (tb, ic) ->
-                                    TabItem(
-                                        lbl = tb.name.lowercase().replaceFirstChar { it.uppercase() },
-                                        ic = ic,
-                                        sel = false
-                                    ) {
-                                        activeTab = tb
-                                        selectedLayerId = null
-                                        editorMode = EditorMode.TOOL
-                                    }
+                // Smoothly swap between the Main Menu (Tabs) and the inside of a Tool (like Brightness sliders)
+                AnimatedContent(
+                    targetState = editorMode,
+                    transitionSpec = {
+                        if (targetState == EditorMode.TOOL) {
+                            slideInHorizontally(tween(250)) { it } + fadeIn() togetherWith slideOutHorizontally(tween(250)) { -it } + fadeOut()
+                        } else {
+                            slideInHorizontally(tween(250)) { -it } + fadeIn() togetherWith slideOutHorizontally(tween(250)) { it } + fadeOut()
+                        }
+                    },
+                    label = "mode_panel"
+                ) { mode ->
+                    if (mode == EditorMode.HOME) {
+                        // THE TABS MENU (Crop, Adjust, Lut, Text, Sticker, Trim)
+                        LazyRow(
+                            Modifier.fillMaxWidth().padding(vertical = 16.dp),
+                            horizontalArrangement = Arrangement.SpaceEvenly,
+                            contentPadding = PaddingValues(horizontal = 16.dp)
+                        ) {
+                            val tabs = if (mediaItem.isVideo) {
+                                listOf(
+                                    EditorTab.TRIM to Icons.Rounded.ContentCut,
+                                    EditorTab.CROP to Icons.Rounded.Crop,
+                                    EditorTab.ADJUST to Icons.Rounded.Tune
+                                )
+                            } else {
+                                listOf(
+                                    EditorTab.ADJUST to Icons.Rounded.Tune,
+                                    EditorTab.CROP to Icons.Rounded.Crop,
+                                    EditorTab.LUT to Icons.Rounded.AutoAwesome,
+                                    EditorTab.TEXT to Icons.Rounded.TextFields,
+                                    EditorTab.STICKER to Icons.Rounded.EmojiEmotions
+                                )
+                            }
+
+                            items(tabs) { (tb, ic) ->
+                                TabItem(
+                                    lbl = tb.name.lowercase().replaceFirstChar { it.uppercase() },
+                                    ic = ic,
+                                    sel = false
+                                ) {
+                                    activeTab = tb
+                                    selectedLayerId = null
+                                    editorMode = EditorMode.TOOL
                                 }
                             }
-                        } else {
-                            Column(Modifier.fillMaxWidth()) {
-                                Row(
-                                    Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    IconButton(onClick = { editorMode = EditorMode.HOME }) {
-                                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back", tint = MaterialTheme.colorScheme.onSurface)
-                                    }
-                                    Text(
-                                        text = activeTab.name.lowercase().replaceFirstChar { it.uppercase() },
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 18.sp,
-                                        color = MaterialTheme.colorScheme.onSurface,
-                                        modifier = Modifier.padding(start = 8.dp)
-                                    )
+                        }
+                    } else {
+                        // THE ACTIVE TOOL PANEL (Inside Brightness, inside Stickers, etc.)
+                        Column(Modifier.fillMaxWidth()) {
+                            Row(
+                                Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                IconButton(onClick = { editorMode = EditorMode.HOME }) {
+                                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back", tint = MaterialTheme.colorScheme.onSurface)
                                 }
+                                Text(
+                                    text = activeTab.name.lowercase().replaceFirstChar { it.uppercase() },
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 18.sp,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.padding(start = 8.dp)
+                                )
+                            }
 
-                                Box(Modifier.fillMaxWidth().wrapContentHeight().padding(bottom = 12.dp), Alignment.Center) {
-                                    when (activeTab) {
-                                        EditorTab.ADJUST -> AdjustToolPanel(editState, mediaItem.isVideo) { editorViewModel.updateEditState(it) }
-                                        EditorTab.CROP -> CropToolPanel(editorViewModel, gridType) { gridType = it }
-                                        EditorTab.LUT -> FilterToolPanel(editorViewModel, selectedLutCategory, lutCategories) { selectedLutCategory = it }
-                                        EditorTab.TEXT -> TextToolPanel(editorViewModel)
-                                        EditorTab.STICKER -> StickerToolPanel(editorViewModel)
-                                        EditorTab.TRIM -> TrimToolPanel(editorViewModel, editState, videoDuration, currentPlayerPos, mediaItem.uri.toString()) { seekRequest = it }
-                                    }
+                            Box(Modifier.fillMaxWidth().wrapContentHeight().padding(bottom = 12.dp), Alignment.Center) {
+                                when (activeTab) {
+                                    EditorTab.ADJUST -> AdjustToolPanel(editState, mediaItem.isVideo) { editorViewModel.updateEditState(it) }
+                                    EditorTab.CROP -> CropToolPanel(editorViewModel, gridType) { gridType = it }
+                                    EditorTab.LUT -> FilterToolPanel(editorViewModel, selectedLutCategory, lutCategories) { selectedLutCategory = it }
+                                    EditorTab.TEXT -> TextToolPanel(editorViewModel)
+                                    EditorTab.STICKER -> StickerToolPanel(editorViewModel)
+                                    EditorTab.TRIM -> TrimToolPanel(editorViewModel, editState, videoDuration, currentPlayerPos, mediaItem.uri.toString()) { seekRequest = it }
                                 }
                             }
                         }
@@ -299,15 +343,18 @@ fun EditorScreen(
                 }
             }
         }
-    ) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding).background(MaterialTheme.colorScheme.background), Alignment.Center) {
+    }
 
-            // Core Global Image Dimensions & Zoom State
+    // 3. THE LIVE PREVIEW CANVAS (The big box in the middle that shows the image and handles zooming)
+    val previewBlock: @Composable (Modifier) -> Unit = { modifier ->
+        Box(modifier.background(MaterialTheme.colorScheme.background), Alignment.Center) {
+
+            // Handles zooming in and out by pinching the screen
             var sc by remember { mutableFloatStateOf(1f) }
             var ox by remember { mutableFloatStateOf(0f) }
             var oy by remember { mutableFloatStateOf(0f) }
 
-            // Missing aspect ratio decoding handler
+            // Looks at the image file to figure out its exact width and height ratio
             var decodedAspect by remember(mediaId) { mutableStateOf<Float?>(null) }
             LaunchedEffect(mediaItem.uri) {
                 if (mediaItem.width <= 0 && mediaItem.height <= 0) {
@@ -331,7 +378,7 @@ fun EditorScreen(
 
             val isOverlaySelected = selectedLayerId != null
 
-            // 1. The unified transform container for BOTH Image and Overlays
+            // The invisible layer that tracks all your finger swipes and pinches
             BoxWithConstraints(
                 Modifier
                     .fillMaxSize()
@@ -348,8 +395,8 @@ fun EditorScreen(
                     .pointerInput(Unit) {
                         if (!isCropping && !isComparing && !isOverlaySelected) {
                             detectTapGestures(
-                                onDoubleTap = { sc = 1f; ox = 0f; oy = 0f },
-                                onTap = { selectedLayerId = null }
+                                onDoubleTap = { sc = 1f; ox = 0f; oy = 0f }, // Double tap resets zoom
+                                onTap = { selectedLayerId = null } // Single tap clears selection
                             )
                         }
                     },
@@ -358,24 +405,22 @@ fun EditorScreen(
                 val maxWPx = constraints.maxWidth.toFloat()
                 val maxHPx = constraints.maxHeight.toFloat()
 
-                // Size the box to the image's OWN (unrotated) aspect ratio, fit within available space
+                // Math to ensure the picture fits perfectly inside the screen limits without stretching
                 val baseAspect = imgWidth / imgHeight
                 var fitW = maxWPx
                 var fitH = maxWPx / baseAspect
                 if (fitH > maxHPx) { fitH = maxHPx; fitW = maxHPx * baseAspect }
 
-                // Total visual rotation applied this frame
                 val totalRotation = if (!isComparing && !mediaItem.isVideo) editState.rotationDegrees + editState.straightenDegrees else 0f
                 val angleRad = Math.toRadians(totalRotation.toDouble())
                 val cosA = abs(cos(angleRad)).toFloat()
                 val sinA = abs(sin(angleRad)).toFloat()
 
-                // Bounding box of the rotated rectangle — shrink it to fit inside available space
                 val rotatedW = fitW * cosA + fitH * sinA
                 val rotatedH = fitW * sinA + fitH * cosA
                 val fitScale = min(maxWPx / rotatedW, maxHPx / rotatedH).coerceAtMost(1f)
 
-                // 2. The perfectly aspect-ratio matched canvas
+                // The actual canvas where the Image, Stickers, and Text are painted
                 Box(
                     Modifier
                         .width(with(LocalDensity.current) { fitW.toDp() })
@@ -410,14 +455,14 @@ fun EditorScreen(
                             }
                         }
                     } else {
-                        // The active preview
+                        // The actual image picture
                         if (previewBitmap != null) {
                             Image(previewBitmap!!.asImageBitmap(), "Preview", Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
                         } else {
                             AsyncImage(ImageRequest.Builder(LocalContext.current).data(mediaItem.uri).build(), "Original", Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
                         }
 
-                        // The locked coordinate Overlays
+                        // Text and Sticker layers painted on top
                         if (!isComparing) {
                             BoxWithConstraints(Modifier.fillMaxSize()) {
                                 val w = constraints.maxWidth.toFloat()
@@ -455,6 +500,7 @@ fun EditorScreen(
                             }
                         }
 
+                        // The cropping grid lines
                         if (isCropping && !isComparing) {
                             InteractiveCropOverlay(
                                 cCrop = editState.cropRect,
@@ -467,12 +513,13 @@ fun EditorScreen(
                     }
                 }
 
+                // Shows a small loading spinner if a heavy effect (like a LUT) is being applied
                 if (isPreviewUpdating && !isComparing && !mediaItem.isVideo) {
                     CircularProgressIndicator(Modifier.align(Alignment.Center).size(36.dp), MaterialTheme.colorScheme.primary, 3.dp)
                 }
             }
 
-            // Compare Button (Always Available for Photo & Video)
+            // The "Compare" Button (Hold to see the original, let go to see your edits)
             Box(
                 Modifier
                     .align(Alignment.BottomEnd)
@@ -499,13 +546,48 @@ fun EditorScreen(
                 )
             }
         }
+    }
 
-        if (isExporting) {
-            SavingOverlay((fileOpState as? FileOperationState.Editing)?.progress ?: 0f)
+    // =========================================================================================
+    // 🧱 FINAL ASSEMBLY (Putting the blocks together based on screen size)
+    // =========================================================================================
+    if (isWideScreen) {
+        // TABLET / LANDSCAPE: Place the image on the left, and a permanent tool panel on the right.
+        Row(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+            // Left Side (Fills all available remaining space)
+            Column(Modifier.weight(1f).fillMaxHeight()) {
+                topBarBlock()
+                previewBlock(Modifier.weight(1f).fillMaxWidth())
+            }
+
+            // A thin dividing line
+            Box(Modifier.width(1.dp).fillMaxHeight().background(MaterialTheme.colorScheme.surfaceVariant))
+
+            // Right Side (Fixed width side-panel for the tools)
+            Box(Modifier.width(360.dp).fillMaxHeight().statusBarsPadding().background(MaterialTheme.colorScheme.surface)) {
+                controlsBlock()
+            }
         }
+    } else {
+        // STANDARD PHONE: Standard Scaffold with top bar and bottom menus.
+        Scaffold(
+            containerColor = MaterialTheme.colorScheme.background,
+            topBar = { topBarBlock() },
+            bottomBar = { controlsBlock() }
+        ) { padding ->
+            previewBlock(Modifier.fillMaxSize().padding(padding))
+        }
+    }
+
+    // The dark overlay that appears when the app is saving your changes to the gallery.
+    if (isExporting) {
+        SavingOverlay((fileOpState as? FileOperationState.Editing)?.progress ?: 0f)
     }
 }
 
+/**
+ * A small toolbar that appears when you click on a text or sticker. Allows deleting/copying.
+ */
 @Composable
 fun LayerControlToolbar(onDelete: () -> Unit, onDuplicate: () -> Unit, onMoveUp: () -> Unit) {
     Row(
@@ -525,6 +607,9 @@ fun LayerControlToolbar(onDelete: () -> Unit, onDuplicate: () -> Unit, onMoveUp:
     }
 }
 
+/**
+ * The row of buttons at the very top of the screen (Back, Undo, Redo, Reset, Save).
+ */
 @Composable
 fun ModernEditorTopBar(onBack: () -> Unit, onUndo: () -> Unit, onRedo: () -> Unit, onReset: () -> Unit, onSave: () -> Unit, isExporting: Boolean) {
     Row(
@@ -561,6 +646,9 @@ fun ModernEditorTopBar(onBack: () -> Unit, onUndo: () -> Unit, onRedo: () -> Uni
     }
 }
 
+/**
+ * The video player engine (ExoPlayer). It handles video looping, trimming, and live effects.
+ */
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 @Composable
 fun EditorVideoPreview(
@@ -720,6 +808,9 @@ fun EditorVideoPreview(
     }
 }
 
+/**
+ * A tiny reusable button for the Main Menu (Crop, Adjust, etc.)
+ */
 @Composable
 fun TabItem(lbl: String, ic: ImageVector, sel: Boolean, onClk: () -> Unit) {
     val c = if (sel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
@@ -733,6 +824,9 @@ fun TabItem(lbl: String, ic: ImageVector, sel: Boolean, onClk: () -> Unit) {
     }
 }
 
+/**
+ * The loading screen that takes over your phone while saving a video or photo.
+ */
 @Composable
 fun SavingOverlay(prg: Float) {
     Box(Modifier.fillMaxSize().background(Color.Black.copy(0.8f)).clickable(enabled = false, onClick = {}), Alignment.Center) {
@@ -745,6 +839,10 @@ fun SavingOverlay(prg: Float) {
     }
 }
 
+/**
+ * THE MAGIC CROP TOOL
+ * Draws the handles on the corners and edges, letting you drag to resize the crop box.
+ */
 @Composable
 fun InteractiveCropOverlay(cCrop: RectF?, cAsp: Float?, grid: Int, onCrop: (RectF) -> Unit) {
     var crop by remember(cCrop) { mutableStateOf(cCrop?.let { RectF(it) } ?: RectF(0.1f, 0.1f, 0.9f, 0.9f)) }
@@ -765,8 +863,14 @@ fun InteractiveCropOverlay(cCrop: RectF?, cAsp: Float?, grid: Int, onCrop: (Rect
             Modifier.fillMaxSize().pointerInput(Unit) {
                 detectDragGestures(
                     onDragStart={ off->
-                        val nx=off.x/size.width; val ny=off.y/size.height; val sx=sl/size.width; val sy=sl/size.height
-                        val l=crop.left; val t=crop.top; val r=crop.right; val b=crop.bottom
+                        val nx=off.x/size.width
+                        val ny=off.y/size.height
+                        val sx=sl/size.width
+                        val sy=sl/size.height
+                        val l=crop.left
+                        val t=crop.top
+                        val r=crop.right
+                        val b=crop.bottom
                         ah = when {
                             abs(nx-l)<sx&&abs(ny-t)<sy->0
                             abs(nx-r)<sx&&abs(ny-t)<sy->1
@@ -797,7 +901,8 @@ fun InteractiveCropOverlay(cCrop: RectF?, cAsp: Float?, grid: Int, onCrop: (Rect
                             val dd=max(abs(dx),abs(dy*rel))
                             val sx=if(ah==0||ah==2) -1 else 1
                             val sy=if(ah<=1) -1 else 1
-                            val rx=dd*sx; val ry=(dd/rel)*sy
+                            val rx=dd*sx
+                            val ry=(dd/rel)*sy
                             if(!((nr.left+rx<0f&&sx<0)||(nr.right+rx>1f&&sx>0))&&!((nr.top+ry<0f&&sy<0)||(nr.bottom+ry>1f&&sy>0))) {
                                 when(ah) {
                                     0->{nr.left=(nr.left+rx).coerceIn(0f,nr.right-0.05f); nr.top=(nr.top+ry).coerceIn(0f,nr.bottom-0.05f)}
@@ -897,6 +1002,9 @@ fun InteractiveCropOverlay(cCrop: RectF?, cAsp: Float?, grid: Int, onCrop: (Rect
     }
 }
 
+/**
+ * THE ADJUSTMENTS MENU (Brightness, Contrast, Exposure, etc.)
+ */
 @Composable
 fun AdjustToolPanel(s: EditState, isVideo: Boolean, up: ((EditState) -> EditState) -> Unit) {
     val hap = LocalHapticFeedback.current
@@ -999,6 +1107,9 @@ fun AdjustToolPanel(s: EditState, isVideo: Boolean, up: ((EditState) -> EditStat
     }
 }
 
+/**
+ * THE LUT (Filter) MENU
+ */
 @Composable
 fun FilterToolPanel(vm: EditorViewModel, selCat: String?, cats: List<String>, onCatSelect: (String) -> Unit) {
     val luts by vm.lutItems.collectAsState()
@@ -1057,6 +1168,9 @@ fun FilterToolPanel(vm: EditorViewModel, selCat: String?, cats: List<String>, on
     }
 }
 
+/**
+ * THE CROP & ROTATE SETTINGS MENU
+ */
 @Composable
 fun CropToolPanel(vm: EditorViewModel, grid: Int, onGrid: (Int) -> Unit) {
     val asp by vm.aspectRatio.collectAsState()
@@ -1124,6 +1238,9 @@ fun CropToolPanel(vm: EditorViewModel, grid: Int, onGrid: (Int) -> Unit) {
     }
 }
 
+/**
+ * THE TEXT ADDING MENU
+ */
 @Composable
 fun TextToolPanel(vm: EditorViewModel) {
     var t by remember { mutableStateOf("") }
@@ -1161,6 +1278,9 @@ fun TextToolPanel(vm: EditorViewModel) {
     }
 }
 
+/**
+ * THE STICKER GALLERY MENU
+ */
 @Composable
 fun StickerToolPanel(vm: EditorViewModel) {
     val sts by vm.stickerItems.collectAsState()
@@ -1214,6 +1334,9 @@ fun StickerToolPanel(vm: EditorViewModel) {
     }
 }
 
+/**
+ * Grabs tiny pictures (thumbnails) from inside a video file to show on the trim timeline.
+ */
 @Composable
 fun VideoThumbnailRow(uri: String, durationMs: Long, modifier: Modifier) {
     var frames by remember(uri) { mutableStateOf<List<Bitmap>>(emptyList()) }
@@ -1258,6 +1381,10 @@ fun formatMs(ms: Long): String {
     return String.format(Locale.US, "%02d:%02d", m, s)
 }
 
+/**
+ * THE VIDEO TRIMMER MENU
+ * Shows the timeline with thumbnails and lets you drag left/right to cut the video.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TrimToolPanel(
@@ -1364,6 +1491,10 @@ fun TrimToolPanel(
     }
 }
 
+/**
+ * THE EXPORT POPUP
+ * Appears when you click 'Save'. Asks what size/quality you want.
+ */
 @Composable
 fun ExportSettingsDialog(
     isVideo: Boolean,
@@ -1422,6 +1553,10 @@ fun ExportSettingsDialog(
     )
 }
 
+/**
+ * THE STICKER CANVAS LOGIC
+ * Draws the stickers over the image and lets you drag and scale them.
+ */
 @Composable
 fun StickerOverlay(
     state: EditState,
@@ -1533,6 +1668,10 @@ fun StickerOverlay(
     }
 }
 
+/**
+ * THE TEXT CANVAS LOGIC
+ * Draws the text blocks over the image and handles dragging/rotating.
+ */
 @Composable
 fun TextOverlay(
     state: EditState,

@@ -6,8 +6,6 @@ import android.graphics.RectF
 import android.net.Uri
 import android.os.ParcelFileDescriptor
 import android.os.Parcelable
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.room.*
@@ -23,10 +21,17 @@ import java.nio.charset.Charset
 import java.text.SimpleDateFormat
 import java.util.*
 
+// Formatter to turn raw computer time (like 1632345600) into a human-readable date (like "September 23, 2021")
 private val headerDateFormatter = object : ThreadLocal<SimpleDateFormat>() {
     override fun initialValue() = SimpleDateFormat("MMMM dd, yyyy", Locale.getDefault())
 }
 
+/**
+ * DATABASE TRANSLATORS (Type Converters)
+ * The database only understands simple things like text and numbers.
+ * These functions act as translators, converting complex objects (like Lists, Dates, or Web Links)
+ * into simple text strings before saving them, and turning them back into complex objects when reading them.
+ */
 class Converters {
     @TypeConverter
     fun fromStringList(value: List<String>): String = Json.encodeToString(value)
@@ -73,48 +78,57 @@ class Converters {
 
 
 // ============================================================================
-// GALLERY & EDITOR DATA MODELS
+// 🎨 GALLERY & EDITOR DATA MODELS (The Blueprints)
+// These define the structure of the things the user sees and interacts with.
 // ============================================================================
 
+/** Represents a blurred or pixelated area on an image (like hiding a face). */
 data class MosaicRegion(
     val region: RectF,
     val intensity: Float = 1f,
     val isVisible: Boolean = true
 )
 
+/** Represents a drawing or doodle layer over a photo. */
 data class DrawLayer(
     val id: String = java.util.UUID.randomUUID().toString(),
-    val points: List<DrawPoint> = emptyList(),
+    val points: List<DrawPoint> = emptyList(), // The actual path of the user's finger
     val color: Int,
     val width: Float,
-    val zIndex: Int = 0,
+    val zIndex: Int = 0, // Which layer is on top of which
     val isVisible: Boolean = true
 )
 
+/** A single X,Y coordinate where the user touched the screen while drawing. */
 data class DrawPoint(
     val x: Float,
     val y: Float
 )
 
+/**
+ * THE MASTER MEDIA BLUEPRINT.
+ * Represents a single Photo or Video anywhere in the app.
+ */
 data class MediaItem(
-    val id: Long,
-    val uri: Uri,
-    val path: String,
-    val relativePath: String,
-    val name: String,
+    val id: Long, // Unique ID from the Android system
+    val uri: Uri, // The path to load the actual file
+    val path: String, // The text path on the hard drive
+    val relativePath: String, // The folder path (e.g., "DCIM/Camera")
+    val name: String, // The file name (e.g., "IMG_1234.jpg")
     val dateAdded: Long,
     val size: Long,
     val isVideo: Boolean,
-    val duration: Long = 0,
+    val duration: Long = 0, // Only matters for videos
     val width: Int = 0,
     val height: Int = 0,
-    val mimeType: String = "",
-    val bucketId: String,
-    val bucketName: String,
+    val mimeType: String = "", // e.g., "image/jpeg"
+    val bucketId: String, // The ID of the folder it belongs to
+    val bucketName: String, // The name of the folder (e.g., "Camera", "WhatsApp Images")
     val isFavorite: Boolean = false,
     val isHidden: Boolean = false,
     val volumeName: String = ""
 ) {
+    // Converts the raw computer timestamp into a nice "January 1, 2025" string for the UI headers
     val dateHeader: String
         get() = try {
             headerDateFormatter.get()?.format(Date(dateAdded * 1000)) ?: "Unknown Date"
@@ -123,10 +137,12 @@ data class MediaItem(
         }
 }
 
+/** Defines how a photo frame should crop the image inside it. */
 enum class MaskType {
     RECTANGLE, CIRCLE, CUSTOM_PATH, NONE
 }
 
+/** Represents a decorative frame/border you can put around a photo. */
 @androidx.compose.runtime.Immutable
 data class FrameAsset(
     val id: String,
@@ -140,6 +156,7 @@ data class FrameAsset(
     val allowZoom: Boolean = true
 )
 
+/** Represents an applied frame currently sitting on top of an image being edited. */
 @androidx.compose.runtime.Immutable
 data class FrameLayer(
     val assetPath: String,
@@ -149,20 +166,22 @@ data class FrameLayer(
     val zIndex: Int = 0
 )
 
+/** Represents an emoji or sticker dropped onto a photo during editing. */
 @androidx.compose.runtime.Immutable
 data class StickerLayer(
     val id: String,
-    val assetPath: String,
-    val emoji: String = "",
-    val x: Float = 0.5f,
-    val y: Float = 0.5f,
-    val scale: Float = 1f,
-    val rotation: Float = 0f,
+    val assetPath: String, // Used if it's a picture sticker
+    val emoji: String = "", // Used if it's a text emoji
+    val x: Float = 0.5f, // X Position on screen
+    val y: Float = 0.5f, // Y Position on screen
+    val scale: Float = 1f, // How big it is
+    val rotation: Float = 0f, // How tilted it is
     val opacity: Float = 1f,
     val isVisible: Boolean = true,
     val zIndex: Int = 0
 )
 
+/** Represents a block of text typed over a photo during editing. */
 @androidx.compose.runtime.Immutable
 data class TextLayer(
     val id: String,
@@ -177,26 +196,32 @@ data class TextLayer(
     val zIndex: Int = 0
 )
 
+/** Represents a folder/album of photos in the gallery. */
 data class Album(
     val id: String,
     val name: String,
     val coverUri: Uri?,
     val mediaCount: Int,
     val sizeBytes: Long = 0,
-    val isPinned: Boolean = false,
+    val isPinned: Boolean = false, // If the user pinned this album to the top
     val isSdCard: Boolean = false,
     val isHidden: Boolean = false,
     val sortOrder: Int = 0
 )
 
+/** Represents a generated "Memory" or "Story" slideshow (like on Instagram). */
 data class UiStory(
     val id: String,
-    val title: String,
+    val title: String, // e.g., "Summer 2024"
     val subtitle: String,
     val coverUri: Uri,
-    val items: List<MediaItem>
+    val items: List<MediaItem> // The list of photos/videos in the story
 )
 
+/**
+ * Represents a color grading filter (LUT - Look Up Table) for photo/video editing.
+ * This contains the raw mathematical color mapping data.
+ */
 data class CubeLut(
     val size: Int,
     val data: FloatArray
@@ -217,11 +242,13 @@ data class CubeLut(
     }
 }
 
+/** Groups photo filters by style (e.g., "Vintage", "Cinematic"). */
 data class LutCategory(
     val name: String,
     val files: List<String>
 )
 
+/** Contains metadata for an open-source emoji sticker. */
 data class OpenMojiItem(
     val emoji: String = "",
     val hexcode: String = "",
@@ -231,11 +258,13 @@ data class OpenMojiItem(
     val tags: List<String> = emptyList()
 )
 
+/** Groups stickers together (e.g., "Animals", "Food"). */
 data class StickerCategory(
     val name: String,
     val stickers: List<OpenMojiItem>
 )
 
+/** Defines how a sticker should look in the picker menu. */
 data class StickerUiItem(
     val name: String,
     val category: String,
@@ -243,12 +272,18 @@ data class StickerUiItem(
     val emoji: String
 )
 
+/** How the user wants to save their edited video (Quality & Size). */
 data class ExportSettings(
     val format: String = "mp4",
     val quality: Int = 100,
     val resolution: Pair<Int, Int> = Pair(1920, 1080)
 )
 
+/**
+ * THE MASTER EDITOR STATE.
+ * This holds absolutely everything the user has done to a photo or video while editing it.
+ * If the app crashes, we can restore the exact edit state using this object.
+ */
 data class EditState(
     val exportSettings: ExportSettings = ExportSettings(),
     val brightness: Float = 0f,
@@ -268,7 +303,7 @@ data class EditState(
     val straightenDegrees: Float = 0f,
     val flipHorizontal: Boolean = false,
     val flipVertical: Boolean = false,
-    val trimStartMs: Long = 0L,
+    val trimStartMs: Long = 0L, // For trimming video length
     val trimEndMs: Long = 0L,
     val cutOutStartMs: Long = 0L,
     val cutOutEndMs: Long = 0L,
@@ -279,49 +314,27 @@ data class EditState(
     val textLayers: List<TextLayer> = emptyList()
 )
 
+/** Bundles up deeply technical information about a video file (Resolution, framerate, etc). */
 data class FullMediaMetadata(
     @Embedded val core: MediaMetadataCore,
     @Relation(parentColumn = "mediaId", entityColumn = "mediaId") val video: MediaMetadataVideo?,
     @Relation(parentColumn = "mediaId", entityColumn = "mediaId") val flags: MediaMetadataFlags?
 )
 
-data class DocumentUiState(
-    val documents: List<DocumentEntity> = emptyList(),
-    val searchQuery: String = "",
-    val selectedFilter: DocumentFilter = DocumentFilter.ALL
-)
 
-sealed class DocumentContent {
-    data class Text(val text: String) : DocumentContent()
-    data class Spreadsheet(val sheets: List<SheetContent>) : DocumentContent()
-    data class Presentation(val slides: List<SlideContent>) : DocumentContent()
-    data class Pdf(val uri: Uri, val fileDescriptor: ParcelFileDescriptor) : DocumentContent()
-}
-
-data class SheetContent(
-    val sheetName: String,
-    val rows: List<RowContent>
-)
-
-data class RowContent(
-    val cells: List<String>
-)
-
-data class SlideContent(
-    val slideNumber: Int,
-    val textContent: String
-)
-
+/** Wraps core technical data for media items. */
 data class MediaMetadata(
     val core: MediaMetadataCore,
     val video: MediaMetadataVideo?,
     val flags: MediaMetadataFlags?
 )
 
+// Helper tools to easily extract the metadata
 fun MediaMetadata.toCore() = core
 fun MediaMetadata.toVideo() = video ?: MediaMetadataVideo(core.mediaId, 0, 0.0)
 fun MediaMetadata.toFlags() = flags ?: MediaMetadataFlags(core.mediaId, false, false)
 
+/** Information about a secure, password-protected folder ("Vault"). */
 data class VaultInfo(
     val version: Int,
     val transferable: Boolean,
@@ -330,9 +343,12 @@ data class VaultInfo(
 )
 
 // ============================================================================
-// ROOM ENTITIES
+// 🗄️ ROOM ENTITIES (The Database Tables)
+// An "Entity" is just a fancy word for a table/spreadsheet in the app's database.
+// Each class below creates a table where data is permanently stored on the phone.
 // ============================================================================
 
+/** Stores statistics on how often a music track is played. */
 @Entity(tableName = "music_track_stats")
 data class TrackStatEntity(
     @PrimaryKey val trackId: Long,
@@ -341,6 +357,7 @@ data class TrackStatEntity(
     val isFavorite: Boolean
 )
 
+/** The Recycle Bin table. Keeps track of photos the user deleted, so they can be restored later. */
 @Entity(
     tableName = "trash",
     indices = [
@@ -350,14 +367,15 @@ data class TrackStatEntity(
 )
 data class TrashEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    val deletedTimestamp: Long,
-    val originalPath: String,
+    val deletedTimestamp: Long, // When it was deleted (to auto-erase after 30 days)
+    val originalPath: String, // Where it needs to be put back if restored
     val contentUri: String,
     val mediaType: String,
     val name: String,
     val size: Long
 )
 
+/** Stores the generated "Stories" (Memories slideshows) so they show up consistently. */
 @Entity(
     tableName = "stories",
     indices = [Index(value = ["createdAt"])]
@@ -367,11 +385,12 @@ data class StoryEntity(
     val title: String,
     val subtitle: String? = null,
     val coverUri: String,
-    val mediaIdsJson: String,
+    val mediaIdsJson: String, // A list of photo IDs belonging to this story, saved as text
     val createdAt: Long,
     @ColumnInfo(defaultValue = "AUTO_GENERATED") val storyType: String = "AUTO_GENERATED"
 )
 
+/** Tracks which photos the user opens the most. */
 @Entity(tableName = "media_usage_stats")
 data class UsageEntity(
     @PrimaryKey val mediaId: Long,
@@ -379,6 +398,11 @@ data class UsageEntity(
     val lastOpened: Long
 )
 
+/**
+ * THE MASTER PHOTO/VIDEO DATABASE TABLE.
+ * This creates a fast, searchable index of all gallery media so the app doesn't have to
+ * slowly scan the hard drive every time you open it.
+ */
 @Parcelize
 @Entity(
     tableName = "media_table",
@@ -402,11 +426,12 @@ data class MediaEntity(
     val height: Int = 0,
     val orientation: Int = 0,
     val duration: Long = 0,
-    val bucketId: String = "",
-    val bucketName: String = "",
+    val bucketId: String = "", // Folder ID
+    val bucketName: String = "", // Folder Name (e.g. "Screenshots")
     val isTrashed: Boolean = false,
     val trashTimestamp: Long? = null
 ) : Parcelable {
+    // These values aren't saved to the database, they are calculated on the fly.
     @IgnoredOnParcel
     val uri: Uri
         get() = Uri.parse(contentUri)
@@ -415,6 +440,7 @@ data class MediaEntity(
     val isVideo: Boolean
         get() = mediaType.equals("video", ignoreCase = true)
 
+    // Formats raw milliseconds into "01:45"
     fun formatDuration(): String {
         if (duration <= 0) return ""
         val s = (duration / 1000) % 60
@@ -428,6 +454,7 @@ data class MediaEntity(
     }
 }
 
+/** Stores custom user settings for Folders (like pinning them or giving them custom covers). */
 @Entity(tableName = "album_meta")
 data class AlbumEntity(
     @PrimaryKey val id: String,
@@ -439,16 +466,19 @@ data class AlbumEntity(
     @ColumnInfo(defaultValue = "0") val albumOrder: Int = 0
 )
 
+/** The list of photos the user has marked with a heart. */
 @Entity(tableName = "favorites")
 data class FavoriteEntity(
     @PrimaryKey val mediaId: Long
 )
 
+/** The list of photos moved into the password-protected secure folder. */
 @Entity(tableName = "secure_media")
 data class SecureMediaEntity(
     @PrimaryKey val mediaId: Long
 )
 
+/** Custom groupings of albums made by the user. */
 @Entity(tableName = "album_groups")
 data class AlbumGroupEntity(
     @PrimaryKey val groupName: String,
@@ -456,6 +486,7 @@ data class AlbumGroupEntity(
     val coverUri: String? = null
 )
 
+/** An older format for storing media. Kept for backwards compatibility. */
 @Entity(tableName = "media")
 data class UriMedia(
     @PrimaryKey val id: Long,
@@ -474,11 +505,12 @@ data class UriMedia(
     val duration: String? = null
 )
 
+/** Files that have been heavily encrypted for the Secure Vault. */
 @Entity(tableName = "encrypted_media")
 data class EncryptedMedia2(
     @PrimaryKey val id: Long,
     val uuid: UUID,
-    val bytes: ByteArray,
+    val bytes: ByteArray, // The scrambled file data
     val mimeType: String,
     val originalName: String
 ) {
@@ -498,6 +530,7 @@ data class EncryptedMedia2(
     }
 }
 
+/** Represents a Secure Vault instance. */
 @Entity(tableName = "vaults")
 data class Vault(
     @PrimaryKey val uuid: UUID,
@@ -505,34 +538,40 @@ data class Vault(
     val createdAt: Long = System.currentTimeMillis()
 )
 
+/** Legacy pinned album table. */
 @Entity(tableName = "pinned_table")
 data class PinnedAlbum(
     @PrimaryKey val id: Long
 )
 
+/** Folders the user wants hidden from the main gallery. */
 @Entity(tableName = "blacklist")
 data class IgnoredAlbum(
     @PrimaryKey val id: Long,
     val label: String
 )
 
+/** Custom cover photos chosen for specific albums. */
 @Entity(tableName = "album_thumbnail")
 data class AlbumThumbnail(
     @PrimaryKey val albumId: Long,
     val thumbnailUri: String
 )
 
+/** Tracks app database versions for migrations. */
 @Entity(tableName = "media_version")
 data class MediaVersion(
     @PrimaryKey val version: String
 )
 
+/** Stores how the user likes their timeline to look (e.g. Grouped by day vs month). */
 @Entity(tableName = "timeline_settings")
 data class TimelineSettings(
     @PrimaryKey val id: Int = 0,
     val groupContent: Boolean = true
 )
 
+/** Base technical data for a file (width/height). */
 @Entity(tableName = "media_metadata_core")
 data class MediaMetadataCore(
     @PrimaryKey val mediaId: Long,
@@ -541,6 +580,7 @@ data class MediaMetadataCore(
     val location: String? = null
 )
 
+/** Technical data specific to video files. */
 @Entity(tableName = "media_metadata_video")
 data class MediaMetadataVideo(
     @PrimaryKey val mediaId: Long,
@@ -548,6 +588,7 @@ data class MediaMetadataVideo(
     val fps: Double
 )
 
+/** Special tech flags (like if a photo is RAW or HDR). */
 @Entity(tableName = "media_metadata_flags")
 data class MediaMetadataFlags(
     @PrimaryKey val mediaId: Long,
@@ -555,6 +596,7 @@ data class MediaMetadataFlags(
     val isHdr: Boolean
 )
 
+/** Albums manually created by the user (not just system folders). */
 @Entity(tableName = "manual_albums")
 data class ManualAlbumEntity(
     @PrimaryKey val id: String,
@@ -564,6 +606,7 @@ data class ManualAlbumEntity(
     val hasBeenUsed: Boolean = false
 )
 
+/** Database table for PDF, Word, and Excel files. */
 @Entity(tableName = "documents")
 data class DocumentEntity(
     @PrimaryKey(autoGenerate = true)
@@ -579,9 +622,12 @@ data class DocumentEntity(
 )
 
 // ============================================================================
-// ROOM DAOs
+// 🛠️ ROOM DAOs (Data Access Objects)
+// A DAO is like an instruction manual. It tells the database exactly HOW to do things
+// (like "Find all favorite photos" or "Delete this album").
 // ============================================================================
 
+/** Instructions for saving and finding Documents (PDFs, Word files). */
 @Dao
 interface DocumentDao {
     @Query("SELECT * FROM documents ORDER BY dateAdded DESC")
@@ -600,10 +646,10 @@ interface DocumentDao {
     suspend fun deleteDocument(id: Long)
 }
 
+/** Instructions for saving Music player statistics. */
 @Dao
 @JvmSuppressWildcards
 interface MusicDao {
-
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertStats(stats: List<TrackStatEntity>)
 
@@ -617,10 +663,15 @@ interface MusicDao {
     suspend fun getAllStats(): List<TrackStatEntity>
 }
 
+/**
+ * THE MASTER GALLERY COMMAND CENTER.
+ * The core instructions for finding, updating, and deleting photos/videos in the database.
+ */
 @Dao
 @JvmSuppressWildcards
 abstract class GalleryDao {
 
+    // --- USAGE STATS (Tracks what you open most often) ---
     @Query("SELECT * FROM media_usage_stats")
     abstract fun getAllUsageStats(): Flow<List<UsageEntity>>
 
@@ -638,6 +689,7 @@ abstract class GalleryDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     abstract suspend fun insertUsageStats(usage: UsageEntity): Long
 
+    // --- MANUAL ALBUMS ---
     @Query("SELECT * FROM manual_albums ORDER BY createdAt DESC")
     abstract fun getManualAlbums(): Flow<List<ManualAlbumEntity>>
 
@@ -658,6 +710,7 @@ abstract class GalleryDao {
         albums.forEach { updateAlbumOrder(it.first, it.second) }
     }
 
+    // --- MAIN MEDIA QUERIES ---
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     abstract suspend fun insertAll(media: List<MediaEntity>): List<Long>
 
@@ -670,6 +723,7 @@ abstract class GalleryDao {
     @Query("SELECT * FROM media_table ORDER BY dateAdded DESC LIMIT :limit OFFSET :offset")
     abstract suspend fun getMediaChunk(limit: Int, offset: Int): List<MediaEntity>
 
+    // --- STORIES / MEMORIES ---
     @Query("SELECT EXISTS(SELECT 1 FROM stories WHERE id = :id)")
     abstract suspend fun storyExists(id: String): Boolean
 
@@ -694,6 +748,7 @@ abstract class GalleryDao {
     @Query("DELETE FROM stories WHERE storyType != 'MANUAL' AND createdAt < :threshold")
     abstract suspend fun deleteOldAutoStories(threshold: Long): Int
 
+    // --- TRASH / RECYCLE BIN QUERIES ---
     @Query("SELECT * FROM trash WHERE id = :id LIMIT 1")
     abstract suspend fun getTrashItemById(id: Long): TrashEntity?
 
@@ -766,6 +821,7 @@ abstract class GalleryDao {
     @Query("SELECT * FROM trash ORDER BY deletedTimestamp ASC LIMIT :limit")
     abstract suspend fun getOldestTrashItems(limit: Int): List<TrashEntity>
 
+    // --- ALBUM METADATA (Pins, Covers, Sort Orders) ---
     @Query("SELECT * FROM album_meta")
     abstract fun getAlbumMeta(): Flow<List<AlbumEntity>>
 
@@ -813,6 +869,7 @@ abstract class GalleryDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     abstract suspend fun insertAlbumMeta(meta: AlbumEntity): Long
 
+    // --- FAVORITES ---
     @Query("SELECT mediaId FROM favorites")
     abstract fun getFavoriteIds(): Flow<List<Long>>
 
@@ -828,6 +885,7 @@ abstract class GalleryDao {
     @Query("SELECT EXISTS(SELECT 1 FROM favorites WHERE mediaId = :id)")
     abstract suspend fun isFavorite(id: Long): Boolean
 
+    // --- SECURE VAULT ---
     @Query("SELECT mediaId FROM secure_media")
     abstract fun getSecureMediaIds(): Flow<List<Long>>
 
@@ -838,6 +896,7 @@ abstract class GalleryDao {
     abstract suspend fun removeFromSecure(id: Long): Int
 }
 
+/** Instructions for saving custom folder thumbnail pictures. */
 @Dao
 @JvmSuppressWildcards
 interface AlbumThumbnailDao {
@@ -859,6 +918,12 @@ interface AlbumThumbnailDao {
     @Query("SELECT * FROM album_thumbnail")
     fun getAlbumThumbnailsFlow(): Flow<List<AlbumThumbnail>>
 }
+
+
+// ============================================================================
+// 🏛️ THE MASTER DATABASE (The Filing Cabinet)
+// This connects all the Tables (Entities) and Instruction Manuals (DAOs) together.
+// ============================================================================
 
 @Database(
     entities = [
@@ -885,11 +950,13 @@ interface AlbumThumbnailDao {
         UsageEntity::class,
         DocumentEntity::class
     ],
-    version = 17,
+    version = 17, // The current version of the database architecture
     exportSchema = false
 )
-@TypeConverters(Converters::class)
+@TypeConverters(Converters::class) // Attach the translators we built at the top of the file
 abstract class GalleryDatabase : RoomDatabase() {
+
+    // Links to our instruction manuals (DAOs)
     abstract fun galleryDao(): GalleryDao
     abstract fun albumThumbnailDao(): AlbumThumbnailDao
     abstract fun musicDao(): MusicDao
@@ -898,6 +965,7 @@ abstract class GalleryDatabase : RoomDatabase() {
     companion object {
         const val DATABASE_NAME = "gallerybox_db"
 
+        // Instructions on how to upgrade older versions of the app without deleting user data.
         val MIGRATION_11_12 = object : Migration(11, 12) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE album_meta ADD COLUMN albumOrder INTEGER NOT NULL DEFAULT 0")
@@ -911,6 +979,11 @@ abstract class GalleryDatabase : RoomDatabase() {
         }
     }
 }
+
+// ============================================================================
+// 🔄 HELPER FUNCTIONS (Converters)
+// Quick ways to switch between the UI format and the Database format.
+// ============================================================================
 
 fun MediaItem.toEntity() = MediaEntity(
     id = id,
@@ -952,6 +1025,12 @@ fun MediaEntity.toMediaItem() = MediaItem(
     bucketName = bucketName,
     isHidden = false
 )
+
+
+// ============================================================================
+// 😃 THE EMOJI LIBRARY
+// A massive, categorized list of all standard emojis used for photo stickers.
+// ============================================================================
 
 object StickerUnicode {
     object SmileysAndEmotion {
@@ -1071,6 +1150,7 @@ object StickerUnicode {
         val subdivisionFlag = listOf("🏴󠁧󠁢󠁥󠁮󠁧󠁿", "🏴󠁧󠁢󠁳󠁣󠁴󠁿", "🏴󠁧󠁢󠁷󠁬󠁳󠁿")
     }
 
+    // A giant, combined list of every single emoji defined above, ready to be shown in the app.
     val allEmojis: List<String> by lazy {
         SmileysAndEmotion.let { it.faceSmiling + it.faceAffection + it.faceTongue + it.faceHand + it.faceNeutralSkeptical + it.faceSleepy + it.faceUnwell + it.faceHat + it.faceGlasses + it.faceConcerned + it.faceNegative + it.faceCostume + it.catFace + it.monkeyFace + it.heart + it.emotion } +
                 PeopleAndBody.let { it.handFingersOpen + it.handFingersPartial + it.handSingleFinger + it.handFingersClosed + it.hands + it.handProp + it.bodyParts + it.person + it.personGesture + it.personRole + it.personFantasy + it.personActivity + it.personSport + it.personResting + it.family + it.personSymbol + it.hairStyle } +
@@ -1082,8 +1162,4 @@ object StickerUnicode {
                 Symbols.let { it.transportSign + it.warning + it.arrow + it.religion + it.zodiac + it.avSymbol + it.gender + it.math + it.punctuation + it.currency + it.otherSymbol + it.keycap + it.alphanum + it.geometric } +
                 Flags.let { it.flag + it.countryFlag + it.subdivisionFlag }
     }
-}
-
-enum class DocumentFilter {
-    ALL, PDF, WORD, EXCEL, POWERPOINT, TEXT, FAVORITES
 }

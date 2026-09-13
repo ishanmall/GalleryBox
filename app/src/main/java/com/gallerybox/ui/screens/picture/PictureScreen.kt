@@ -1,8 +1,13 @@
+// These annotations tell the Android compiler to ignore certain warnings.
+// Think of it as telling an overly strict spell-checker to ignore specific words because we know what we are doing.
 @file:Suppress("UnsafeOptInUsageError", "UnstableApiUsage", "OPT_IN_USAGE", "unused", "DEPRECATION")
 @file:androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 
 package com.gallerybox.ui.screens.picture
 
+// --- IMPORTS ---
+// This is the "toolbox" area. We are fetching all the tools we need to build this file.
+// We are bringing in tools for drawing grids, touching the screen, playing video, formatting dates, and managing files.
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.ActivityManager
@@ -93,6 +98,10 @@ import coil.request.CachePolicy
 import coil.request.ImageRequest
 import coil.size.Precision
 import coil.size.Size
+
+// ---------------------------------------------------------------------------
+// 🖼️ APP DATA & VIEWMODELS
+// ---------------------------------------------------------------------------
 import com.gallerybox.data.MediaItem
 import com.gallerybox.viewmodel.GalleryEvent
 import com.gallerybox.viewmodel.GalleryViewModel
@@ -100,6 +109,15 @@ import com.gallerybox.viewmodel.GalleryViewerState
 import com.gallerybox.viewmodel.MediaTypeFilter
 import com.gallerybox.viewmodel.PhotoSort
 import com.gallerybox.viewmodel.TrashViewModel
+
+// ---------------------------------------------------------------------------
+// 🧠 ADAPTIVE LOGIC IMPORTS
+// ---------------------------------------------------------------------------
+import com.gallerybox.ui.screens.adaptive.AdaptiveState
+import com.gallerybox.ui.screens.adaptive.DevicePosture
+import com.gallerybox.ui.screens.adaptive.rememberAdaptiveState
+import com.gallerybox.ui.screens.adaptive.WindowWidthSize
+
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
@@ -112,22 +130,38 @@ import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
 
+/**
+ * =========================================================================================
+ * 🪄 SMOOTH ANIMATIONS
+ * =========================================================================================
+ * These define how dialogs and screens bounce and fade into view.
+ * A "Spring" animation makes menus pop up playfully instead of just rigidly appearing.
+ */
 private val PremiumSpring = spring<Float>(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMediumLow)
 private val PremiumEnter = scaleIn(PremiumSpring) + fadeIn(tween(180, easing = FastOutSlowInEasing))
 private val PremiumExit = scaleOut(tween(120)) + fadeOut(tween(120))
 
+/**
+ * The 3 main tabs at the top of the photo grid that let you filter what you see.
+ */
 enum class UiMediaFilter(val label: String) {
     ALL("All"),
     PHOTOS("Photos"),
     VIDEOS("Videos")
 }
 
+/**
+ * Helps us detect if the phone is cheap/slow or fast/expensive so we don't crash it.
+ */
 enum class DeviceTier { LOW, MID, HIGH }
 
 fun isValidUri(context: Context, uri: Uri?): Boolean {
     return uri != null && uri != Uri.EMPTY
 }
 
+/**
+ * Looks at a file's name and guesses what it is (e.g., if it says "whatsapp", it's WhatsApp Media).
+ */
 fun getSmartName(item: MediaItem): String {
     return item.name.lowercase().let {
         when {
@@ -141,6 +175,7 @@ fun getSmartName(item: MediaItem): String {
     }
 }
 
+// Grabs just the folder name out of a giant file path (e.g., turns "/storage/emulated/0/DCIM/Camera" into "Camera")
 fun getFolderName(path: String): String {
     return try {
         java.io.File(path).parentFile?.name ?: "Unknown Folder"
@@ -149,6 +184,9 @@ fun getFolderName(path: String): String {
     }
 }
 
+/**
+ * Checks how much RAM the phone has. If it's a slow phone, we turn off heavy animations.
+ */
 fun getDeviceTier(context: Context): DeviceTier {
     val m = ActivityManager.MemoryInfo()
     (context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).getMemoryInfo(m)
@@ -160,6 +198,7 @@ fun getDeviceTier(context: Context): DeviceTier {
     }
 }
 
+// Converts raw milliseconds into a readable clock (e.g., "1:05")
 fun formatDuration(durationMs: Long): String {
     val t = durationMs / 1000
     val m = (t / 60) % 60
@@ -181,16 +220,24 @@ fun Context.findActivity(): Activity? {
     return null
 }
 
+// Tools to turn raw timestamps into pretty text (e.g., "Sunday, August 12, 2026")
 private val metadataFormatter by lazy { SimpleDateFormat("EEEE, MMMM dd, yyyy 'at' hh a", Locale.getDefault()) }
 private val shortDateFormatter by lazy { SimpleDateFormat("MMMM dd, yyyy", Locale.getDefault()) }
 
+/**
+ * Because our grid has both Text Dates (Headers) and Photos (Media), we need a way
+ * to tell the app which one it is looking at when drawing the screen.
+ */
 sealed class GalleryGridItem {
     data class Header(val id: String, val title: String, val count: Int) : GalleryGridItem()
     data class Media(val item: MediaItem) : GalleryGridItem()
 }
 
+/**
+ * A master list of every pop-up menu that can open on this screen.
+ */
 sealed class PictureUiDialog {
-    data object None : PictureUiDialog()
+    data object None : PictureUiDialog() // No menu open
     data object GridSize : PictureUiDialog()
     data object Sort : PictureUiDialog()
     data class TrashConfirm(val mediaItems: List<MediaItem>) : PictureUiDialog()
@@ -198,14 +245,22 @@ sealed class PictureUiDialog {
     data class QuickAction(val item: MediaItem) : PictureUiDialog()
 }
 
+/**
+ * =========================================================================================
+ * 🏎️ THE FAST SCROLLBAR (SamsungFastScrollbar)
+ * =========================================================================================
+ * This draws the little bubble on the right side of the screen that lets you grab it
+ * and fly through 10,000 photos in seconds. It looks exactly like the one in Samsung's Gallery app.
+ */
 @Composable
 fun SamsungFastScrollbar(
-    gridState: LazyGridState,
-    pagedMedia: LazyPagingItems<GalleryGridItem>,
+    gridState: LazyGridState, // Knows how far down the user has scrolled
+    pagedMedia: LazyPagingItems<GalleryGridItem>, // The list of all photos
     indexOffset: Int = 0,
     deviceTier: DeviceTier = DeviceTier.HIGH,
     modifier: Modifier = Modifier
 ) {
+    // Only show the scrollbar if we have enough items to actually need scrolling
     val canScroll by remember {
         derivedStateOf { gridState.layoutInfo.totalItemsCount > gridState.layoutInfo.visibleItemsInfo.size }
     }
@@ -216,17 +271,18 @@ fun SamsungFastScrollbar(
     val haptic = LocalHapticFeedback.current
     val density = LocalDensity.current
 
-    var isDragging by remember { mutableStateOf(false) }
+    var isDragging by remember { mutableStateOf(false) } // Is the user's thumb currently on the bubble?
     var visible by remember { mutableStateOf(false) }
     var trackHeightPx by remember { mutableFloatStateOf(0f) }
     var thumbOffsetPx by remember { mutableFloatStateOf(0f) }
-    var bubbleLabel by remember { mutableStateOf("") }
+    var bubbleLabel by remember { mutableStateOf("") } // The text inside the bubble (e.g. "August 2026")
 
     val thumbHeightDp = 48.dp
     val thumbHeightPx = with(density) { thumbHeightDp.toPx() }
 
     val scrollChannel = remember { Channel<Int>(Channel.CONFLATED) }
 
+    // When the user drags the bubble, this instantly scrolls the giant grid of photos to match.
     LaunchedEffect(Unit) {
         for (targetIndex in scrollChannel) {
             runCatching {
@@ -237,6 +293,7 @@ fun SamsungFastScrollbar(
         }
     }
 
+    // Hide the scrollbar a second after the user stops scrolling
     LaunchedEffect(gridState.isScrollInProgress, isDragging) {
         if (gridState.isScrollInProgress || isDragging) {
             visible = true
@@ -246,6 +303,7 @@ fun SamsungFastScrollbar(
         }
     }
 
+    // Move the little bubble up and down automatically if the user is scrolling normally with their finger
     LaunchedEffect(gridState) {
         snapshotFlow { gridState.firstVisibleItemIndex }.collect { index ->
             if (!isDragging && trackHeightPx > 0f) {
@@ -260,6 +318,8 @@ fun SamsungFastScrollbar(
 
     var lastDragUpdateMs by remember { mutableLongStateOf(0L) }
 
+    // This looks at the photo next to the thumb bubble, scans up to find the nearest Date Header,
+    // and copies its text (like "August 2026") to show inside the bubble.
     fun labelForIndex(index: Int): String {
         val safeIndex = index.coerceIn(0, (pagedMedia.itemCount - 1).coerceAtLeast(0))
         for (i in safeIndex downTo maxOf(0, safeIndex - 40)) {
@@ -271,11 +331,12 @@ fun SamsungFastScrollbar(
         return ""
     }
 
+    // Math to translate "The user dragged the bubble 50 pixels down" into "Scroll the grid down 300 photos"
     fun jumpTo(offsetY: Float) {
         if (trackHeightPx <= 0f) return
 
         val now = System.currentTimeMillis()
-        if (now - lastDragUpdateMs < 33L) return
+        if (now - lastDragUpdateMs < 33L) return // Don't stutter by calculating this 1000 times a second
         lastDragUpdateMs = now
 
         val maxThumbOffset = (trackHeightPx - thumbHeightPx).coerceAtLeast(0f)
@@ -294,7 +355,7 @@ fun SamsungFastScrollbar(
         visible = visible || isDragging,
         enter = fadeIn(tween(100)),
         exit = fadeOut(tween(180)),
-        modifier = modifier.zIndex(20f)
+        modifier = modifier.zIndex(20f) // Keep the scrollbar floating ON TOP of all the photos
     ) {
         Box(
             modifier = Modifier
@@ -302,11 +363,12 @@ fun SamsungFastScrollbar(
                 .width(52.dp)
                 .onGloballyPositioned { trackHeightPx = it.size.height.toFloat() }
                 .pointerInput(Unit) {
+                    // Detect the user grabbing the bubble
                     detectDragGestures(
                         onDragStart = { offset ->
                             isDragging = true
                             lastDragUpdateMs = 0L
-                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress) // Bzzz! Let them know they grabbed it.
                             jumpTo(offset.y)
                         },
                         onDrag = { change, _ ->
@@ -324,6 +386,7 @@ fun SamsungFastScrollbar(
                     )
                 }
         ) {
+            // The tiny visual track line on the edge of the screen
             Box(
                 modifier = Modifier
                     .align(Alignment.CenterEnd)
@@ -336,11 +399,13 @@ fun SamsungFastScrollbar(
                     )
             )
 
+            // The floating bubble that shows the date ("August 2026")
             if (isDragging && bubbleLabel.isNotEmpty()) {
                 Surface(
                     modifier = Modifier
                         .align(Alignment.TopEnd)
                         .offset {
+                            // Push the text bubble to the left so the user's thumb doesn't block it!
                             IntOffset(
                                 x = with(density) { (-100.dp).roundToPx() },
                                 y = (thumbOffsetPx - with(density) { 24.dp.toPx() }).toInt().coerceAtLeast(0)
@@ -361,6 +426,7 @@ fun SamsungFastScrollbar(
                 }
             }
 
+            // The little pill you grab with your thumb
             Box(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
@@ -372,7 +438,7 @@ fun SamsungFastScrollbar(
                         )
                     }
                     .padding(end = 2.dp)
-                    .width(if (isDragging) 12.dp else 8.dp)
+                    .width(if (isDragging) 12.dp else 8.dp) // Make it slightly fatter when they touch it
                     .height(thumbHeightDp)
                     .background(
                         MaterialTheme.colorScheme.primary,
@@ -383,13 +449,21 @@ fun SamsungFastScrollbar(
     }
 }
 
+/**
+ * =========================================================================================
+ * 🖼️ THE MAIN PICTURE SCREEN
+ * =========================================================================================
+ * This is the primary screen of the app. It holds the giant grid of all your photos
+ * and videos, and handles searching, selecting, and opening the full screen viewer.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PictureScreen(
-    initialUri: String? = null,
+    initialUri: String? = null, // If the user clicked a link in another app, this is the photo we should open instantly
     viewModel: GalleryViewModel = hiltViewModel(),
     trashViewModel: TrashViewModel = hiltViewModel(),
     onViewerStateChanged: (Boolean) -> Unit = {},
+    // These are instructions passed down by the App's Navigator on where to go when buttons are clicked
     onNavigateToCamera: () -> Unit,
     onNavigateToTrash: () -> Unit,
     onNavigateToHidden: () -> Unit,
@@ -404,43 +478,70 @@ fun PictureScreen(
     onNavigateToAbout: () -> Unit = {}
 ) {
     val context = LocalContext.current
-    val deviceTier = remember { getDeviceTier(context) }
+    val deviceTier = remember { getDeviceTier(context) } // Is this phone slow or fast?
+
+    // 🧠 1. Bring in the Adaptive Engine to know if this is a phone, tablet, or foldable!
+    val adaptiveState = rememberAdaptiveState()
+
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
     val haptic = LocalHapticFeedback.current
     val gridState = rememberLazyGridState()
 
-    val scrollBehavior = TopAppBarDefaults.enterAlwaysScrollBehavior(rememberTopAppBarState())
+    val scrollBehavior = TopAppBarDefaults.enterAlwaysScrollBehavior(rememberTopAppBarState()) // Top bar hides when scrolling down
 
     val filters = remember { listOf(UiMediaFilter.ALL, UiMediaFilter.PHOTOS, UiMediaFilter.VIDEOS) }
     var activeFilter by rememberSaveable { mutableStateOf(UiMediaFilter.ALL) }
 
+    // --- SCOREBOARDS ---
     val isBusy by viewModel.isBusy.collectAsState()
     val activeSort by viewModel.activeSort.collectAsState()
-    val viewerState by viewModel.viewerState.collectAsState()
-    val mediaMap by viewModel.mediaMap.collectAsState()
-    val favoriteIds by viewModel.favoriteIds.collectAsState()
+    val viewerState by viewModel.viewerState.collectAsState() // Is the full screen photo viewer currently open?
+    val mediaMap by viewModel.mediaMap.collectAsState() // Master dictionary of all photos
+    val favoriteIds by viewModel.favoriteIds.collectAsState() // List of hearted photos
+
     val openViewerState = viewerState as? GalleryViewerState.Open
-    val currentItem = openViewerState?.mediaId?.let { mediaMap[it] }
+    val currentItem = openViewerState?.mediaId?.let { mediaMap[it] } // The exact photo currently being viewed full screen
+
+    // The Waiter (brings photos from the database 50 at a time)
     val pagedMedia = viewModel.pagedMedia.collectAsLazyPagingItems()
+
     val prefs = remember { context.getSharedPreferences("gallery_prefs", Context.MODE_PRIVATE) ?: context.getSharedPreferences("gallery_prefs", Context.MODE_PRIVATE) }
 
-    var columnCount by rememberSaveable { mutableIntStateOf(prefs.getInt("picture_grid_columns", 4)) }
-    var isSelectionMode by rememberSaveable { mutableStateOf(false) }
-    var selectedIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
-    var isSearchActive by rememberSaveable { mutableStateOf(false) }
-    var activeDialog by remember { mutableStateOf<PictureUiDialog>(PictureUiDialog.None) }
+    // 🎨 2. SMART ADAPTIVE GRID COLUMNS
+    // If the user hasn't chosen a custom grid size, we use the Adaptive State to automatically
+    // pick the best size. Standard phones get 4 squares per row. Tablets get 6 or 8!
+    var columnCount by rememberSaveable {
+        mutableIntStateOf(
+            prefs.getInt("picture_grid_columns",
+                when (adaptiveState.widthSize) {
+                    WindowWidthSize.COMPACT -> 4
+                    WindowWidthSize.MEDIUM -> 6
+                    WindowWidthSize.EXPANDED -> 8
+                }
+            )
+        )
+    }
+
+    var isSelectionMode by rememberSaveable { mutableStateOf(false) } // Is the user actively selecting photos?
+    var selectedIds by remember { mutableStateOf<Set<Long>>(emptySet()) } // A list of the photos they clicked
+    var isSearchActive by rememberSaveable { mutableStateOf(false) } // Is the search bar open?
+    var activeDialog by remember { mutableStateOf<PictureUiDialog>(PictureUiDialog.None) } // Which pop-up menu is currently open?
 
     var localSearchQuery by rememberSaveable { mutableStateOf("") }
     var debouncedSearchQuery by remember { mutableStateOf("") }
     var hasOpenedInitial by rememberSaveable { mutableStateOf(false) }
 
+    // THE DEBOUNCER
+    // When the user types "Dog" in the search bar, we wait a tiny fraction of a second (250ms) before
+    // asking the database to search. If we didn't do this, it would search "D", then "Do", then "Dog", freezing the app.
     LaunchedEffect(localSearchQuery) {
         delay(250)
         debouncedSearchQuery = localSearchQuery
         viewModel.setSearchQuery(debouncedSearchQuery)
     }
 
+    // Handles the special case where WhatsApp or Gmail told GalleryBox to open a specific photo.
     LaunchedEffect(initialUri, mediaMap) {
         if (!initialUri.isNullOrEmpty() && !hasOpenedInitial && mediaMap.isNotEmpty()) {
             withContext(Dispatchers.Default) {
@@ -450,7 +551,7 @@ fun PictureScreen(
                 }
                 if (targetItem != null) {
                     withContext(Dispatchers.Main) {
-                        viewModel.openViewer(targetItem.id)
+                        viewModel.openViewer(targetItem.id) // Instantly open it full screen
                         hasOpenedInitial = true
                     }
                 }
@@ -458,6 +559,8 @@ fun PictureScreen(
         }
     }
 
+    // THE PERMISSION CATCHER
+    // This handles asking the user for permission to move files to the Android Trash
     val intentSenderLauncher = rememberLauncherForActivityResult(contract = ActivityResultContracts.StartIntentSenderForResult()) { result ->
         trashViewModel.onPermissionResultGlobal(result.resultCode == Activity.RESULT_OK)
         if (result.resultCode != Activity.RESULT_OK) {
@@ -471,10 +574,12 @@ fun PictureScreen(
             when (event) {
                 is GalleryEvent.RequestPermission -> intentSenderLauncher.launch(IntentSenderRequest.Builder(event.intentSender).build())
                 is GalleryEvent.OperationSuccess -> {
+                    // Success! Clean up all the menus and checkboxes
                     activeDialog = PictureUiDialog.None
                     isSelectionMode = false
                     selectedIds = emptySet()
                     viewModel.closeViewer()
+                    // Show a green banner at the bottom. If they click it, take them to the Trash screen.
                     if (snackbarHostState.showSnackbar("Moved to Trash", "View Trash", duration = SnackbarDuration.Short) == SnackbarResult.ActionPerformed) {
                         onNavigateToTrash()
                     }
@@ -485,7 +590,7 @@ fun PictureScreen(
         }
     }
 
-    // Crucial fix: Inform the parent NavHost that selection mode is active so it hides the main bottom bar
+    // Informs the parent App Navigator that selection mode is active so it hides the main bottom bar.
     LaunchedEffect(viewerState, isSelectionMode) {
         onViewerStateChanged(viewerState is GalleryViewerState.Open || isSelectionMode)
     }
@@ -497,6 +602,7 @@ fun PictureScreen(
         }
     }
 
+    // Fixes the back button so it closes search bars instead of closing the app
     BackHandler(enabled = isSearchActive) {
         isSearchActive = false
         localSearchQuery = ""
@@ -515,6 +621,7 @@ fun PictureScreen(
         viewModel.closeViewer()
     }
 
+    // Helper to get the actual full Photo Data boxes for every photo the user currently has a checkmark on.
     fun getSelectedItems(): List<MediaItem> {
         return pagedMedia.itemSnapshotList.items
             .filterIsInstance<GalleryGridItem.Media>()
@@ -527,6 +634,7 @@ fun PictureScreen(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
     ) {
+        // A Scaffold provides the blank canvas with pre-marked zones for the TopBar, BottomBar, and Main Content.
         Scaffold(
             modifier = Modifier
                 .fillMaxSize()
@@ -534,6 +642,7 @@ fun PictureScreen(
             containerColor = Color.Transparent,
             snackbarHost = { SnackbarHost(snackbarHostState) },
             topBar = {
+                // If we are currently selecting multiple photos to delete/share
                 if (isSelectionMode) {
                     var totalSelectableCount by remember { mutableIntStateOf(0) }
 
@@ -568,12 +677,14 @@ fun PictureScreen(
                                 }
                             },
                             actions = {
+                                // The "Select All" Button
                                 TextButton(
                                     onClick = {
                                         scope.launch(Dispatchers.Default) {
                                             if (isAllSelected) {
                                                 withContext(Dispatchers.Main) { selectedIds = emptySet() }
                                             } else {
+                                                // We cap "Select All" at 5000 so the app doesn't crash from memory overload
                                                 val ids = pagedMedia.itemSnapshotList.items
                                                     .filterIsInstance<GalleryGridItem.Media>()
                                                     .map { it.item.id }
@@ -604,6 +715,7 @@ fun PictureScreen(
                         )
                     }
                 } else if (isSearchActive) {
+                    // --- THE SEARCH BAR ---
                     SearchTopBar(
                         query = localSearchQuery,
                         onQueryChange = { localSearchQuery = it },
@@ -613,12 +725,14 @@ fun PictureScreen(
                         }
                     )
                 } else {
+                    // --- STANDARD TOP BAR ---
                     Surface(shadowElevation = 2.dp, color = MaterialTheme.colorScheme.surface) {
                         ModernTopBar(
                             title = "Photos",
                             scrollBehavior = scrollBehavior,
                             onSearchClick = { isSearchActive = true },
                             onMenuAction = { action ->
+                                // These are the buttons hidden inside the 3-dot "More" menu
                                 when (action) {
                                     "select_all" -> {
                                         scope.launch(Dispatchers.Default) {
@@ -646,6 +760,7 @@ fun PictureScreen(
                 }
             },
             floatingActionButton = {
+                // An arrow button that pops up when you scroll down, letting you shoot back to the top instantly.
                 val showScrollToTop by remember { derivedStateOf { gridState.firstVisibleItemIndex > 10 } }
                 if (!isSelectionMode && showScrollToTop) {
                     AnimatedVisibility(
@@ -665,20 +780,24 @@ fun PictureScreen(
                 }
             }
         ) { padding ->
+            // --- THE MAIN CONTENT (THE GRID) ---
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(top = padding.calculateTopPadding())
             ) {
                 if (isBusy && pagedMedia.itemCount == 0) {
+                    // Loading circle
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         CircularProgressIndicator()
                     }
                 } else if (pagedMedia.itemCount == 0) {
+                    // No photos found message
                     EmptyMediaOverlay(onCameraClick = onNavigateToCamera, onScanClick = onNavigateToScan)
                 } else {
+                    // The actual grid of photos!
                     AnimatedContent(
-                        targetState = activeFilter,
+                        targetState = activeFilter, // This handles the smooth transition when you switch from "All" to "Videos"
                         transitionSpec = {
                             if (deviceTier == DeviceTier.LOW) fadeIn(tween(0)) togetherWith fadeOut(tween(0))
                             else PremiumEnter togetherWith PremiumExit
@@ -697,23 +816,27 @@ fun PictureScreen(
                             onSelectionModeChange = { isSelectionMode = it },
                             onItemClick = { item ->
                                 if (isSelectionMode) {
+                                    // If we are selecting, clicking a photo adds or removes the checkmark
                                     val newSet = selectedIds.toMutableSet()
                                     if (!newSet.remove(item.id)) {
                                         if (newSet.size < 5000) newSet.add(item.id)
                                     }
                                     selectedIds = newSet.toSet()
                                 } else {
+                                    // If we are NOT selecting, clicking a photo opens it full screen
                                     viewModel.openViewer(item.id)
                                 }
                             },
                             onItemLongClick = { item ->
+                                // Long-pressing a photo instantly turns on selection mode
                                 if (!isSelectionMode) {
-                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress) // Big buzz
                                     isSelectionMode = true
                                     selectedIds = setOf(item.id)
                                 }
                             },
                             header = {
+                                // The 3 pills ("All", "Photos", "Videos") at the top of the grid
                                 if (!isSelectionMode && !isSearchActive) {
                                     ModernFilterRow(
                                         filters = filters,
@@ -747,6 +870,8 @@ fun PictureScreen(
             }
         }
 
+        // --- POP-UP MENUS ---
+        // If the user clicked a button that opens a menu, draw it here.
         if (activeDialog != PictureUiDialog.None) {
             DialogsHost(
                 dialog = activeDialog,
@@ -768,10 +893,16 @@ fun PictureScreen(
             )
         }
 
+        // =====================================================================================
+        // 🖼️ FULL SCREEN VIEWER OVERLAY
+        // =====================================================================================
+        // If the user tapped a photo, the `viewerState` changes to Open.
+        // This covers the entire screen and draws the photo big.
         if (viewerState is GalleryViewerState.Open && currentItem != null) {
             var stableMediaList by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
             var stableStartIndex by remember { mutableIntStateOf(0) }
 
+            // Figure out exactly where this photo is in the giant list so they can swipe left/right to see the next ones.
             LaunchedEffect(pagedMedia.itemSnapshotList, mediaMap, currentItem.id) {
                 withContext(Dispatchers.Default) {
                     val items = pagedMedia.itemSnapshotList.items
@@ -786,22 +917,25 @@ fun PictureScreen(
             }
 
             if (stableMediaList.isNotEmpty()) {
+                // Pass our AdaptiveState into the Fullscreen pager so it knows if it needs to
+                // do a split-screen layout for Tabletop Foldables!
                 FullscreenMediaPager(
                     initialIndex = stableStartIndex,
                     mediaList = stableMediaList,
                     mediaMap = mediaMap,
                     favoriteIds = favoriteIds,
-                    sharedPlayer = viewModel.getPlayer(),
+                    sharedPlayer = viewModel.getPlayer(), // Pass in the DVD Player engine so it can play videos
+                    adaptiveState = adaptiveState, // <-- ADAPTIVE MAGIC HAPPENS HERE
                     onPageChanged = {}, // No action needed for PictureScreen
-                    onClose = { viewModel.closeViewer() },
+                    onClose = { viewModel.closeViewer() }, // Tell the manager they swiped down to close it
                     onToggleFavorite = { id -> viewModel.toggleFavorite(id) },
                     onEdit = { item ->
                         viewModel.closeViewer()
-                        onNavigateToEditor(item.uri.toString(), item.id)
+                        onNavigateToEditor(item.uri.toString(), item.id) // Send them to the photo editing screen!
                     },
                     onPlayVideo = { uri, playlist ->
                         viewModel.closeViewer()
-                        onNavigateToVideoPlayer(uri, playlist)
+                        onNavigateToVideoPlayer(uri, playlist) // Send them to the dedicated video player!
                     },
                     onDelete = { item -> activeDialog = PictureUiDialog.TrashConfirm(listOf(item)) },
                     onMove = { item ->
@@ -814,21 +948,26 @@ fun PictureScreen(
                     },
                     onWallpaper = { item ->
                         viewModel.closeViewer()
-                        onNavigateToWallpaper(item.uri.toString(), item.id)
+                        onNavigateToWallpaper(item.uri.toString(), item.id) // Send them to the "Set as Wallpaper" screen
                     }
                 )
             }
         }
 
+        // --- THE BOTTOM ACTION BAR (When selecting photos) ---
         Box(modifier = Modifier.align(Alignment.BottomCenter)) {
             AnimatedVisibility(
                 visible = isSelectionMode,
                 enter = if (deviceTier == DeviceTier.LOW) fadeIn(tween(80)) else slideInVertically(initialOffsetY = { it }) + fadeIn(),
                 exit = if (deviceTier == DeviceTier.LOW) fadeOut(tween(80)) else slideOutVertically(targetOffsetY = { it }) + fadeOut()
             ) {
+                // 🎨 ADAPTIVE SELECTION BAR
+                // Don't stretch the selection tools 20 inches wide on massive tablets. Keep it centered.
+                val controlWidth = if (adaptiveState.widthSize == WindowWidthSize.EXPANDED) Modifier.width(600.dp) else Modifier.fillMaxWidth()
+
                 Surface(
                     modifier = Modifier
-                        .fillMaxWidth()
+                        .then(controlWidth)
                         .padding(16.dp)
                         .navigationBarsPadding(),
                     shape = RoundedCornerShape(24.dp),
@@ -842,14 +981,17 @@ fun PictureScreen(
                         horizontalArrangement = Arrangement.SpaceEvenly,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        // Move Button
                         BottomBarActionItem(icon = Icons.AutoMirrored.Outlined.DriveFileMove, label = "Move") {
                             onNavigateToMoveCopy("MOVE", selectedIds.joinToString(","), null)
                             isSelectionMode = false
                         }
+                        // Copy Button
                         BottomBarActionItem(icon = Icons.Outlined.FileCopy, label = "Copy") {
                             onNavigateToMoveCopy("COPY", selectedIds.joinToString(","), null)
                             isSelectionMode = false
                         }
+                        // Share Button (Opens the Android "Share to WhatsApp/Insta/etc" popup)
                         BottomBarActionItem(icon = Icons.Outlined.Share, label = "Share") {
                             scope.launch(Dispatchers.Default) {
                                 val itemsToShare = getSelectedItems()
@@ -857,6 +999,7 @@ fun PictureScreen(
                                     val intent = Intent(if (itemsToShare.size > 1) Intent.ACTION_SEND_MULTIPLE else Intent.ACTION_SEND).apply {
                                         val hasImg = itemsToShare.any { !it.isVideo }
                                         val hasVid = itemsToShare.any { it.isVideo }
+                                        // Tell Android what kind of files these are so it only shows apps that can handle them.
                                         type = if (hasVid && !hasImg) "video/*" else if (hasImg && !hasVid) "image/*" else "*/*"
                                         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                         if (itemsToShare.size > 1) {
@@ -878,6 +1021,7 @@ fun PictureScreen(
                                 }
                             }
                         }
+                        // Trash Button
                         BottomBarActionItem(icon = Icons.Outlined.Delete, label = "Trash", isDestructive = true) {
                             scope.launch(Dispatchers.Default) {
                                 val itemsToTrash = getSelectedItems()
@@ -886,6 +1030,7 @@ fun PictureScreen(
                                 }
                             }
                         }
+                        // More Menu Button
                         Box {
                             var showMoreMenu by remember { mutableStateOf(false) }
                             BottomBarActionItem(icon = Icons.Default.MoreVert, label = "More") {
@@ -895,6 +1040,7 @@ fun PictureScreen(
                                 expanded = showMoreMenu,
                                 onDismissRequest = { showMoreMenu = false }
                             ) {
+                                // You can only see the "Details" metadata menu if you selected exactly ONE photo
                                 if (selectedIds.size == 1) {
                                     DropdownMenuItem(
                                         text = { Text("Details") },
@@ -930,11 +1076,12 @@ fun PictureScreen(
     }
 }
 
+// A reusable blueprint for the buttons in the Bottom Action Bar
 @Composable
 fun BottomBarActionItem(
     icon: ImageVector,
     label: String,
-    isDestructive: Boolean = false,
+    isDestructive: Boolean = false, // If true, make the button Red to warn the user!
     enabled: Boolean = true,
     onClick: () -> Unit
 ) {
@@ -974,6 +1121,7 @@ fun BottomBarActionItem(
     }
 }
 
+// The UI for the Search Bar at the top of the screen
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SearchTopBar(query: String, onQueryChange: (String) -> Unit, onClose: () -> Unit) {
@@ -985,10 +1133,11 @@ fun SearchTopBar(query: String, onQueryChange: (String) -> Unit, onClose: () -> 
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .statusBarsPadding()
+                .statusBarsPadding() // Ensures it doesn't draw behind the phone's clock/battery
                 .padding(horizontal = 14.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            // The Back button to exit search
             FilledIconButton(
                 onClick = onClose,
                 colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
@@ -1000,6 +1149,7 @@ fun SearchTopBar(query: String, onQueryChange: (String) -> Unit, onClose: () -> 
                 )
             }
             Spacer(Modifier.width(14.dp))
+            // The actual oval text input field
             Surface(
                 modifier = Modifier.weight(1f),
                 shape = RoundedCornerShape(28.dp),
@@ -1018,7 +1168,7 @@ fun SearchTopBar(query: String, onQueryChange: (String) -> Unit, onClose: () -> 
                     Spacer(Modifier.width(10.dp))
                     TextField(
                         value = query,
-                        onValueChange = onQueryChange,
+                        onValueChange = onQueryChange, // Call the function whenever they type a letter
                         modifier = Modifier.weight(1f),
                         placeholder = {
                             Text(
@@ -1028,6 +1178,7 @@ fun SearchTopBar(query: String, onQueryChange: (String) -> Unit, onClose: () -> 
                         },
                         singleLine = true,
                         textStyle = MaterialTheme.typography.bodyLarge,
+                        // Make the default Android text field transparent so it looks nice inside our oval
                         colors = TextFieldDefaults.colors(
                             focusedContainerColor = Color.Transparent,
                             unfocusedContainerColor = Color.Transparent,
@@ -1039,6 +1190,7 @@ fun SearchTopBar(query: String, onQueryChange: (String) -> Unit, onClose: () -> 
                             cursorColor = MaterialTheme.colorScheme.primary
                         )
                     )
+                    // If they typed something, show an "X" button to clear it instantly
                     if (query.isNotEmpty()) {
                         FilledIconButton(
                             onClick = { onQueryChange("") },
@@ -1059,6 +1211,7 @@ fun SearchTopBar(query: String, onQueryChange: (String) -> Unit, onClose: () -> 
     }
 }
 
+// A pretty illustration shown if the user has literally 0 photos on their phone.
 @Composable
 fun EmptyMediaOverlay(onCameraClick: () -> Unit = {}, onScanClick: () -> Unit = {}) {
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -1092,6 +1245,7 @@ fun EmptyMediaOverlay(onCameraClick: () -> Unit = {}, onScanClick: () -> Unit = 
                 textAlign = TextAlign.Center
             )
             Spacer(Modifier.height(34.dp))
+            // Action buttons to help them get started
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Button(
                     onClick = onCameraClick,
@@ -1130,6 +1284,7 @@ fun EmptyMediaOverlay(onCameraClick: () -> Unit = {}, onScanClick: () -> Unit = 
     }
 }
 
+// The slide-up menu that lets you change how the photos are sorted (e.g., Oldest First)
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ModernSortSheet(activeSort: PhotoSort, onDismiss: () -> Unit, onSortSelected: (PhotoSort) -> Unit) {
@@ -1240,6 +1395,7 @@ fun ModernSortSheet(activeSort: PhotoSort, onDismiss: () -> Unit, onSortSelected
     }
 }
 
+// The slide-up menu that lets you change how many photos are in a row (e.g., 4 columns vs 6 columns)
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ModernGridSheet(currentColumns: Int, max: Int = 8, onDismiss: () -> Unit, onUpdate: (Int) -> Unit) {
@@ -1287,6 +1443,7 @@ fun ModernGridSheet(currentColumns: Int, max: Int = 8, onDismiss: () -> Unit, on
             }
             Spacer(Modifier.height(24.dp))
 
+            // Draw a grid of 8 buttons!
             LazyVerticalGrid(
                 columns = GridCells.Fixed(4),
                 modifier = Modifier.fillMaxWidth(),
@@ -1303,8 +1460,8 @@ fun ModernGridSheet(currentColumns: Int, max: Int = 8, onDismiss: () -> Unit, on
                         modifier = Modifier
                             .aspectRatio(1f)
                             .clickable {
-                                onUpdate(col)
-                                onDismiss()
+                                onUpdate(col) // Send the new number to the Manager
+                                onDismiss() // Close the menu
                             }
                     ) {
                         Box(contentAlignment = Alignment.Center) {
@@ -1321,6 +1478,7 @@ fun ModernGridSheet(currentColumns: Int, max: Int = 8, onDismiss: () -> Unit, on
     }
 }
 
+// The popup asking "Are you sure you want to move these to the trash?"
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ModernMoveToTrashSheet(count: Int, onDismiss: () -> Unit, onConfirm: () -> Unit) {
@@ -1417,6 +1575,7 @@ fun ModernMoveToTrashSheet(count: Int, onDismiss: () -> Unit, onConfirm: () -> U
     }
 }
 
+// The main top bar that holds the Title, Search icon, and the 3-dot "More" menu
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ModernTopBar(title: String, scrollBehavior: TopAppBarScrollBehavior, onSearchClick: () -> Unit, onMenuAction: (String) -> Unit) {
@@ -1495,6 +1654,7 @@ fun ModernTopBar(title: String, scrollBehavior: TopAppBarScrollBehavior, onSearc
     )
 }
 
+// Draws the Text dates inside the grid (e.g. "Today", "Yesterday", "August 12")
 @Composable
 fun ModernDateHeader(modifier: Modifier = Modifier, title: String, onSelectAllForDate: () -> Unit = {}) {
     Text(
@@ -1504,11 +1664,12 @@ fun ModernDateHeader(modifier: Modifier = Modifier, title: String, onSelectAllFo
         color = MaterialTheme.colorScheme.onSurface,
         modifier = modifier
             .fillMaxWidth()
-            .clickable { onSelectAllForDate() }
+            .clickable { onSelectAllForDate() } // If you click the date, it instantly selects every photo from that day!
             .padding(horizontal = 14.dp, vertical = 14.dp)
     )
 }
 
+// The 3 pills at the top ("All", "Photos", "Videos")
 @Composable
 fun ModernFilterRow(filters: List<UiMediaFilter>, activeFilter: UiMediaFilter, onFilterSelected: (UiMediaFilter) -> Unit) {
     LazyRow(
@@ -1537,6 +1698,7 @@ fun ModernFilterRow(filters: List<UiMediaFilter>, activeFilter: UiMediaFilter, o
     }
 }
 
+// The slide-up menu that shows you all the hidden nerd data about a photo (File size, Resolution, exact file path)
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MediaMetadataSheet(item: MediaItem, onDismiss: () -> Unit) {
@@ -1613,6 +1775,7 @@ fun MediaMetadataSheet(item: MediaItem, onDismiss: () -> Unit) {
     }
 }
 
+// Reusable blueprint for the rows inside the Metadata Menu
 @Composable
 fun MetadataRow(icon: ImageVector, label: String, value: String) {
     Row(
@@ -1653,6 +1816,7 @@ fun MetadataRow(icon: ImageVector, label: String, value: String) {
     }
 }
 
+// Blueprint for the large square buttons (Edit, Share, Delete) shown when you long-press a single photo.
 @Composable
 fun ActionItem(icon: ImageVector, label: String, isDestructive: Boolean = false, onClick: () -> Unit) {
     val contentColor = if (isDestructive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
@@ -1697,6 +1861,10 @@ fun ActionItem(icon: ImageVector, label: String, isDestructive: Boolean = false,
     }
 }
 
+/**
+ * THE MENU MANAGER.
+ * Takes the `activeDialog` state variable and decides which specific popup menu to draw on the screen.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DialogsHost(
@@ -1732,6 +1900,7 @@ fun DialogsHost(
             val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
             var showMoreExpanded by remember { mutableStateOf(false) }
 
+            // The menu that pops up when you single-tap a photo in the grid.
             ModalBottomSheet(
                 onDismissRequest = onDismiss,
                 sheetState = sheetState,
@@ -1857,6 +2026,13 @@ fun DialogsHost(
     }
 }
 
+/**
+ * =========================================================================================
+ * 🔲 THE ACTUAL PHOTO GRID MANAGER
+ * =========================================================================================
+ * This handles the extremely complex math of letting the user drag their finger
+ * across the grid to select 50 photos at once.
+ */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun GalleryGridContent(
@@ -1879,6 +2055,8 @@ fun GalleryGridContent(
 
     var isScrollingFast by remember { mutableStateOf(false) }
 
+    // Calculates how fast the user is scrolling. If they are flying down the page at mach 5,
+    // we stop trying to load high-quality pictures and just show blurry grey boxes to save battery.
     LaunchedEffect(gridState) {
         var lastTime = System.currentTimeMillis()
         var lastIndex = gridState.firstVisibleItemIndex
@@ -1905,6 +2083,7 @@ fun GalleryGridContent(
             }
     }
 
+    // Calculates exactly how many pixels wide the photo thumbnail needs to be to look sharp.
     val dynamicThumbSize = remember(columnCount, screenWidthPx, deviceTier) {
         val maxSize = if (deviceTier == DeviceTier.LOW) 260 else 480
         val raw = (screenWidthPx / columnCount).coerceIn(160, maxSize)
@@ -1913,12 +2092,13 @@ fun GalleryGridContent(
 
     val gridCells = remember(columnCount) { GridCells.Fixed(columnCount) }
 
-    var autoScrollSpeed by remember { mutableFloatStateOf(0f) }
+    // --- DRAG TO SELECT LOGIC ---
+    var autoScrollSpeed by remember { mutableFloatStateOf(0f) } // If they drag to the bottom of the screen, scroll down automatically!
     var lastPointerPosition by remember { mutableStateOf<Offset?>(null) }
     var dragAnchorIndex by remember { mutableIntStateOf(-1) }
     var dragLastIndex by remember { mutableIntStateOf(-1) }
     var dragBaseSelection by remember { mutableStateOf<Set<Long>>(emptySet()) }
-    var dragIsAdditive by remember { mutableStateOf(true) }
+    var dragIsAdditive by remember { mutableStateOf(true) } // Are we dragging to Check boxes, or dragging to Un-Check boxes?
 
     val currentOnSelectionChange by rememberUpdatedState(onSelectionChange)
     val currentSelectedIds by rememberUpdatedState(selectedIds)
@@ -1928,6 +2108,7 @@ fun GalleryGridContent(
     val placeholderColor = MaterialTheme.colorScheme.surfaceContainerHighest
     val placeholderPainter = remember(placeholderColor) { ColorPainter(placeholderColor) }
 
+    // Math: "The user's finger is at pixel (200, 450). Which photo is located there?"
     fun indexAt(offset: Offset): Int {
         val layoutInfo = gridState.layoutInfo
         val itemInfo = layoutInfo.visibleItemsInfo.find {
@@ -1939,6 +2120,7 @@ fun GalleryGridContent(
 
     fun mediaIdAt(index: Int): Long? = (pagedMedia.peek(index) as? GalleryGridItem.Media)?.item?.id
 
+    // Mathematically selects every photo between the one they started touching, and the one they are currently touching.
     fun applyRangeSelection(fromIndex: Int, toIndex: Int) {
         if (fromIndex < 0 || toIndex < 0) return
         val lo = minOf(fromIndex, toIndex)
@@ -1983,14 +2165,15 @@ fun GalleryGridContent(
         val edge80 = 80 * densityScale
         val y = position.y
 
+        // If the user's finger gets really close to the top or bottom edge of the screen, start scrolling!
         autoScrollSpeed = when {
-            y < edge10 -> -70f
+            y < edge10 -> -70f // Very fast up
             y < edge40 -> -25f
-            y < edge80 -> -8f
-            y > boxHeightPx - edge10 -> 70f
+            y < edge80 -> -8f  // Slow up
+            y > boxHeightPx - edge10 -> 70f // Very fast down
             y > boxHeightPx - edge40 -> 25f
             y > boxHeightPx - edge80 -> 8f
-            else -> 0f
+            else -> 0f // Stop scrolling
         }
     }
 
@@ -1999,6 +2182,7 @@ fun GalleryGridContent(
         lastPointerPosition = null
     }
 
+    // A ticking clock that actually moves the screen if autoScrollSpeed is active.
     LaunchedEffect(autoScrollSpeed) {
         if (autoScrollSpeed != 0f) {
             while (true) {
@@ -2015,6 +2199,7 @@ fun GalleryGridContent(
         }
     }
 
+    // Intercepts the user's finger
     val dragModifier = if (isSelectionMode) {
         Modifier.pointerInput(Unit) {
             var lastDragUpdateMs = 0L
@@ -2057,9 +2242,12 @@ fun GalleryGridContent(
         }
     }
 
+    // Draw the actual Grid!
     Box(modifier = Modifier.fillMaxSize()) {
         val navBarHeight = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+        // If they are selecting photos, make the grid stop higher up so it doesn't get covered by the Bottom Action Menu.
         val bottomPadding = if (isSelectionMode) navBarHeight + 100.dp else navBarHeight + 90.dp
+
         LazyVerticalGrid(
             state = gridState,
             columns = gridCells,
@@ -2081,9 +2269,9 @@ fun GalleryGridContent(
                 count = pagedMedia.itemCount,
                 span = { index ->
                     if (pagedMedia.peek(index) is GalleryGridItem.Header) {
-                        GridItemSpan(columnCount)
+                        GridItemSpan(columnCount) // Text Headers span all the way across
                     } else {
-                        GridItemSpan(1)
+                        GridItemSpan(1) // Photos take 1 square
                     }
                 },
                 key = { index ->
@@ -2102,6 +2290,7 @@ fun GalleryGridContent(
                         ModernDateHeader(
                             title = gridItem.title,
                             onSelectAllForDate = {
+                                // "Select All For Date" magic!
                                 scope.launch(Dispatchers.Default) {
                                     val snapshot = pagedMedia.itemSnapshotList.items.filterIsInstance<GalleryGridItem.Media>().filter { it.item.dateHeader == gridItem.title }
                                     val newIds = (selectedIds + snapshot.map { it.item.id }.toSet()).takeIf { s -> s.size < 5000 } ?: selectedIds
@@ -2131,6 +2320,7 @@ fun GalleryGridContent(
                         )
                     }
                     null -> {
+                        // The blank gray square shown while a photo is still loading
                         Box(
                             modifier = Modifier
                                 .aspectRatio(1f)
@@ -2144,6 +2334,9 @@ fun GalleryGridContent(
     }
 }
 
+/**
+ * The individual photo square drawn inside the giant grid.
+ */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ModernMediaGridTile(
@@ -2157,6 +2350,7 @@ fun ModernMediaGridTile(
     onClick: () -> Unit,
     onLongClick: () -> Unit
 ) {
+    // If selected, it becomes a smaller circle. If not, it's a slightly rounded square.
     val animatedRadius = if (isSelected) 16.dp else 12.dp
     val scale = if (isSelected) 0.85f else 1f
 
@@ -2181,16 +2375,17 @@ fun ModernMediaGridTile(
     ) {
         val effectiveSize = remember(thumbSize) { thumbSize.coerceIn(160, 480) }
 
+        // Give instructions to the Coil Image Loader to fetch the picture from the hard drive
         val request = remember(item.id, effectiveSize, deviceTier) {
             ImageRequest.Builder(context)
                 .data(item.uri)
-                .size(effectiveSize)
+                .size(effectiveSize) // Don't load the 4K image, just load it at 200x200 pixels so the phone doesn't freeze.
                 .memoryCacheKey("${item.id}_thumb_$effectiveSize")
                 .diskCacheKey("${item.id}_thumb_$effectiveSize")
                 .bitmapConfig(if (deviceTier == DeviceTier.LOW) Bitmap.Config.RGB_565 else Bitmap.Config.ARGB_8888)
                 .memoryCachePolicy(CachePolicy.ENABLED)
                 .diskCachePolicy(CachePolicy.ENABLED)
-                .networkCachePolicy(CachePolicy.DISABLED)
+                .networkCachePolicy(CachePolicy.DISABLED) // We are a local gallery, no need to check the internet.
                 .precision(Precision.INEXACT)
                 .allowHardware(deviceTier != DeviceTier.LOW)
                 .crossfade(0)
@@ -2201,10 +2396,12 @@ fun ModernMediaGridTile(
             model = request,
             placeholder = placeholderPainter,
             contentDescription = null,
-            contentScale = ContentScale.Crop,
-            filterQuality = FilterQuality.Low,
+            contentScale = ContentScale.Crop, // Crop the edges so it perfectly fills the square
+            filterQuality = FilterQuality.Low, // Draw it fast, not perfectly.
             modifier = Modifier.fillMaxSize()
         )
+
+        // If it's a video, draw a dark shadow at the bottom and put the "Play" icon on it.
         if (item.isVideo) {
             Box(
                 modifier = Modifier
@@ -2244,6 +2441,8 @@ fun ModernMediaGridTile(
                 }
             }
         }
+
+        // The checkmark that appears when you select the photo
         SelectionOverlay(
             isSelected = isSelected,
             isSelectionMode = isSelectionMode,
@@ -2253,6 +2452,7 @@ fun ModernMediaGridTile(
     }
 }
 
+// Draws the actual checkmark
 @Composable
 fun SelectionOverlay(
     isSelected: Boolean,
@@ -2266,11 +2466,14 @@ fun SelectionOverlay(
                 .fillMaxSize()
                 .clip(RoundedCornerShape(cornerRadius))
         ) {
+            // Give the photo a milky-white tint if selected
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .background(if (isSelected) Color.White.copy(alpha = 0.25f) else Color.Transparent)
             )
+
+            // Turn off the bouncy animations if the phone is cheap/slow
             val enterAnim = if (deviceTier == DeviceTier.LOW) fadeIn(tween(100)) else PremiumEnter
             val exitAnim = if (deviceTier == DeviceTier.LOW) fadeOut(tween(100)) else PremiumExit
             AnimatedVisibility(
@@ -2287,11 +2490,12 @@ fun SelectionOverlay(
                     tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier
                         .size(24.dp)
-                        .let { if (deviceTier == DeviceTier.LOW) it else it.shadow(4.dp, CircleShape) }
+                        .let { if (deviceTier == DeviceTier.LOW) it else it.shadow(4.dp, CircleShape) } // No shadows on slow phones
                         .background(Color.White, CircleShape)
                 )
             }
             if (!isSelected) {
+                // The empty grey circle waiting to be clicked
                 Icon(
                     imageVector = Icons.Outlined.RadioButtonUnchecked,
                     contentDescription = null,
@@ -2307,14 +2511,22 @@ fun SelectionOverlay(
     }
 }
 
+/**
+ * =========================================================================================
+ * 🖼️ FULL SCREEN VIEWER OVERLAY
+ * =========================================================================================
+ * The pop-up overlay that shows a photo/video in full screen when you tap it in the grid.
+ * It lets you swipe left and right to view all the photos.
+ */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun FullscreenMediaPager(
-    initialIndex: Int,
+    initialIndex: Int, // The exact photo they tapped
     mediaList: List<MediaItem>,
     mediaMap: Map<Long, MediaItem>,
     favoriteIds: List<Long>,
-    sharedPlayer: Player,
+    sharedPlayer: Player, // The video engine
+    adaptiveState: AdaptiveState, // 🧠 The Adaptive Engine telling us how the phone is held
     onPageChanged: (MediaItem) -> Unit,
     onClose: () -> Unit,
     onToggleFavorite: (Long) -> Unit,
@@ -2328,17 +2540,21 @@ fun FullscreenMediaPager(
     if (mediaList.isEmpty()) return
     val context = LocalContext.current
     val view = LocalView.current
+
+    // The engine that handles the swiping left/right animation
     val safeInitialPage = initialIndex.coerceIn(0, maxOf(mediaList.lastIndex, 0))
     val pagerState = rememberPagerState(
         initialPage = safeInitialPage,
         pageCount = { mediaList.size }
     )
-    var showControls by remember { mutableStateOf(true) }
-    var showMetadataSheet by remember { mutableStateOf(false) }
+
+    var showControls by remember { mutableStateOf(true) } // The Back button, the Share button, etc.
+    var showMetadataSheet by remember { mutableStateOf(false) } // The "Details" menu
     var showMoreMenu by remember { mutableStateOf(false) }
 
     val videoList = remember(mediaList) { mediaList.filter { it.isVideo } }
 
+    // Preload all the videos into the Video Engine so it doesn't stutter when you swipe to one.
     LaunchedEffect(videoList) {
         if (videoList.isNotEmpty()) {
             sharedPlayer.setMediaItems(videoList.map { Media3Item.fromUri(it.uri) })
@@ -2359,12 +2575,15 @@ fun FullscreenMediaPager(
         }
     }
 
+    // Every time the user swipes left/right to a new photo...
     LaunchedEffect(pagerState.currentPage, videoList) {
-        showControls = true
+        showControls = true // Bring the buttons back
         val current = mediaList.getOrNull(pagerState.currentPage) ?: return@LaunchedEffect
         val resolvedCurrent = mediaMap[current.id] ?: current
         onPageChanged(resolvedCurrent)
 
+        // If they swiped to a video, prepare the Video Engine.
+        // If they swiped to a photo, pause the Video Engine so it stops making noise!
         if (current.isVideo) {
             val videoIndex = videoList.indexOfFirst { it.id == current.id }
             if (videoIndex >= 0 && videoIndex < sharedPlayer.mediaItemCount) {
@@ -2378,6 +2597,7 @@ fun FullscreenMediaPager(
         }
     }
 
+    // Hide the phone's clock/battery bar at the top, and the swipe-up bar at the bottom. True full screen!
     DisposableEffect(Unit) {
         val window = (context as? Activity)?.window
         if (window != null) {
@@ -2402,172 +2622,329 @@ fun FullscreenMediaPager(
 
     val liveCurrentItem = mediaList.getOrNull(pagerState.currentPage)?.let { mediaMap[it.id] ?: it }
 
-    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-        HorizontalPager(
-            state = pagerState,
-            pageSpacing = 18.dp,
-            key = { index -> mediaList[index].id },
-            modifier = Modifier.fillMaxSize()
-        ) { page ->
-            val item = mediaList[page]
-            if (item.isVideo) {
-                VideoPreviewPage(
-                    item = item,
-                    videoItems = videoList,
-                    isCurrentPage = pagerState.currentPage == page,
-                    showControls = showControls,
-                    sharedPlayer = sharedPlayer,
-                    onTap = { showControls = !showControls },
-                    onPlay = { onPlayVideo(item.uri.toString(), videoList.map { it.uri.toString() }) }
-                )
-            } else {
-                ZoomableImagePage(
-                    item = item,
-                    onTap = { showControls = !showControls },
-                    onDismiss = onClose
-                )
-            }
-        }
-
-        if (showControls) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .fillMaxWidth()
-                    .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.75f), Color.Transparent)))
-                    .statusBarsPadding()
-                    .padding(18.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    FilledIconButton(
-                        onClick = onClose,
-                        colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color.White.copy(alpha = 0.16f))
-                    ) {
-                        Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
-                    }
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text(
-                            text = liveCurrentItem?.let { shortDateFormatter.format(Date(it.dateAdded * 1000)) } ?: "",
-                            color = Color.White,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.SemiBold
+    // 🎨 ADAPTIVE LAYOUT: TABLETOP MODE
+    // If the device is folded halfway (like a tiny laptop), we split the screen!
+    if (adaptiveState.posture == DevicePosture.HALF_OPENED) {
+        Column(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+            // TOP HALF: The actual Photo/Video
+            Box(modifier = Modifier.weight(1f)) {
+                HorizontalPager(
+                    state = pagerState,
+                    pageSpacing = 18.dp, // Add a tiny gap between photos as you swipe so they don't touch
+                    key = { index -> mediaList[index].id },
+                    modifier = Modifier.fillMaxSize()
+                ) { page ->
+                    val item = mediaList[page]
+                    if (item.isVideo) {
+                        VideoPreviewPage(
+                            item = item,
+                            videoItems = videoList,
+                            isCurrentPage = pagerState.currentPage == page,
+                            showControls = showControls,
+                            sharedPlayer = sharedPlayer,
+                            onTap = { showControls = !showControls },
+                            onPlay = { onPlayVideo(item.uri.toString(), videoList.map { it.uri.toString() }) }
+                        )
+                    } else {
+                        ZoomableImagePage(
+                            item = item,
+                            onTap = { showControls = !showControls },
+                            onDismiss = onClose
                         )
                     }
-                    Spacer(modifier = Modifier.size(48.dp))
                 }
             }
-            liveCurrentItem?.let { currentItem ->
+
+            // BOTTOM HALF: The Controls
+            Box(modifier = Modifier.weight(1f).fillMaxWidth().background(Color.Black)) {
+                // Top Bar (Back button, Date) inside the bottom screen
                 Box(
                     modifier = Modifier
-                        .align(Alignment.BottomCenter)
+                        .align(Alignment.TopCenter)
                         .fillMaxWidth()
-                        .padding(bottom = 32.dp, start = 16.dp, end = 16.dp)
+                        .padding(18.dp)
                 ) {
-                    Surface(
-                        color = Color.Black.copy(alpha = 0.4f),
-                        shape = RoundedCornerShape(28.dp)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 12.dp),
-                            horizontalArrangement = Arrangement.SpaceEvenly,
-                            verticalAlignment = Alignment.CenterVertically
+                        FilledIconButton(
+                            onClick = onClose,
+                            colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color.White.copy(alpha = 0.16f))
                         ) {
-                            PremiumViewerAction(
-                                icon = if (favoriteIds.contains(currentItem.id)) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
-                                label = if (favoriteIds.contains(currentItem.id)) "Unfavorite" else "Favorite",
-                                tint = if (favoriteIds.contains(currentItem.id)) Color.Red else Color.White
+                            Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
+                        }
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(
+                                text = liveCurrentItem?.let { shortDateFormatter.format(Date(it.dateAdded * 1000)) } ?: "",
+                                color = Color.White,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                        Spacer(modifier = Modifier.size(48.dp))
+                    }
+                }
+
+                // Bottom Actions Menu inside the bottom screen
+                liveCurrentItem?.let { currentItem ->
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .padding(bottom = 32.dp, start = 16.dp, end = 16.dp)
+                    ) {
+                        Surface(
+                            color = Color.White.copy(alpha = 0.1f),
+                            shape = RoundedCornerShape(28.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                                horizontalArrangement = Arrangement.SpaceEvenly,
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                onToggleFavorite(currentItem.id)
-                            }
-                            PremiumViewerAction(
-                                icon = Icons.Outlined.Edit,
-                                label = "Edit"
-                            ) {
-                                onEdit(currentItem)
-                            }
-                            PremiumViewerAction(
-                                icon = Icons.Outlined.Share,
-                                label = "Share"
-                            ) {
-                                context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
-                                    type = if (currentItem.isVideo) "video/*" else "image/*"
-                                    putExtra(Intent.EXTRA_STREAM, currentItem.uri)
-                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                }, "Share Media"))
-                            }
-                            PremiumViewerAction(
-                                icon = Icons.Outlined.Delete,
-                                label = "Delete",
-                                tint = Color.Red
-                            ) {
-                                onDelete(currentItem)
-                            }
-                            Box {
                                 PremiumViewerAction(
-                                    icon = Icons.Default.MoreVert,
-                                    label = "More"
+                                    icon = if (favoriteIds.contains(currentItem.id)) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
+                                    label = if (favoriteIds.contains(currentItem.id)) "Unfavorite" else "Favorite",
+                                    tint = if (favoriteIds.contains(currentItem.id)) Color.Red else Color.White
                                 ) {
-                                    showMoreMenu = true
+                                    onToggleFavorite(currentItem.id)
                                 }
-                                DropdownMenu(
-                                    expanded = showMoreMenu,
-                                    onDismissRequest = { showMoreMenu = false },
-                                    modifier = Modifier.clip(RoundedCornerShape(12.dp))
-                                ) {
-                                    DropdownMenuItem(
-                                        text = { Text("Details", color = MaterialTheme.colorScheme.onSurface) },
-                                        onClick = {
-                                            showMetadataSheet = true
-                                            showMoreMenu = false
-                                        },
-                                        leadingIcon = { Icon(imageVector = Icons.Outlined.Info, contentDescription = null) }
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("Move to Album", color = MaterialTheme.colorScheme.onSurface) },
-                                        onClick = {
-                                            showMoreMenu = false
-                                            onMove(currentItem)
-                                        },
-                                        leadingIcon = { Icon(imageVector = Icons.AutoMirrored.Outlined.DriveFileMove, contentDescription = null) }
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("Copy to Album", color = MaterialTheme.colorScheme.onSurface) },
-                                        onClick = {
-                                            showMoreMenu = false
-                                            onCopy(currentItem)
-                                        },
-                                        leadingIcon = { Icon(imageVector = Icons.Outlined.FileCopy, contentDescription = null) }
-                                    )
-                                    if (currentItem.isVideo) {
+                                PremiumViewerAction(icon = Icons.Outlined.Edit, label = "Edit") { onEdit(currentItem) }
+                                PremiumViewerAction(icon = Icons.Outlined.Share, label = "Share") {
+                                    context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
+                                        type = if (currentItem.isVideo) "video/*" else "image/*"
+                                        putExtra(Intent.EXTRA_STREAM, currentItem.uri)
+                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                    }, "Share Media"))
+                                }
+                                PremiumViewerAction(icon = Icons.Outlined.Delete, label = "Delete", tint = Color.Red) { onDelete(currentItem) }
+                                Box {
+                                    PremiumViewerAction(icon = Icons.Default.MoreVert, label = "More") { showMoreMenu = true }
+                                    DropdownMenu(
+                                        expanded = showMoreMenu,
+                                        onDismissRequest = { showMoreMenu = false },
+                                        modifier = Modifier.clip(RoundedCornerShape(12.dp))
+                                    ) {
                                         DropdownMenuItem(
-                                            text = { Text("Open In", color = MaterialTheme.colorScheme.onSurface) },
-                                            onClick = {
-                                                showMoreMenu = false
-                                                context.startActivity(Intent(Intent.ACTION_VIEW).apply {
-                                                    setDataAndType(currentItem.uri, "video/*")
-                                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                                })
-                                            },
-                                            leadingIcon = { Icon(imageVector = Icons.AutoMirrored.Outlined.OpenInNew, contentDescription = null) }
+                                            text = { Text("Details", color = MaterialTheme.colorScheme.onSurface) },
+                                            onClick = { showMetadataSheet = true; showMoreMenu = false },
+                                            leadingIcon = { Icon(imageVector = Icons.Outlined.Info, contentDescription = null) }
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Move to Album", color = MaterialTheme.colorScheme.onSurface) },
+                                            onClick = { showMoreMenu = false; onMove(currentItem) },
+                                            leadingIcon = { Icon(imageVector = Icons.AutoMirrored.Outlined.DriveFileMove, contentDescription = null) }
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Copy to Album", color = MaterialTheme.colorScheme.onSurface) },
+                                            onClick = { showMoreMenu = false; onCopy(currentItem) },
+                                            leadingIcon = { Icon(imageVector = Icons.Outlined.FileCopy, contentDescription = null) }
+                                        )
+                                        if (currentItem.isVideo) {
+                                            DropdownMenuItem(
+                                                text = { Text("Open In", color = MaterialTheme.colorScheme.onSurface) },
+                                                onClick = {
+                                                    showMoreMenu = false
+                                                    context.startActivity(Intent(Intent.ACTION_VIEW).apply {
+                                                        setDataAndType(currentItem.uri, "video/*")
+                                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                                    })
+                                                },
+                                                leadingIcon = { Icon(imageVector = Icons.AutoMirrored.Outlined.OpenInNew, contentDescription = null) }
+                                            )
+                                        }
+                                        DropdownMenuItem(
+                                            text = { Text("Set as Wallpaper", color = MaterialTheme.colorScheme.onSurface) },
+                                            onClick = { showMoreMenu = false; onWallpaper(currentItem) },
+                                            leadingIcon = { Icon(imageVector = Icons.Outlined.Wallpaper, contentDescription = null) }
                                         )
                                     }
-                                    DropdownMenuItem(
-                                        text = { Text("Set as Wallpaper", color = MaterialTheme.colorScheme.onSurface) },
-                                        onClick = {
-                                            showMoreMenu = false
-                                            onWallpaper(currentItem)
-                                        },
-                                        leadingIcon = { Icon(imageVector = Icons.Outlined.Wallpaper, contentDescription = null) }
-                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        // 📱 STANDARD FULL SCREEN OVERLAY (For normal phones and flat tablets)
+        Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+            HorizontalPager(
+                state = pagerState,
+                pageSpacing = 18.dp,
+                key = { index -> mediaList[index].id },
+                modifier = Modifier.fillMaxSize()
+            ) { page ->
+                val item = mediaList[page]
+                if (item.isVideo) {
+                    VideoPreviewPage(
+                        item = item,
+                        videoItems = videoList,
+                        isCurrentPage = pagerState.currentPage == page,
+                        showControls = showControls,
+                        sharedPlayer = sharedPlayer,
+                        onTap = { showControls = !showControls }, // Tapping the video hides/shows the buttons
+                        onPlay = { onPlayVideo(item.uri.toString(), videoList.map { it.uri.toString() }) } // Starts full playback
+                    )
+                } else {
+                    ZoomableImagePage(
+                        item = item,
+                        onTap = { showControls = !showControls }, // Tapping the photo hides/shows the buttons
+                        onDismiss = onClose // Swiping the photo down closes it completely
+                    )
+                }
+            }
+
+            if (showControls) {
+                // The Top Bar (Back button and Date)
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .fillMaxWidth()
+                        .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.75f), Color.Transparent)))
+                        .statusBarsPadding()
+                        .padding(18.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        FilledIconButton(
+                            onClick = onClose,
+                            colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color.White.copy(alpha = 0.16f))
+                        ) {
+                            Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
+                        }
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(
+                                text = liveCurrentItem?.let { shortDateFormatter.format(Date(it.dateAdded * 1000)) } ?: "",
+                                color = Color.White,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                        Spacer(modifier = Modifier.size(48.dp))
+                    }
+                }
+                // The Bottom Bar (Favorite, Edit, Share, Delete)
+                liveCurrentItem?.let { currentItem ->
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .padding(bottom = 32.dp, start = 16.dp, end = 16.dp)
+                    ) {
+                        Surface(
+                            color = Color.Black.copy(alpha = 0.4f), // Slightly see-through
+                            shape = RoundedCornerShape(28.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                                horizontalArrangement = Arrangement.SpaceEvenly,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                PremiumViewerAction(
+                                    icon = if (favoriteIds.contains(currentItem.id)) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
+                                    label = if (favoriteIds.contains(currentItem.id)) "Unfavorite" else "Favorite",
+                                    tint = if (favoriteIds.contains(currentItem.id)) Color.Red else Color.White
+                                ) {
+                                    onToggleFavorite(currentItem.id)
+                                }
+                                PremiumViewerAction(
+                                    icon = Icons.Outlined.Edit,
+                                    label = "Edit"
+                                ) {
+                                    onEdit(currentItem)
+                                }
+                                PremiumViewerAction(
+                                    icon = Icons.Outlined.Share,
+                                    label = "Share"
+                                ) {
+                                    context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
+                                        type = if (currentItem.isVideo) "video/*" else "image/*"
+                                        putExtra(Intent.EXTRA_STREAM, currentItem.uri)
+                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                    }, "Share Media"))
+                                }
+                                PremiumViewerAction(
+                                    icon = Icons.Outlined.Delete,
+                                    label = "Delete",
+                                    tint = Color.Red
+                                ) {
+                                    onDelete(currentItem)
+                                }
+                                Box {
+                                    PremiumViewerAction(
+                                        icon = Icons.Default.MoreVert,
+                                        label = "More"
+                                    ) {
+                                        showMoreMenu = true
+                                    }
+                                    DropdownMenu(
+                                        expanded = showMoreMenu,
+                                        onDismissRequest = { showMoreMenu = false },
+                                        modifier = Modifier.clip(RoundedCornerShape(12.dp))
+                                    ) {
+                                        DropdownMenuItem(
+                                            text = { Text("Details", color = MaterialTheme.colorScheme.onSurface) },
+                                            onClick = {
+                                                showMetadataSheet = true
+                                                showMoreMenu = false
+                                            },
+                                            leadingIcon = { Icon(imageVector = Icons.Outlined.Info, contentDescription = null) }
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Move to Album", color = MaterialTheme.colorScheme.onSurface) },
+                                            onClick = {
+                                                showMoreMenu = false
+                                                onMove(currentItem)
+                                            },
+                                            leadingIcon = { Icon(imageVector = Icons.AutoMirrored.Outlined.DriveFileMove, contentDescription = null) }
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Copy to Album", color = MaterialTheme.colorScheme.onSurface) },
+                                            onClick = {
+                                                showMoreMenu = false
+                                                onCopy(currentItem)
+                                            },
+                                            leadingIcon = { Icon(imageVector = Icons.Outlined.FileCopy, contentDescription = null) }
+                                        )
+                                        if (currentItem.isVideo) {
+                                            DropdownMenuItem(
+                                                text = { Text("Open In", color = MaterialTheme.colorScheme.onSurface) },
+                                                onClick = {
+                                                    showMoreMenu = false
+                                                    // This asks Android to find a different app on the phone to play the video (like VLC Player)
+                                                    context.startActivity(Intent(Intent.ACTION_VIEW).apply {
+                                                        setDataAndType(currentItem.uri, "video/*")
+                                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                                    })
+                                                },
+                                                leadingIcon = { Icon(imageVector = Icons.AutoMirrored.Outlined.OpenInNew, contentDescription = null) }
+                                            )
+                                        }
+                                        DropdownMenuItem(
+                                            text = { Text("Set as Wallpaper", color = MaterialTheme.colorScheme.onSurface) },
+                                            onClick = {
+                                                showMoreMenu = false
+                                                onWallpaper(currentItem)
+                                            },
+                                            leadingIcon = { Icon(imageVector = Icons.Outlined.Wallpaper, contentDescription = null) }
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -2576,11 +2953,14 @@ fun FullscreenMediaPager(
             }
         }
     }
+
+    // The slide-up Details menu
     if (showMetadataSheet && liveCurrentItem != null) {
         MediaMetadataSheet(item = liveCurrentItem) { showMetadataSheet = false }
     }
 }
 
+// Shows a muted, looping preview of a video when you swipe to it in the full screen viewer
 @SuppressLint("ClickableViewAccessibility")
 @OptIn(UnstableApi::class)
 @Composable
@@ -2594,7 +2974,7 @@ fun VideoPreviewPage(
     onPlay: () -> Unit
 ) {
     val ctx = LocalContext.current
-    var m by rememberSaveable(item.id) { mutableStateOf(true) }
+    var m by rememberSaveable(item.id) { mutableStateOf(true) } // Mute the video initially
 
     LaunchedEffect(m) {
         sharedPlayer.volume = if (m) 0f else 1f
@@ -2602,15 +2982,16 @@ fun VideoPreviewPage(
 
     LaunchedEffect(isCurrentPage) {
         if (!isCurrentPage) {
-            sharedPlayer.pause()
+            sharedPlayer.pause() // Pause if the user swiped away to the next photo
         }
     }
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         AndroidView(
             factory = {
+                // The actual physical screen that draws the video
                 PlayerView(ctx).apply {
-                    useController = false
+                    useController = false // Hide the play/pause bar
                     setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
                     layoutParams = android.view.ViewGroup.LayoutParams(-1, -1)
                     setOnTouchListener { view, event ->
@@ -2628,12 +3009,13 @@ fun VideoPreviewPage(
             },
             modifier = Modifier.fillMaxSize().pointerInput(Unit) { detectTapGestures(onTap = { onTap() }) }
         )
+        // A giant Play button floating in the middle of the screen
         if (showControls) {
             Box(modifier = Modifier.fillMaxWidth().align(Alignment.BottomCenter).padding(bottom = 120.dp)) {
                 Surface(
                     modifier = Modifier.align(Alignment.Center).clickable {
-                        sharedPlayer.pause()
-                        onPlay()
+                        sharedPlayer.pause() // Pause the preview
+                        onPlay() // Launch the dedicated video player!
                     },
                     shape = RoundedCornerShape(50.dp),
                     color = Color.Black.copy(alpha = 0.55f)
@@ -2661,6 +3043,7 @@ fun VideoPreviewPage(
     }
 }
 
+// A reusable blueprint for the buttons in the Full Screen bottom menu
 @Composable
 fun PremiumViewerAction(
     icon: ImageVector,
@@ -2697,26 +3080,36 @@ fun PremiumViewerAction(
     }
 }
 
+/**
+ * --- THE MICROSCOPE (ZoomableImagePage) ---
+ * Handles the incredibly complex math of letting a user "Pinch to Zoom"
+ * into a photo without it accidentally swiping to the next page instead.
+ */
 @Composable
 fun ZoomableImagePage(item: MediaItem, onTap: () -> Unit, onDismiss: () -> Unit) {
     val ctx = LocalContext.current
     val d = LocalDensity.current
     val hap = LocalHapticFeedback.current
     val conf = LocalConfiguration.current
+
+    // Find exactly how many pixels wide and tall the user's phone is
     val wPx = with(d) { conf.screenWidthDp.dp.roundToPx() }
     val hPx = with(d) { conf.screenHeightDp.dp.roundToPx() }
+
+    // The "Dismiss Threshold". If they drag the photo down past 25% of the screen, we close it.
     val thr = remember(conf.screenHeightDp, d) { with(d) { conf.screenHeightDp.dp.toPx() * 0.25f } }
 
-    var sc by remember { mutableFloatStateOf(1f) }
-    var oX by remember { mutableFloatStateOf(0f) }
-    var oY by remember { mutableFloatStateOf(0f) }
-    var bA by remember { mutableFloatStateOf(1f) }
+    var sc by remember { mutableFloatStateOf(1f) } // Scale (Zoom level). 1f = 100%. 2f = 200%.
+    var oX by remember { mutableFloatStateOf(0f) } // Offset X (How far they dragged it left/right)
+    var oY by remember { mutableFloatStateOf(0f) } // Offset Y (How far they dragged it up/down)
+    var bA by remember { mutableFloatStateOf(1f) } // Background Alpha (How dark the black background should be)
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black.copy(alpha = bA))
             .graphicsLayer {
+                // As the user drags the photo down (oY gets bigger), we slowly shrink the photo and fade the black background away!
                 val ds = 1f - (abs(oY) / 2200f)
                 scaleX = sc * ds
                 scaleY = scaleX
@@ -2726,8 +3119,9 @@ fun ZoomableImagePage(item: MediaItem, onTap: () -> Unit, onDismiss: () -> Unit)
             }
             .pointerInput(Unit) {
                 detectTapGestures(
-                    onTap = { onTap() },
+                    onTap = { onTap() }, // Show/hide menus
                     onDoubleTap = {
+                        // Double tapping zooms in to 250%. Double tapping again resets to 100%.
                         sc = if (sc > 1f) 1f else 2.5f
                         oX = 0f
                         oY = 0f
@@ -2735,31 +3129,40 @@ fun ZoomableImagePage(item: MediaItem, onTap: () -> Unit, onDismiss: () -> Unit)
                     onLongPress = { hap.performHapticFeedback(HapticFeedbackType.LongPress) }
                 )
             }
+            // THIS is the Pinch-To-Zoom math!
             .pointerInput(Unit) {
                 awaitEachGesture {
-                    awaitFirstDown(requireUnconsumed = false)
+                    awaitFirstDown(requireUnconsumed = false) // Wait for the user to touch the screen
                     do {
-                        val event = awaitPointerEvent()
-                        val zoom = event.calculateZoom()
-                        val pan = event.calculatePan()
+                        val event = awaitPointerEvent() // Wait for their finger to move
+                        val zoom = event.calculateZoom() // Are two fingers moving apart?
+                        val pan = event.calculatePan() // Is a finger dragging?
+
+                        // Apply the zoom
                         if (abs(zoom - 1f) > 0.005f) {
-                            sc = (sc * zoom).coerceIn(1f, 4f)
+                            sc = (sc * zoom).coerceIn(1f, 4f) // Don't let them zoom in past 400%
                         }
+
+                        // If they are currently zoomed in...
                         if (sc > 1.05f) {
+                            // "Consume" the touch. This tells Android: "Do NOT swipe to the next photo! The user is just looking around inside this zoomed photo."
                             event.changes.forEach {
                                 if (it.positionChange() != Offset.Zero) {
                                     it.consume()
                                 }
                             }
+
+                            // Prevent them from dragging the photo entirely off the screen
                             val mx = (size.width * (sc - 1)) / 2f
                             val my = (size.height * (sc - 1)) / 2f
                             oX = (oX + pan.x).coerceIn(-mx, mx)
                             oY = (oY + pan.y).coerceIn(-my, my)
                         } else {
-                            val isV = abs(pan.y) > abs(pan.x)
-                            if (isV && event.changes.size == 1) {
-                                oY += pan.y
-                                bA = (1f - abs(oY) / 900f).coerceIn(0.35f, 1f)
+                            // If they are NOT zoomed in...
+                            val isV = abs(pan.y) > abs(pan.x) // Are they dragging down, or swiping sideways?
+                            if (isV && event.changes.size == 1) { // If dragging down with one finger...
+                                oY += pan.y // Move the photo down
+                                bA = (1f - abs(oY) / 900f).coerceIn(0.35f, 1f) // Fade the black background away
                                 event.changes.forEach {
                                     if (it.positionChange() != Offset.Zero) {
                                         it.consume()
@@ -2767,13 +3170,16 @@ fun ZoomableImagePage(item: MediaItem, onTap: () -> Unit, onDismiss: () -> Unit)
                                 }
                             }
                         }
-                    } while (event.changes.any { it.pressed })
+                    } while (event.changes.any { it.pressed }) // Keep doing this until they lift their finger
 
+                    // They lifted their finger!
                     if (sc <= 1.05f) {
+                        // Did they drag it far enough down to close it?
                         if (abs(oY) > thr) {
                             hap.performHapticFeedback(HapticFeedbackType.LongPress)
-                            onDismiss()
+                            onDismiss() // Close the full screen viewer!
                         } else {
+                            // They didn't drag it far enough. Snap the photo back to the center like a rubber band.
                             oY = 0f
                             bA = 1f
                         }
@@ -2782,6 +3188,7 @@ fun ZoomableImagePage(item: MediaItem, onTap: () -> Unit, onDismiss: () -> Unit)
             },
         contentAlignment = Alignment.Center
     ) {
+        // Fetch the ABSOLUTE HIGHEST QUALITY version of the photo so it looks crystal clear when zoomed in.
         AsyncImage(
             model = remember(item.id, wPx, hPx) {
                 ImageRequest.Builder(ctx)
@@ -2797,7 +3204,7 @@ fun ZoomableImagePage(item: MediaItem, onTap: () -> Unit, onDismiss: () -> Unit)
             },
             placeholder = null,
             contentDescription = null,
-            contentScale = ContentScale.Fit,
+            contentScale = ContentScale.Fit, // Never crop the full screen photo!
             modifier = Modifier.fillMaxSize()
         )
     }

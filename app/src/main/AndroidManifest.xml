@@ -1,36 +1,152 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+    ================================================================================
+    THE APP'S PASSPORT & IDENTITY CARD (AndroidManifest.xml)
+    ================================================================================
+    Every Android application in the world MUST have this exact file.
+    Think of the AndroidManifest as the official passport your app presents to the
+    Android operating system when it gets installed.
+
+    It tells Android:
+    1. Who made this app and what its name is.
+    2. What security clearances (permissions) it needs to access the camera, storage, etc.
+    3. What screens (Activities) and background workers (Services) live inside it.
+    4. How it should react when another app asks: "Hey, can anyone open this video?"
+-->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!--
+        ============================================================================
+        SECTION 1: THE SECURITY CLEARANCES (Permissions)
+        ============================================================================
+        Android is built like a bank vault. By default, an app is locked in a sandbox
+        and cannot see your photos, hear your microphone, or touch your files.
+        Here, we declare every "Key" our app needs to ask the user for.
+    -->
+
+    <!-- Allows the app to open the phone's physical camera lens to take photos or record videos -->
     <uses-permission android:name="android.permission.CAMERA" />
+
+    <!--
+        MODERN MEDIA PERMISSIONS (Android 13+ / API 33+)
+        Starting in Android 13, Google killed the old "Read Storage" permission.
+        Instead of one master key to all files, apps must ask for specific keys
+        for Images, Videos, and Audio separately.
+    -->
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO"/>
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO"/>
+
+    <!--
+        PARTIAL MEDIA ACCESS (Android 14+ / API 34+)
+        In Android 14, users can choose: "I only want GalleryBox to see 3 photos, not my whole library."
+        This permission handles that partial selection mode gracefully.
+    -->
     <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
+
+    <!--
+        LEGACY STORAGE PERMISSION (Android 12 and below / API 32 and below)
+        Older Android phones don't understand the separate image/video permissions above.
+        They only understand the master key. `maxSdkVersion="32"` tells modern phones:
+        "Ignore this permission on Android 13+; only ask for it on older phones."
+    -->
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
+
+    <!--
+        Used to detect when an incoming phone call rings.
+        When someone calls you, the app hears this event and immediately pauses
+        the FM radio or music player so you can answer the call in peace.
+    -->
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+
+    <!-- Checks if Wi-Fi is turned on or off -->
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+
+    <!--
+        Allows saving, editing, and deleting files on older phones (Android 12 and below).
+        On modern phones, this is handled automatically by Android's MediaStore.
+    -->
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
+
+    <!--
+        ACCESS MEDIA LOCATION (GPS Data)
+        When you take a photo with your camera, the camera secretly tags the exact GPS
+        latitude/longitude coordinates where you were standing inside the photo's EXIF metadata.
+        Android hides this for privacy. This permission lets our gallery read those coordinates
+        so we can show you where your photos were taken on a map.
+    -->
     <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION" />
+
+    <!-- Allows recording sound (used for audio visualizer waveforms and microphone effects) -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!-- Allows the app to adjust volume levels, route sound to Bluetooth, or switch to the loudspeaker -->
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+
+    <!--
+        POST NOTIFICATIONS (Android 13+ / API 33+)
+        Allows the app to show playback controls (Play, Pause, Skip) in the top
+        drop-down notification shade while music or radio is playing.
+    -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Allows the app to set a photo or video as the phone's Home Screen or Lock Screen wallpaper -->
     <uses-permission android:name="android.permission.SET_WALLPAPER" />
     <uses-permission android:name="android.permission.SET_WALLPAPER_HINTS"/>
+
+    <!-- Allows the Secure Vault to use the phone's Fingerprint Scanner or Face Unlock -->
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+
+    <!-- Gives subtle physical vibration clicks (haptic feedback) when dragging sliders or buttons -->
     <uses-permission android:name="android.permission.VIBRATE" />
+
+    <!--
+        WAKE LOCK (The Anti-Sleep Pill)
+        Prevents the phone's processor from going into deep sleep while a video is rendering
+        or while music is playing in your pocket.
+    -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- Allows the app to connect to the internet to stream digital radio stations and check licenses -->
     <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Checks whether the phone is connected to cellular data, Wi-Fi, or completely offline -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!--
+        FOREGROUND SERVICES (The VIP Work Permits)
+        Android aggressively kills apps that run in the background to save battery.
+        A "Foreground Service" is a special badge that tells Android:
+        "I am actively playing music or streaming radio for the user, please do NOT kill me!"
+    -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- Android 14 requires apps to state the EXACT type of background work being done (media playback) -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+
+    <!--
+        ============================================================================
+        SECTION 2: HARDWARE & SOFTWARE FEATURES (uses-feature)
+        ============================================================================
+        Tells the Google Play Store what hardware features the app uses.
+        `android:required="false"` is very important! It means:
+        "Our app CAN use live wallpapers and a camera, but if a device doesn't have them
+        (like an Android TV or cheap tablet), still let them download and install the app."
+    -->
     <uses-feature android:name="android.software.live_wallpaper" android:required="false" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
+    <!--
+        ============================================================================
+        SECTION 3: THE APPLICATION BUILDING (application)
+        ============================================================================
+        This is the master blueprint of the application itself, defining its branding,
+        theme, memory rules, and all the screens and services running inside it.
+    -->
     <application
         android:name=".GalleryApp"
         android:allowBackup="true"
@@ -46,7 +162,27 @@
         android:requestLegacyExternalStorage="true"
         android:theme="@style/Theme.GalleryBox"
         tools:targetApi="35">
+        <!--
+            WHAT THESE APPLICATION SETTINGS MEAN:
+            - android:name=".GalleryApp": Points to the custom Application class that boots up first.
+            - android:allowBackup="true": Allows Android Cloud Backup to safely back up user preferences.
+            - android:dataExtractionRules & fullBackupContent: Rules on what data can be backed up to the cloud.
+            - android:icon & roundIcon: The square and circular app icons shown on the home screen.
+            - android:label: The human-readable name of the app shown under the icon ("GalleryBox").
+            - android:supportsRtl="true": Automatically flips layouts for Right-To-Left languages like Arabic or Hebrew.
+            - android:hardwareAccelerated="true": Forces the phone's graphics chip (GPU) to draw the screen for buttery-smooth 60/120 FPS scrolling.
+            - android:largeHeap="true": Requests extra RAM memory from Android so decoding massive 4K camera photos doesn't crash the app.
+            - android:enableOnBackInvokedCallback="true": Enables modern Android 13+ predictive back swipe animations.
+            - android:requestLegacyExternalStorage="true": Keeps compatibility with older file structures on Android 10.
+            - android:theme: The master color and typography theme of the app.
+        -->
 
+        <!--
+            ========================================================================
+            THE MAIN STAGE (MainActivity)
+            ========================================================================
+            This is the primary screen that opens when the user taps the app icon.
+        -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -55,27 +191,50 @@
             android:windowSoftInputMode="adjustResize"
             android:supportsPictureInPicture="true"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|keyboard|uiMode">
+            <!--
+                WHAT THESE ACTIVITY SETTINGS MEAN:
+                - android:exported="true": MUST be true so the Android home screen launcher is allowed to open it.
+                - android:launchMode="singleTop": If the app is already open, tapping an image in WhatsApp brings the existing app to the front instead of opening 5 duplicate copies of the app.
+                - android:screenOrientation="user": Respects whether the user holds their phone vertically or horizontally.
+                - android:windowSoftInputMode="adjustResize": Smoothly slides the screen up when the keyboard pops up so text fields aren't blocked.
+                - android:supportsPictureInPicture="true": Allows videos to shrink into a tiny floating mini-window while using other apps.
+                - android:configChanges: Tells Android: "If the user rotates the screen, opens a keyboard, or turns on Dark Mode, DO NOT destroy and rebuild the whole screen. Let our code handle it smoothly without flickering."
+            -->
 
-            <!-- App Launcher -->
+            <!--
+                MAILBOX 1: THE APP LAUNCHER FILTER
+                This tells Android: "Put an icon for this screen in the phone's App Drawer / Home Screen."
+            -->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
-            <!-- File Viewing Intent Filter -->
+            <!--
+                MAILBOX 2: THE FILE VIEWER FILTER
+                This tells Android: "If the user taps on any Image, Video, or Audio file in another app
+                (like WhatsApp, Gmail, or the Files app), show GalleryBox in the 'Open With...' menu!"
+            -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
+
+                <!-- Accepts content:// and file:// links -->
                 <data android:scheme="content" />
                 <data android:scheme="file" />
-                <!-- Media -->
+
+                <!-- Types of files GalleryBox can open -->
                 <data android:mimeType="image/*" />
                 <data android:mimeType="video/*" />
                 <data android:mimeType="audio/*" />
             </intent-filter>
 
-            <!-- Custom Deep Link for Internal Navigation (Video Player) -->
+            <!--
+                MAILBOX 3: CUSTOM DEEP LINK
+                Allows navigating directly into the video player via a custom link
+                like `gallerybox://video` from inside the app or from notifications.
+            -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -85,21 +244,46 @@
 
         </activity>
 
+        <!--
+            ========================================================================
+            BACKGROUND WORKER 1: MUSIC & RADIO SERVICE (MusicService)
+            ========================================================================
+            Runs silently in the background to keep local MP3s and live radio playing
+            even when the user leaves the app or turns the screen off.
+            - android:exported="false": Private to our app; other apps cannot tamper with it.
+            - android:foregroundServiceType="mediaPlayback": Explains to Android why it's running in the background.
+        -->
         <service
             android:name=".engine.MusicService"
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
 
+        <!--
+            ========================================================================
+            BACKGROUND WORKER 2: VIDEO PLAYBACK SERVICE (VideoPlaybackService)
+            ========================================================================
+            A specialized Media3 MediaSession service that handles background video
+            audio playback and integrates video controls with the Android lock screen.
+        -->
         <service
             android:name=".engine.VideoPlaybackService"
             android:exported="true"
             android:foregroundServiceType="mediaPlayback">
 
+            <!-- Allows Android's system media controllers and smartwatches to talk to this video service -->
             <intent-filter>
                 <action android:name="androidx.media3.session.MediaSessionService" />
             </intent-filter>
         </service>
 
+        <!--
+            ========================================================================
+            BACKGROUND WORKER 3: LIVE VIDEO WALLPAPER (VideoWallpaperService)
+            ========================================================================
+            A live wallpaper engine that allows users to pick any video from their
+            gallery and loop it seamlessly as their animated phone wallpaper.
+            - android:permission="android.permission.BIND_WALLPAPER": Security guard ensuring ONLY the Android OS itself can control this wallpaper service.
+        -->
         <service
             android:name=".ui.screens.wallpaper.VideoWallpaperService"
             android:label="GalleryBox Video Wallpaper"
@@ -112,17 +296,30 @@
                 <action android:name="android.service.wallpaper.WallpaperService" />
             </intent-filter>
 
+            <!-- Configuration XML defining settings and previews for the wallpaper -->
             <meta-data
                 android:name="android.service.wallpaper"
                 android:resource="@xml/video_wallpaper" />
         </service>
 
+        <!--
+            ========================================================================
+            THE SECURE COURIER (FileProvider)
+            ========================================================================
+            Modern Android forbids apps from sharing raw file paths (like "/sdcard/photo.jpg")
+            with other apps because hackers could abuse it.
+
+            The `FileProvider` creates temporary, highly secure, one-time passes
+            (like "content://com.gallerybox.provider/...") when the user taps "Share to WhatsApp"
+            or "Share to Instagram", safely passing the image without exposing the phone's raw storage.
+        -->
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.provider"
             android:exported="false"
             android:grantUriPermissions="true">
 
+            <!-- Points to the XML file listing which internal folders are safe to share -->
             <meta-data
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />

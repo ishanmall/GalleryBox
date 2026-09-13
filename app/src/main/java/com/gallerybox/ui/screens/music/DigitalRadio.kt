@@ -1,5 +1,10 @@
+@file:Suppress("UnusedImport", "unused")
 package com.gallerybox.ui.screens.music
 
+// =========================================================================================
+// --- IMPORTS ---
+// Bringing in all the Compose UI components, icons, layout tools, and animation libraries.
+// =========================================================================================
 import androidx.compose.animation.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -24,22 +29,41 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.media3.common.util.UnstableApi
 import coil.compose.AsyncImage
+
+// Project-specific imports
 import com.gallerybox.viewmodel.DigitalStation
 import com.gallerybox.viewmodel.RadioViewModel
+import com.gallerybox.ui.screens.adaptive.AdaptiveState
+import com.gallerybox.ui.screens.adaptive.rememberAdaptiveState
+import com.gallerybox.ui.screens.adaptive.WindowWidthSize
 
-// Unified light theme palette
-private val BgColor = Color(0xFFF2F2F7)
-private val SurfaceColor = Color(0xFFFFFFFF)
-private val PrimaryColor = Color(0xFF007AFF)
-private val TextPrimary = Color(0xFF000000)
-private val TextSecondary = Color(0xFF8E8E93)
+// =========================================================================================
+// --- THE PAINT PALETTE ---
+// Specific, branded colors that keep the UI looking clean and consistent.
+// =========================================================================================
+private val BgColor = Color(0xFFF2F2F7)       // Soft gray background
+private val SurfaceColor = Color(0xFFFFFFFF)  // Pure white for cards/surfaces
+private val PrimaryColor = Color(0xFF007AFF)  // Bright blue for main actions (play, scan)
+private val TextPrimary = Color(0xFF000000)   // Solid black text
+private val TextSecondary = Color(0xFF8E8E93) // Faded gray text for subtitles/placeholders
 
+// =========================================================================================
+// --- MAIN MANAGER: DIGITAL RADIO SCREEN ---
+// Analogy: Think of this screen as a massive shortwave radio receiver.
+// It searches the entire internet for live radio broadcasts, lets the user tune into one,
+// and plays it instantly.
+// =========================================================================================
 @androidx.annotation.OptIn(UnstableApi::class)
 @Composable
 fun DigitalRadioScreen(
-    viewModel: RadioViewModel,
-    onBack: () -> Unit
+    viewModel: RadioViewModel, // The "Operator" who actually connects to the internet streams
+    onBack: () -> Unit         // The action to take when the user hits the back button
 ) {
+    // 1. Ask the Adaptive Engine what shape the device is (Phone? Tablet? Foldable?)
+    val adaptiveState = rememberAdaptiveState()
+
+    // 2. Setup the "Scoreboards" (State). Whenever these values change in the ViewModel,
+    // the UI instantly updates to show the new info.
     val stations by viewModel.digitalStations.collectAsState()
     val currentStation by viewModel.currentDigitalStation.collectAsState()
     val isPlaying by viewModel.isDigitalPlaying.collectAsState()
@@ -48,9 +72,11 @@ fun DigitalRadioScreen(
     val categories = viewModel.digitalCategories
     val selectedCategory by viewModel.selectedDigitalCategory.collectAsState()
 
+    // 3. The Filter System (The "Sorting Desk")
+    // If the user types "Jazz", this instantly hides all stations that don't match.
     val filteredStations = remember(stations, searchQuery) {
         if (searchQuery.isBlank()) {
-            stations
+            stations // Show everything
         } else {
             stations.filter {
                 it.name.contains(searchQuery, ignoreCase = true) ||
@@ -60,27 +86,47 @@ fun DigitalRadioScreen(
         }
     }
 
+    // 4. Adaptive Layout Adjustments
+    // If the user is on a huge tablet, we don't want the search bar and lists stretching
+    // 2 feet wide. We restrict them to a clean 600dp width.
+    val contentWidthModifier = if (adaptiveState.widthSize == WindowWidthSize.EXPANDED) {
+        Modifier.width(600.dp)
+    } else {
+        Modifier.fillMaxWidth()
+    }
+
+    // The outer walls of the screen
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(BgColor)
+            .background(BgColor),
+        contentAlignment = Alignment.TopCenter
     ) {
-        Column(modifier = Modifier.fillMaxSize()) {
+        // The main column holding the search bar, categories, and the list
+        Column(modifier = contentWidthModifier.fillMaxHeight()) {
 
-            // Search Bar & Scan Action
+            // --- SEARCH BAR & SCAN BUTTON ---
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                // The Text Input Box
                 OutlinedTextField(
                     value = searchQuery,
                     onValueChange = viewModel::updateSearchQuery,
                     modifier = Modifier.weight(1f),
-                    placeholder = { Text("Search stations, genres, countries...", color = TextSecondary, fontSize = 14.sp) },
+                    placeholder = {
+                        Text(
+                            text = "Search stations, genres, countries...",
+                            color = TextSecondary,
+                            fontSize = (14 * adaptiveState.textScaleFactor).sp
+                        )
+                    },
                     leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null, tint = TextSecondary) },
                     trailingIcon = {
+                        // Only show the "Clear" button if they actually typed something
                         if (searchQuery.isNotEmpty()) {
                             IconButton(onClick = { viewModel.updateSearchQuery("") }) {
                                 Icon(Icons.Rounded.Close, contentDescription = "Clear", tint = TextSecondary)
@@ -99,6 +145,7 @@ fun DigitalRadioScreen(
 
                 Spacer(Modifier.width(8.dp))
 
+                // The "Scan" Button (Refreshes the internet connection to find new stations)
                 Surface(
                     shape = CircleShape,
                     color = SurfaceColor,
@@ -116,7 +163,7 @@ fun DigitalRadioScreen(
                 }
             }
 
-            // Genre & Region Category Chips
+            // --- CATEGORY CHIPS (e.g., "Top 100", "Jazz", "News") ---
             LazyRow(
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -132,15 +179,16 @@ fun DigitalRadioScreen(
                             text = category,
                             color = if (isSelected) Color.White else TextPrimary,
                             fontWeight = FontWeight.Bold,
-                            fontSize = 13.sp,
+                            fontSize = (13 * adaptiveState.textScaleFactor).sp,
                             modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
                         )
                     }
                 }
             }
 
-            // Station List & Scanner State
+            // --- THE MAIN CONTENT AREA ---
             if (isLoading) {
+                // Scenario A: The operator is currently downloading the list from the internet
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -153,12 +201,13 @@ fun DigitalRadioScreen(
                         Text(
                             text = "Scanning live web stations...",
                             color = TextSecondary,
-                            fontSize = 14.sp,
+                            fontSize = (14 * adaptiveState.textScaleFactor).sp,
                             fontWeight = FontWeight.Medium
                         )
                     }
                 }
             } else if (filteredStations.isEmpty()) {
+                // Scenario B: The user searched for "Alien Music" and we found nothing
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -177,16 +226,17 @@ fun DigitalRadioScreen(
                             text = "No stations found",
                             color = TextPrimary,
                             fontWeight = FontWeight.Bold,
-                            fontSize = 16.sp
+                            fontSize = (16 * adaptiveState.textScaleFactor).sp
                         )
                         Text(
                             text = "Try switching category or searching another keyword",
                             color = TextSecondary,
-                            fontSize = 13.sp
+                            fontSize = (13 * adaptiveState.textScaleFactor).sp
                         )
                     }
                 }
             } else {
+                // Scenario C: We have stations! Draw the list (The "Conveyor Belt")
                 LazyColumn(
                     contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 120.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -199,6 +249,7 @@ fun DigitalRadioScreen(
                         DigitalStationItem(
                             station = station,
                             isPlaying = isThisPlaying && isPlaying,
+                            adaptiveState = adaptiveState,
                             onPlayClick = { viewModel.playDigitalStation(station) },
                             onFavoriteClick = { viewModel.toggleDigitalFavorite(station.id) }
                         )
@@ -207,7 +258,8 @@ fun DigitalRadioScreen(
             }
         }
 
-        // Floating "Now Playing" Bar
+        // --- FLOATING "NOW PLAYING" BAR ---
+        // Just like Spotify, if a station is playing, it floats at the bottom of the screen.
         AnimatedVisibility(
             visible = currentStation != null,
             enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
@@ -220,6 +272,8 @@ fun DigitalRadioScreen(
                 NowPlayingBar(
                     station = station,
                     isPlaying = isPlaying,
+                    adaptiveState = adaptiveState,
+                    modifier = contentWidthModifier, // Keep it aligned with the list width!
                     onPlayPauseClick = viewModel::toggleDigitalPlayPause
                 )
             }
@@ -227,10 +281,16 @@ fun DigitalRadioScreen(
     }
 }
 
+// =========================================================================================
+// --- STATION ROW CARD ---
+// Analogy: This is the individual physical button for a specific radio station.
+// It shows the station logo, name, and location.
+// =========================================================================================
 @Composable
 private fun DigitalStationItem(
     station: DigitalStation,
     isPlaying: Boolean,
+    adaptiveState: AdaptiveState,
     onPlayClick: () -> Unit,
     onFavoriteClick: () -> Unit
 ) {
@@ -262,9 +322,11 @@ private fun DigitalStationItem(
                         modifier = Modifier.fillMaxSize()
                     )
                 } else {
+                    // Fallback icon if the station didn't provide a logo
                     Icon(Icons.Rounded.CellTower, contentDescription = null, tint = PrimaryColor)
                 }
 
+                // Show a dark overlay with a volume icon if THIS station is the active one
                 if (isPlaying) {
                     Box(
                         Modifier
@@ -279,26 +341,26 @@ private fun DigitalStationItem(
 
             Spacer(Modifier.width(14.dp))
 
-            // Station Meta Info
+            // Station Text Details
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = station.name,
                     color = if (isPlaying) PrimaryColor else TextPrimary,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 15.sp,
+                    fontSize = (15 * adaptiveState.textScaleFactor).sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
                     text = "${station.country} • ${station.tags}",
                     color = TextSecondary,
-                    fontSize = 12.sp,
+                    fontSize = (12 * adaptiveState.textScaleFactor).sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
             }
 
-            // Favorite Button
+            // The Heart Icon (Favorite Button)
             IconButton(onClick = onFavoriteClick) {
                 Icon(
                     imageVector = if (station.isFavorite) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
@@ -310,17 +372,22 @@ private fun DigitalStationItem(
     }
 }
 
+// =========================================================================================
+// --- NOW PLAYING BAR (The Floating Bottom Player) ---
+// Analogy: This is the dashboard of the car radio. It sits persistently at the bottom
+// so you can always hit Pause or Play without scrolling back up the list.
+// =========================================================================================
 @Composable
 private fun NowPlayingBar(
     station: DigitalStation,
     isPlaying: Boolean,
+    adaptiveState: AdaptiveState,
+    modifier: Modifier = Modifier,
     onPlayPauseClick: () -> Unit
 ) {
     Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(68.dp),
-        color = TextPrimary,
+        modifier = modifier.height(68.dp),
+        color = TextPrimary, // Deep black background for contrast
         shape = RoundedCornerShape(22.dp),
         shadowElevation = 8.dp
     ) {
@@ -330,6 +397,7 @@ private fun NowPlayingBar(
                 .padding(horizontal = 14.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            // Tiny album art for the floating bar
             Box(
                 modifier = Modifier
                     .size(44.dp)
@@ -351,24 +419,26 @@ private fun NowPlayingBar(
 
             Spacer(Modifier.width(12.dp))
 
+            // The Text Info
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = station.name,
                     color = Color.White,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 14.sp,
+                    fontSize = (14 * adaptiveState.textScaleFactor).sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
                     text = "Live Stream Broadcast",
                     color = Color.LightGray,
-                    fontSize = 11.sp,
+                    fontSize = (11 * adaptiveState.textScaleFactor).sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
             }
 
+            // The main Play/Pause button
             Surface(
                 shape = CircleShape,
                 color = Color.White.copy(alpha = 0.2f),
