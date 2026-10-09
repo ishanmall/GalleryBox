@@ -1,14 +1,9 @@
-// These annotations tell the Android compiler to ignore certain warnings.
-// Think of it as telling an overly strict spell-checker to stop highlighting specific words because we know what we are doing.
 @file:Suppress("UnsafeOptInUsageError", "UnstableApiUsage", "OPT_IN_USAGE", "unused", "DEPRECATION", "BlockingMethodInNonBlockingContext", "MemberVisibilityCanBePrivate", "OVERRIDE_DEPRECATION")
 @file:SuppressLint("UnsafeOptInUsageError")
 @file:androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 
 package com.gallerybox.viewmodel
 
-// --- IMPORTS ---
-// This is the "toolbox" area. We are fetching all the tools we need to build this file.
-// Tools for databases, video players, memory management, files, and background tasks.
 import android.annotation.SuppressLint
 import android.app.ActivityManager
 import android.app.Application
@@ -66,9 +61,6 @@ import javax.inject.Inject
 import kotlin.math.exp
 import kotlin.math.log2
 
-// --- CONSTANTS ---
-// These are special name tags for "Smart Folders" (Virtual Albums).
-// They don't actually exist as real folders on the phone, but our app groups them together automatically.
 const val ID_CAMERA = "virtual_camera"
 const val ID_RECENT = "virtual_recent"
 const val ID_FAVORITES = "virtual_favorites"
@@ -79,19 +71,12 @@ const val ID_INSTAGRAM = "virtual_instagram"
 const val ID_VIDEOS = "virtual_videos"
 const val ID_HIDDEN = "virtual_hidden"
 
-/**
- * A math helper function.
- * If you load a massive 4K movie poster into memory, the app will crash from exhaustion.
- * This function calculates how much we need to "shrink" or "fold" the image so it fits comfortably on the screen.
- * For example, an `inSampleSize` of 2 means the image will be loaded at half its original size.
- */
 fun calculateInSampleSize(options: BitmapFactory.Options, reqWidth: Int, reqHeight: Int): Int {
     val (height: Int, width: Int) = options.outHeight to options.outWidth
     var inSampleSize = 1
     if (height > reqHeight || width > reqWidth) {
         val halfHeight: Int = height / 2
         val halfWidth: Int = width / 2
-        // Keep doubling the shrink factor until the image fits our target size
         while (halfHeight / inSampleSize >= reqHeight && halfWidth / inSampleSize >= reqWidth) {
             inSampleSize *= 2
         }
@@ -99,26 +84,17 @@ fun calculateInSampleSize(options: BitmapFactory.Options, reqWidth: Int, reqHeig
     return inSampleSize
 }
 
-// --- STATE MACHINES (SEALED CLASSES) ---
-// A "Sealed Class" is like a strict menu at a restaurant. You can ONLY order what is on the menu.
-
-/**
- * `GalleryEvent` represents quick, one-time actions we want the screen to do (Walkie-Talkie messages).
- */
 sealed class GalleryEvent {
-    data class ShowToast(val message: String) : GalleryEvent() // Show a little popup message at the bottom
-    data class RequestPermission(val intentSender: IntentSender) : GalleryEvent() // Ask the user for permission to delete a file
-    data object OperationSuccess : GalleryEvent() // Give a thumbs up that the task worked
-    data class LaunchIntent(val intent: Intent) : GalleryEvent() // Open another app or a system screen
+    data class ShowToast(val message: String) : GalleryEvent()
+    data class RequestPermission(val intentSender: IntentSender) : GalleryEvent()
+    data object OperationSuccess : GalleryEvent()
+    data class LaunchIntent(val intent: Intent) : GalleryEvent()
 }
 
-/**
- * `GalleryViewerState` represents the current status of the Full-Screen photo/video viewer.
- */
 sealed interface GalleryViewerState {
-    data object Closed : GalleryViewerState // The viewer is hidden
-    data object Loading : GalleryViewerState // Showing a spinning loading wheel
-    data class Open( // The viewer is open and showing a specific picture or video
+    data object Closed : GalleryViewerState
+    data object Loading : GalleryViewerState
+    data class Open(
         val mediaId: Long,
         val isVideo: Boolean,
         val uri: Uri,
@@ -131,21 +107,16 @@ sealed interface GalleryViewerState {
         val playbackSpeed: Float = 1f,
         val controlsVisible: Boolean = true
     ) : GalleryViewerState
-    data class Error(val message: String) : GalleryViewerState // Something went wrong (e.g., file corrupted)
+    data class Error(val message: String) : GalleryViewerState
 }
 
-/**
- * `FileOperationState` tracks the progress bar when we are moving, copying, or saving files.
- */
 sealed class FileOperationState {
-    data object Idle : FileOperationState() // Nothing is happening
-    data class Processing(val phase: String, val progressPercentage: Float, val itemsProcessed: Int, val totalItems: Int) : FileOperationState() // "Moving 5 of 10 files..."
-    data object WaitingForPermission : FileOperationState() // Paused, waiting for the user to click "Allow"
-    data class Editing(val progress: Float) : FileOperationState() // Saving an edited photo
+    data object Idle : FileOperationState()
+    data class Processing(val phase: String, val progressPercentage: Float, val itemsProcessed: Int, val totalItems: Int) : FileOperationState()
+    data object WaitingForPermission : FileOperationState()
+    data class Editing(val progress: Float) : FileOperationState()
 }
 
-// --- CATEGORIES (ENUMS) ---
-// Enums are just lists of specific options (like settings dials).
 enum class SaveMode { SAVE_AS_NEW, REPLACE_ORIGINAL }
 enum class LockType { NONE, PIN, PATTERN }
 enum class AlbumSort { DateDesc, DateAsc, NameAsc, NameDesc, SizeDesc, CountDesc, Custom }
@@ -153,55 +124,39 @@ enum class PhotoSort { NameAsc, NameDesc, SizeDesc, DateAsc, DateDesc }
 enum class MediaTypeFilter { ALL, PHOTOS, VIDEOS }
 enum class MergeMode { MOVE, COPY, MOVE_AND_DELETE }
 
-// --- DATA CONTAINERS ---
-// Simple boxes that hold related information together.
 data class ExportAdvanced(val bitrate: Int = 10000000, val fps: Int = 30, val codec: String = "video/avc")
 data class MediaIndexes(val all: List<MediaItem> = emptyList(), val photos: List<MediaItem> = emptyList(), val videos: List<MediaItem> = emptyList(), val gifs: List<MediaItem> = emptyList(), val recent: List<MediaItem> = emptyList())
 private data class FilterState(val f: MediaTypeFilter, val q: String, val s: List<Long>, val t: List<TrashEntity>, val h: Set<String>, val albumId: String? = null)
 data class VideoPlaybackState(val uri: String? = null, val position: Long = 0L, val speed: Float = 1f, val playWhenReady: Boolean = true)
 
-/**
- * --- WHAT IS A VIEW MODEL? ---
- * The ViewModel is the "Brain" or "Manager" of the Gallery.
- * If the user rotates their phone, the physical screen is destroyed and rebuilt by Android,
- * but this Manager survives. It keeps track of all the photos, the playing video, and background downloads.
- */
 @HiltViewModel
 class GalleryViewModel @Inject constructor(
     application: Application,
-    val dao: GalleryDao,                     // The tool to talk to our local Database (saves favorites, hidden items)
-    val editingEngine: EditingEngine,        // The tool that actually does photo editing math
-    val engine: GalleryEngine,               // The tool that fetches the raw photos from the phone
-    val mediaOpEngine: MediaOperationEngine  // The tool that moves, copies, and deletes actual files
+    val dao: GalleryDao,
+    val editingEngine: EditingEngine,
+    val engine: GalleryEngine,
+    val mediaOpEngine: MediaOperationEngine
 ) : AndroidViewModel(application), ComponentCallbacks2 {
 
     companion object {
-        private const val TAG = "GalleryViewModel" // For printing debug messages in the console
-        // A helper tool to check if two photos were taken on the exact same day.
+        private const val TAG = "GalleryViewModel"
         private val dateFormat = object : ThreadLocal<SimpleDateFormat>() { override fun initialValue() = SimpleDateFormat("yyyyMMdd", Locale.getDefault()) }
         fun sameDay(a: Long, b: Long): Boolean { val df = dateFormat.get() ?: return false; return df.format(Date(a * 1000)) == df.format(Date(b * 1000)) }
     }
 
-    // --- WALKIE TALKIES (CHANNELS) AND SCOREBOARDS (STATE FLOWS) ---
-    // A Channel is like a walkie-talkie. We send a message (like "Show a popup"), and the screen hears it once.
-    private val _events = Channel<GalleryEvent>(Channel.BUFFERED)
-    val events = _events.receiveAsFlow()
+    private val _events = MutableSharedFlow<GalleryEvent>(extraBufferCapacity = 64)
+    val events = _events.asSharedFlow()
 
-    // A Mutex is a "Talking Stick". Only one background worker can hold it at a time.
-    // This prevents two workers from trying to update the gallery at the exact same millisecond and crashing.
     private val busyMutex = Mutex()
-    private val _isBusy = MutableStateFlow(false) // Scoreboard showing if the app is currently loading
+    private val _isBusy = MutableStateFlow(false)
     val isBusy = _isBusy.asStateFlow()
 
-    private val fileOpMutex = Mutex() // A separate talking stick just for moving/deleting files
+    private val fileOpMutex = Mutex()
+    private val fileOpOwner = Any()
     private val _fileOperationState = MutableStateFlow<FileOperationState>(FileOperationState.Idle)
     val fileOperationState = _fileOperationState.asStateFlow()
-    private var fileOperationJob: Job? = null // The actual background worker doing the moving/deleting
+    private var fileOperationJob: Job? = null
 
-    // --- PENDING TASKS MEMORY ---
-    // Android often pauses our app to ask the user for permission (e.g., "Allow Gallery to delete this photo?").
-    // While paused, we need to remember what we were trying to do so we can finish it when the user says "Yes".
-    // These variables are like sticky notes on the Manager's desk.
     private var pendingRollbackUris: List<Uri> = emptyList()
     private var pendingDeleteUris: List<Uri> = emptyList()
     private var pendingMoveIds: Set<Long> = emptySet()
@@ -220,49 +175,42 @@ class GalleryViewModel @Inject constructor(
     @Volatile private var pendingInternalTrashEntities: List<TrashEntity> = emptyList()
     @Volatile private var pendingInternalTrashIds: Set<Long> = emptySet()
 
-    // Tracks the physical heat of the phone. If the phone gets too hot, we will lower the image quality to save battery.
     private val _thermalState = MutableStateFlow(PowerManager.THERMAL_STATUS_NONE)
 
-    // Trackers for when we last checked the phone for new photos
     private var lastMediaStoreGeneration = 0L
     @Volatile private var lastSyncTime = 0L
     @Volatile private var lastFullScanTime = 0L
 
-    // Dynamic settings that change depending on how powerful the user's phone is
     @Volatile private var currentCacheSizeMB = 128
     @Volatile private var currentPageSize = 64
 
     private val activePagingSources = CopyOnWriteArrayList<MediaPagingSource>()
 
-    // --- VIDEO PLAYER (EXO PLAYER) ---
-    // ExoPlayer is a powerful video engine made by Google. It's like the DVD Player inside our app.
     private var sharedPlayer: ExoPlayer? = null
-    // SharedPreferences is a small notebook where we save simple settings (like video speed) so they survive app restarts.
     private val prefs = application.getSharedPreferences("media3_prefs", Context.MODE_PRIVATE)
 
-    // Scoreboards specifically for the Video Player
-    private val _videoPlaylist = MutableStateFlow<List<String>>(emptyList()) // The list of upcoming videos
+    private val _videoPlaylist = MutableStateFlow<List<String>>(emptyList())
     val videoPlaylist = _videoPlaylist.asStateFlow()
-    private val _currentVideoIndex = MutableStateFlow(0) // Which video we are currently watching
+    private val _currentVideoIndex = MutableStateFlow(0)
     val currentVideoIndex = _currentVideoIndex.asStateFlow()
-    private val _currentVideoUri = MutableStateFlow<String?>(null) // The file path of the current video
+    private val _currentVideoUri = MutableStateFlow<String?>(null)
     val currentVideoUri = _currentVideoUri.asStateFlow()
-    private val _isPlaying = MutableStateFlow(false) // Is it playing or paused?
+    private val _isPlaying = MutableStateFlow(false)
     val isPlaying = _isPlaying.asStateFlow()
     private val _playbackState = MutableStateFlow(Player.STATE_IDLE)
     val playbackState = _playbackState.asStateFlow()
-    private val _currentPosition = MutableStateFlow(0L) // Current timestamp in milliseconds
+    private val _currentPosition = MutableStateFlow(0L)
     val currentPosition = _currentPosition.asStateFlow()
-    private val _duration = MutableStateFlow(0L) // Total length of the video
+    private val _duration = MutableStateFlow(0L)
     val duration = _duration.asStateFlow()
-    private val _bufferedPosition = MutableStateFlow(0L) // How much of the video has loaded ahead of time
+    private val _bufferedPosition = MutableStateFlow(0L)
     val bufferedPosition = _bufferedPosition.asStateFlow()
 
-    // Video Settings
     private val _playbackSpeed = MutableStateFlow(prefs.getFloat("speed", 1f))
     val playbackSpeed = _playbackSpeed.asStateFlow()
     private val _playbackPitch = MutableStateFlow(prefs.getFloat("pitch", 1f))
     val playbackPitch = _playbackPitch.asStateFlow()
+
     private val _autoPlayNext = MutableStateFlow(prefs.getBoolean("autoPlayNext", true))
     val autoPlayNext = _autoPlayNext.asStateFlow()
     private val _repeatMode = MutableStateFlow(PremiumRepeatMode.entries[prefs.getInt("autoRepeat", 0)])
@@ -273,11 +221,9 @@ class GalleryViewModel @Inject constructor(
     val audioDelayMs = _audioDelayMs.asStateFlow()
     private val _sleepTimerMs = MutableStateFlow<Long?>(null)
     val sleepTimerMs = _sleepTimerMs.asStateFlow()
-    private val _videoFormat = MutableStateFlow<Format?>(null) // Info about the video resolution (e.g. 1080p, 4K)
+    private val _videoFormat = MutableStateFlow<Format?>(null)
     val videoFormat = _videoFormat.asStateFlow()
 
-    // This "Listener" acts as an observer watching the DVD Player. Whenever the DVD Player pauses, ends,
-    // or switches videos, this observer updates our scoreboards so the screen knows what to show.
     private val playerListener = object : Player.Listener {
         override fun onIsPlayingChanged(playing: Boolean) {
             _isPlaying.value = playing
@@ -286,11 +232,9 @@ class GalleryViewModel @Inject constructor(
         override fun onPlaybackStateChanged(state: Int) {
             _playbackState.value = state
             _isPlaying.value = sharedPlayer?.isPlaying == true
-            // If the video is fully loaded and ready, grab its total duration
             if (state == Player.STATE_READY) {
                 _duration.value = sharedPlayer?.duration?.coerceAtLeast(0L) ?: 0L
             }
-            // If the video ended, figure out if we should play the next one, loop it, or just stop.
             if (state == Player.STATE_ENDED) {
                 if (_repeatMode.value == PremiumRepeatMode.ALL) {
                     playNextVideo()
@@ -300,7 +244,6 @@ class GalleryViewModel @Inject constructor(
             }
         }
 
-        // When a new video starts loading
         override fun onMediaItemTransition(mediaItem: Media3Item?, reason: Int) {
             val newUri = mediaItem?.localConfiguration?.uri?.toString()
             if (newUri != null) {
@@ -309,7 +252,6 @@ class GalleryViewModel @Inject constructor(
             }
         }
 
-        // When the player figures out the video quality/resolution, save it
         override fun onTracksChanged(tracks: Tracks) {
             val selectedVideoFormat = tracks.groups
                 .firstOrNull { it.type == C.TRACK_TYPE_VIDEO && it.isSelected }
@@ -324,13 +266,8 @@ class GalleryViewModel @Inject constructor(
         }
     }
 
-    private var positionUpdateJob: Job? = null // A background clock ticking every second to update the progress bar
+    private var positionUpdateJob: Job? = null
 
-    /**
-     * SD Cards are tricky in Android. We aren't allowed to just write files to them.
-     * We have to ask the user to give us a "Tree Uri" (a master key) to the SD card.
-     * This function looks to see if we already have that master key saved.
-     */
     @RequiresApi(Build.VERSION_CODES.KITKAT)
     private fun findPersistedSdCardTreeUri(): Uri? {
         val resolver = getApplication<Application>().contentResolver
@@ -341,7 +278,6 @@ class GalleryViewModel @Inject constructor(
         }?.uri
     }
 
-    // Tries to physically create a new folder on the SD Card using the master key
     private fun createSdCardFolder(treeUri: Uri, trimmed: String): Boolean {
         return try {
             val root = DocumentFile.fromTreeUri(getApplication(), treeUri) ?: return false
@@ -355,7 +291,6 @@ class GalleryViewModel @Inject constructor(
         }
     }
 
-    // Tries to physically rename a folder on the SD Card using the master key
     private fun renameSdCardFolder(oldName: String, newName: String): Boolean {
         val treeUri = findPersistedSdCardTreeUri() ?: return false
         return try {
@@ -369,57 +304,59 @@ class GalleryViewModel @Inject constructor(
         }
     }
 
-    /**
-     * Called when the user finally grants us the master key (SAF Tree Uri) to the SD Card.
-     * We check our "sticky notes" to see what we were trying to do before we got paused, and we finish the job.
-     */
     fun onSafTreeGranted(uri: Uri?) {
         if (uri == null) {
-            // They denied the permission. Clear the sticky notes and complain.
             val pendingCreate = pendingSdAlbumName
             val pendingRename = pendingSdRenameAlbumId
             pendingSdAlbumName = null
             pendingSdRenameAlbumId = null
             pendingSdRenameOldName = null
             pendingSdRenameNewName = null
-            if (pendingCreate != null || pendingRename != null) {
-                _events.trySend(GalleryEvent.ShowToast("SD card access is needed to create or rename albums there"))
+            val onComplete = pendingOperationOnComplete
+            val rollback = pendingRollbackUris
+            clearPendingOperationStates()
+            _fileOperationState.value = FileOperationState.Idle
+            _isBusy.value = false
+            endFileOperation()
+            if (rollback.isNotEmpty()) {
+                viewModelScope.launch(Dispatchers.IO) { mediaOpEngine.rollback(rollback) }
             }
+            onComplete?.invoke(MediaOpResult.Cancelled)
+            _events.tryEmit(GalleryEvent.ShowToast(
+                if (pendingCreate != null || pendingRename != null)
+                    "SD card access is needed to create or rename albums there"
+                else "SD card access denied. Operation cancelled."
+            ))
             return
         }
 
-        // They granted permission! Let's do the work in the background warehouse (Dispatchers.IO)
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                mediaOpEngine.saveSafTreeUri(uri) // Save the master key for next time
+                mediaOpEngine.saveSafTreeUri(uri)
             } catch (e: Exception) {
                 Log.e("ALBUM_DEBUG", "Failed to persist SAF permission", e)
             }
 
-            // Grab the tasks off the sticky notes
             val createName = pendingSdAlbumName
             val renameId = pendingSdRenameAlbumId
             val renameOldName = pendingSdRenameOldName
             val renameNewName = pendingSdRenameNewName
 
-            // Clean off the desk
             pendingSdAlbumName = null
             pendingSdRenameAlbumId = null
             pendingSdRenameOldName = null
             pendingSdRenameNewName = null
 
-            // If we were trying to create an album...
             if (createName != null) {
                 val created = createSdCardFolder(uri, createName)
                 val newId = "manual_${System.currentTimeMillis()}"
                 dao.insertManualAlbum(ManualAlbumEntity(id = newId, name = createName, hasBeenUsed = false))
                 mediaOpEngine.markAlbumAsSdCard(newId)
-                _events.send(
+                _events.emit(
                     if (created) GalleryEvent.ShowToast("Album '$createName' created on SD card!")
                     else GalleryEvent.ShowToast("Couldn't create the folder on SD card")
                 )
             }
-            // Or if we were trying to rename an album...
             else if (renameId != null && renameOldName != null && renameNewName != null) {
                 val renamed = renameSdCardFolder(renameOldName, renameNewName)
 
@@ -428,7 +365,7 @@ class GalleryViewModel @Inject constructor(
                 dao.insertManualAlbum(ManualAlbumEntity(id = newManualId, name = renameNewName, hasBeenUsed = false))
                 mediaOpEngine.markAlbumAsSdCard(newManualId)
 
-                _events.send(
+                _events.emit(
                     if (renamed) GalleryEvent.ShowToast("Album renamed")
                     else GalleryEvent.ShowToast("Renamed in app, but folder update failed on SD card")
                 )
@@ -436,31 +373,21 @@ class GalleryViewModel @Inject constructor(
         }
     }
 
-    // Try to grab the "Talking Stick" for moving files. Returns false if someone else is already doing a file operation.
-    private fun tryBeginFileOperation(): Boolean {
-        return fileOpMutex.tryLock()
-    }
+    private fun tryBeginFileOperation(): Boolean = fileOpMutex.tryLock(fileOpOwner)
 
-    // Put the "Talking Stick" down.
     private fun endFileOperation() {
-        if (fileOpMutex.isLocked) {
-            fileOpMutex.unlock()
-        }
+        runCatching { if (fileOpMutex.holdsLock(fileOpOwner)) fileOpMutex.unlock(fileOpOwner) }
     }
 
-    /**
-     * Wakes up and sets up the DVD Player (ExoPlayer) if it isn't set up yet.
-     */
     fun getPlayer(): ExoPlayer {
         if (sharedPlayer == null) {
             sharedPlayer = ExoPlayer.Builder(getApplication())
-                .setSeekBackIncrementMs(5000) // Fast backward 5 seconds
-                .setSeekForwardIncrementMs(5000) // Fast forward 5 seconds
+                .setSeekBackIncrementMs(5000)
+                .setSeekForwardIncrementMs(5000)
                 .build()
                 .apply {
                     repeatMode = Player.REPEAT_MODE_OFF
                     playWhenReady = true
-                    // Tell the phone we are playing a movie so it handles audio routing correctly (like pausing if headphones unplug)
                     setAudioAttributes(
                         AudioAttributes.Builder()
                             .setUsage(C.USAGE_MEDIA)
@@ -468,17 +395,16 @@ class GalleryViewModel @Inject constructor(
                             .build(),
                         true
                     )
-                    setHandleAudioBecomingNoisy(true) // Pause if headphones disconnect
+                    setHandleAudioBecomingNoisy(true)
                     volume = 1f
                     addListener(playerListener)
                     playbackParameters = PlaybackParameters(_playbackSpeed.value, _playbackPitch.value)
                 }
-            startPositionUpdates() // Start the progress bar clock
+            startPositionUpdates()
         }
         return sharedPlayer!!
     }
 
-    // Starts the clock that updates the video progress bar on the screen
     private fun startPositionUpdates() {
         positionUpdateJob?.cancel()
         positionUpdateJob = viewModelScope.launch {
@@ -487,22 +413,19 @@ class GalleryViewModel @Inject constructor(
                     _currentPosition.value = p.currentPosition
                     _bufferedPosition.value = p.bufferedPosition
 
-                    // Check if the user set a sleep timer (like "Stop playing in 15 minutes so I can sleep")
                     _sleepTimerMs.value?.let { sleepTime ->
                         if (System.currentTimeMillis() >= sleepTime) {
                             p.pause()
                             _sleepTimerMs.value = null
-                            _events.send(GalleryEvent.ShowToast("Sleep timer ended"))
+                            _events.emit(GalleryEvent.ShowToast("Sleep timer ended"))
                         }
                     }
                 }
-                // Tick faster if playing, slower if paused to save battery
                 delay(if (_isPlaying.value) 200L else 500L)
             }
         }
     }
 
-    // Pauses and resets the player
     fun resetPlayer(player: ExoPlayer) {
         if (sharedPlayer === player) {
             sharedPlayer?.pause()
@@ -511,10 +434,8 @@ class GalleryViewModel @Inject constructor(
         }
     }
 
-    // Moves the video exactly one frame forward or backward (for precise editing/viewing)
     fun stepFrame(player: Player, forward: Boolean) {
         try {
-            // Try to figure out the video's FPS (Frames Per Second)
             val fps = player.currentTracks.groups.firstOrNull { it.type == C.TRACK_TYPE_VIDEO }
                 ?.mediaTrackGroup?.getFormat(0)?.frameRate?.takeIf { it > 0f } ?: 30f
 
@@ -529,10 +450,8 @@ class GalleryViewModel @Inject constructor(
         }
     }
 
-    // A map tracking which photos/videos you open the most, so we can suggest them or sort them higher.
     val usageStatsMap = dao.getAllUsageStats().map { list -> list.associateBy { it.mediaId } }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
 
-    // --- FILTERS & SORTS (The Dials on the Dashboard) ---
     private val _activeFilter = MutableStateFlow(MediaTypeFilter.ALL); val activeFilter = _activeFilter.asStateFlow()
     private val _activeSort = MutableStateFlow(PhotoSort.DateDesc); val activeSort = _activeSort.asStateFlow()
     private val _albumSort = MutableStateFlow(AlbumSort.Custom); val albumSort = _albumSort.asStateFlow()
@@ -540,29 +459,23 @@ class GalleryViewModel @Inject constructor(
     private val _viewerState = MutableStateFlow<GalleryViewerState>(GalleryViewerState.Closed); val viewerState = _viewerState.asStateFlow()
     private val _hiddenAlbums = MutableStateFlow<Set<String>>(emptySet()); val hiddenAlbums = _hiddenAlbums.asStateFlow()
 
-    // --- THE GRAND LIBRARY ---
-    // This is where we hold the actual lists of photos and videos.
-    private val _rawMedia = MutableStateFlow<List<MediaItem>>(emptyList()); val rawMedia = _rawMedia.asStateFlow() // Everything we found on the phone
-    private val _mediaIndexes = MutableStateFlow(MediaIndexes()) // Filtered sub-lists (just photos, just videos, etc.)
-    private val _mediaMap = MutableStateFlow<HashMap<Long, MediaItem>>(HashMap()); val mediaMap = _mediaMap.asStateFlow() // A fast lookup dictionary by ID
+    private val _rawMedia = MutableStateFlow<List<MediaItem>>(emptyList()); val rawMedia = _rawMedia.asStateFlow()
+    private val _mediaIndexes = MutableStateFlow(MediaIndexes())
+    private val _mediaMap = MutableStateFlow<HashMap<Long, MediaItem>>(HashMap()); val mediaMap = _mediaMap.asStateFlow()
 
-    // "Memory Boxes" (Caches) to store search results so we don't have to recalculate them if the user types the same search twice.
     private val searchCache = LruCache<String, List<MediaItem>>(50)
     private val sortedCache = LruCache<String, List<MediaItem>>(20)
 
-    // Holds 4 preview images for every album cover.
     private val albumPreviewCacheMap = ConcurrentHashMap<String, MutableList<Uri>>()
     private val _albumPreviewCache = MutableStateFlow<Map<String, List<Uri>>>(emptyMap()); val albumPreviewMap = _albumPreviewCache.asStateFlow()
 
     private val _allAlbumsState = MutableStateFlow<List<Album>>(emptyList()); val allAlbumsState = _allAlbumsState.asStateFlow()
-    private val _albumsState = MutableStateFlow<List<Album>>(emptyList()); val albumsState = _albumsState.asStateFlow() // Albums excluding hidden ones
+    private val _albumsState = MutableStateFlow<List<Album>>(emptyList()); val albumsState = _albumsState.asStateFlow()
 
-    // Connects directly to our local database to get the lists of Trashed, Favorite, and Secured (Vault) items.
     val trashBin = dao.getTrash().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     val favoriteIds = dao.getFavoriteIds().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     private val secureIds = dao.getSecureMediaIds().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    // A special list just for the Secure Vault
     val hiddenMedia = combine(_rawMedia, secureIds) { raw, secure ->
         val secureSet = secure.toSet()
         raw.filter { secureSet.contains(it.id) }
@@ -571,16 +484,13 @@ class GalleryViewModel @Inject constructor(
     private val albumMeta = dao.getAlbumMeta().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     private val manualAlbums = dao.getManualAlbums().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    // A list of items that look like exact copies of each other
     private val _duplicates = MutableStateFlow<List<List<MediaItem>>>(emptyList()); val duplicates = _duplicates.asStateFlow()
 
     val media: StateFlow<List<MediaItem>> = _mediaIndexes.map { it.all }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    // --- VIDEO PLAYER ACTIONS ---
-
     fun updatePlaybackState(uri: String?, position: Long, speed: Float, playWhenReady: Boolean) {
         if (uri != null) {
-            prefs.edit().putLong(uri, position).apply() // Save the timestamp so you can resume watching later
+            prefs.edit().putLong(uri, position).apply()
         }
     }
 
@@ -590,13 +500,11 @@ class GalleryViewModel @Inject constructor(
         }
     }
 
-    // Opens the video player for a specific video
     fun openVideo(uri: String) {
         val player = getPlayer()
 
         var playlist = _videoPlaylist.value
 
-        // If no playlist exists, create one containing every single video in the phone
         if (playlist.isEmpty()) {
             playlist = _mediaIndexes.value.videos
                 .map { it.uri.toString() }
@@ -623,10 +531,10 @@ class GalleryViewModel @Inject constructor(
             Media3Item.fromUri(Uri.parse(it))
         }
 
-        val savedPosition = prefs.getLong(uri, 0L) // See if they left off in the middle of this video previously
+        val savedPosition = prefs.getLong(uri, 0L)
 
         player.stop()
-        player.clearMediaItems() // Eject the old DVD
+        player.clearMediaItems()
 
         player.setAudioAttributes(
             AudioAttributes.Builder()
@@ -636,7 +544,6 @@ class GalleryViewModel @Inject constructor(
             true
         )
 
-        // Insert the new list of DVDs, jump to the correct one, and skip to the saved timestamp
         player.setMediaItems(
             mediaItems,
             index,
@@ -652,7 +559,7 @@ class GalleryViewModel @Inject constructor(
     fun togglePlayPause() {
         val p = sharedPlayer ?: return
         if (_playbackState.value == Player.STATE_ENDED) {
-            p.seekTo(0) // If it ended, restart from the beginning
+            p.seekTo(0)
             p.play()
         } else if (p.isPlaying) {
             p.pause()
@@ -683,14 +590,13 @@ class GalleryViewModel @Inject constructor(
         return _currentVideoIndex.value > 0
     }
 
-    // Skip to the next video, making sure to skip over any hidden ones.
     fun playNextVideo() {
         var next = _currentVideoIndex.value + 1
         while (next < _videoPlaylist.value.size && isHiddenUri(_videoPlaylist.value[next])) next++
 
         if (next >= _videoPlaylist.value.size) {
             if (_repeatMode.value == PremiumRepeatMode.ALL && _videoPlaylist.value.isNotEmpty()) {
-                next = 0 // Loop back to the start
+                next = 0
                 while (next < _videoPlaylist.value.size && isHiddenUri(_videoPlaylist.value[next])) next++
                 if (next >= _videoPlaylist.value.size) return
             } else {
@@ -700,9 +606,7 @@ class GalleryViewModel @Inject constructor(
         openVideo(_videoPlaylist.value[next])
     }
 
-    // Skip to previous video
     fun playPreviousVideo() {
-        // If they are more than 3 seconds into the current video, just restart the current video instead of skipping back
         if ((sharedPlayer?.currentPosition ?: 0) > 3000L) {
             sharedPlayer?.seekTo(0)
             return
@@ -711,7 +615,7 @@ class GalleryViewModel @Inject constructor(
         while (prev >= 0 && isHiddenUri(_videoPlaylist.value[prev])) prev--
         if (prev < 0) {
             if (_repeatMode.value == PremiumRepeatMode.ALL && _videoPlaylist.value.isNotEmpty()) {
-                prev = _videoPlaylist.value.lastIndex // Loop around to the very end
+                prev = _videoPlaylist.value.lastIndex
                 while (prev >= 0 && isHiddenUri(_videoPlaylist.value[prev])) prev--
                 if (prev < 0) return
             } else {
@@ -721,13 +625,11 @@ class GalleryViewModel @Inject constructor(
         openVideo(_videoPlaylist.value[prev])
     }
 
-    // Checks if a video belongs to an album that the user marked as "Hidden"
     private fun isHiddenUri(uriStr: String): Boolean {
         val bucketId = _rawMedia.value.firstOrNull { it.uri.toString() == uriStr }?.bucketId ?: return false
         return _hiddenAlbums.value.contains(bucketId)
     }
 
-    // If the user hides an album while a video from it is playing, we need to aggressively kick it out of the playlist.
     private fun purgeHiddenFromPlayback() {
         val hidden = _hiddenAlbums.value
         if (hidden.isEmpty()) return
@@ -752,11 +654,11 @@ class GalleryViewModel @Inject constructor(
             _currentVideoIndex.value = 0
 
             if (_viewerState.value is GalleryViewerState.Open) {
-                _viewerState.value = GalleryViewerState.Closed // Close the video player entirely
+                _viewerState.value = GalleryViewerState.Closed
             }
 
             viewModelScope.launch {
-                _events.send(GalleryEvent.ShowToast("Video hidden — album is no longer visible"))
+                _events.emit(GalleryEvent.ShowToast("Video hidden — album is no longer visible"))
             }
         }
     }
@@ -777,7 +679,7 @@ class GalleryViewModel @Inject constructor(
         sharedPlayer?.playbackParameters = PlaybackParameters(savedSpeed, _playbackPitch.value)
     }
 
-    fun setPitch(pitch: Float) {
+    fun setPlaybackPitch(pitch: Float) {
         _playbackPitch.value = pitch
         sharedPlayer?.playbackParameters = PlaybackParameters(_playbackSpeed.value, pitch)
         prefs.edit().putFloat("pitch", pitch).apply()
@@ -787,7 +689,7 @@ class GalleryViewModel @Inject constructor(
         _autoPlayNext.value = enabled
         prefs.edit().putBoolean("autoPlayNext", enabled).apply()
         if (enabled) {
-            cycleRepeatMode(PremiumRepeatMode.OFF) // You can't loop ONE video if you also want to auto-play the NEXT video
+            cycleRepeatMode(PremiumRepeatMode.OFF)
         }
     }
 
@@ -838,27 +740,17 @@ class GalleryViewModel @Inject constructor(
         sharedPlayer?.seekTo(position)
     }
 
-    // --- DEVICE HEALTH CHECKERS ---
-    // If the phone is melting, we scale down the math. 1.0 means fine, 0.1 means burning hot.
     private fun getThermalFactor(): Double { return when (_thermalState.value) { PowerManager.THERMAL_STATUS_NONE -> 1.0; PowerManager.THERMAL_STATUS_LIGHT -> 0.9; PowerManager.THERMAL_STATUS_MODERATE -> 0.75; PowerManager.THERMAL_STATUS_SEVERE -> 0.5; PowerManager.THERMAL_STATUS_CRITICAL -> 0.25; PowerManager.THERMAL_STATUS_EMERGENCY, PowerManager.THERMAL_STATUS_SHUTDOWN -> 0.1; else -> 1.0 } }
 
-    // Checks how much RAM (Memory) the phone has available right now.
     private fun getMemoryFactor(): Double { val actManager = getApplication<Application>().getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager; val memInfo = ActivityManager.MemoryInfo(); actManager.getMemoryInfo(memInfo); return memInfo.availMem.toDouble() / memInfo.totalMem.toDouble() }
 
-    // Adjusts the size of our memory boxes based on the phone's heat and available RAM.
     private fun recalculateDynamicScaling() { val actManager = getApplication<Application>().getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager; val memInfo = ActivityManager.MemoryInfo(); actManager.getMemoryInfo(memInfo); val ramMB = (memInfo.totalMem / (1024 * 1024)).toDouble(); val thermal = getThermalFactor(); val memory = memInfo.availMem.toDouble() / memInfo.totalMem.toDouble(); currentCacheSizeMB = minOf((ramMB * thermal * memory).toInt(), 512); currentPageSize = 64; if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) { searchCache.resize((currentCacheSizeMB * 2).coerceIn(50, 500)); sortedCache.resize(currentCacheSizeMB.coerceIn(20, 250)) } }
 
-    /**
-     * THE ASSEMBLY LINE (processedMedia).
-     * This takes the massive raw list of photos, applies the user's search text, applies the filter (Photos/Videos),
-     * sorts it by date or name, and spits out the final list to show on screen.
-     */
     val processedMedia: StateFlow<List<MediaItem>> = combine(_mediaIndexes, _searchQuery.debounce(300), _activeFilter, _activeSort) { indexes, query, filter, sort ->
         val q = query.trim().lowercase()
-        // Create a unique name for this exact combination so we can look it up in the memory box later.
         val cacheKey = "${lastMediaStoreGeneration}_${filter.name}_${sort.name}_$q"
         val cached = sortedCache.get(cacheKey)
-        if (cached != null) return@combine cached // If we already did this exact math, just use the saved answer!
+        if (cached != null) return@combine cached
 
         val usageStats = usageStatsMap.value
 
@@ -868,21 +760,17 @@ class GalleryViewModel @Inject constructor(
             MediaTypeFilter.VIDEOS -> indexes.videos
         }
 
-        // If the user typed in a search...
         if (q.isNotBlank()) {
-            // We give every photo a "Relevance Score"
             result = result.mapNotNull { item ->
                 var score = 0.0
-                if (item.name.lowercase().contains(q)) score += 5.0 // Name matches? Great score.
-                if (item.bucketName.lowercase().contains(q)) score += 3.0 // Folder matches? Good score.
-                if (item.isFavorite) score += 2.0 // Favorite? Bump it up.
+                if (item.name.lowercase().contains(q)) score += 5.0
+                if (item.bucketName.lowercase().contains(q)) score += 3.0
+                if (item.isFavorite) score += 2.0
 
-                // Newer photos get a slightly higher score than very old ones
                 val ageDays = maxOf(0L, (System.currentTimeMillis() / 1000L - item.dateAdded)) / 86400.0
                 val recencyScore = exp(-ageDays / 30.0)
                 score += (2.0 * recencyScore)
 
-                // Photos the user opens a lot get a higher score
                 val usageData = usageStats[item.id]
                 if (usageData != null) {
                     val daysSinceOpen = maxOf(0L, System.currentTimeMillis() - usageData.lastOpened) / 86400000.0
@@ -890,10 +778,9 @@ class GalleryViewModel @Inject constructor(
                     score += log2(decayedUsage + 1.0)
                 }
                 if (score > 0) Pair(item, score) else null
-            }.sortedByDescending { it.second }.map { it.first } // Sort by highest score
+            }.sortedByDescending { it.second }.map { it.first }
         }
 
-        // Apply final sorting (Alphabetical, Newest First, etc.)
         result = when (sort) {
             PhotoSort.NameAsc -> result.sortedBy { it.name }
             PhotoSort.NameDesc -> result.sortedByDescending { it.name }
@@ -902,15 +789,10 @@ class GalleryViewModel @Inject constructor(
             PhotoSort.DateDesc -> result.sortedByDescending { it.dateAdded }
         }
 
-        sortedCache.put(cacheKey, result) // Save the math in the memory box for next time
+        sortedCache.put(cacheKey, result)
         result
     }.distinctUntilChanged().flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    /**
-     * PAGED MEDIA (The Waiter).
-     * Instead of giving the screen 10,000 photos at once (which would freeze the phone),
-     * this prepares a "Pager" that gives the screen exactly 64 photos at a time as the user scrolls down.
-     */
     val pagedMedia: Flow<PagingData<GalleryGridItem>> = combine(_activeFilter, _searchQuery, secureIds, trashBin, _hiddenAlbums) { f, q, sec, trash, hidden ->
         FilterState(f, q, sec, trash, hidden)
     }.distinctUntilChanged().flatMapLatest { state ->
@@ -919,24 +801,34 @@ class GalleryViewModel @Inject constructor(
         activePagingSources.removeAll { it.invalid }
 
         Pager(PagingConfig(pageSize = pageSize, prefetchDistance = prefetch, enablePlaceholders = false, initialLoadSize = pageSize, maxSize = pageSize * 4)) {
-            MediaPagingSource(getApplication<Application>().contentResolver, state.f, state.q, null, state.h).also { activePagingSources.add(it) }
+            MediaPagingSource(getApplication<Application>().contentResolver, state.f, state.q, null, state.h, sort = _activeSort.value).also { activePagingSources.add(it) }
         }.flow.map { pd ->
             val secSet = state.s.toHashSet()
             val trashSet = state.t.map { it.contentUri }.toHashSet()
 
-            // Filter out Trash and Vault items, then inject "Date Headers" (like 'Today', 'Yesterday') between photos
             pd.filter { item -> item.uri != Uri.EMPTY && !secSet.contains(item.id) && !trashSet.contains(item.uri.toString()) }
-                .map { GalleryGridItem.Media(it) }
-                .insertSeparators { b, a ->
-                    if (a == null) null
-                    else if (b == null || !sameDay(b.item.dateAdded, a.item.dateAdded)) GalleryGridItem.Header("header_${a.item.dateAdded}", a.item.dateHeader, 0)
-                    else null
+                .map { GalleryGridItem.Media(it) as GalleryGridItem }
+                .run {
+                    if (_activeSort.value == PhotoSort.DateDesc || _activeSort.value == PhotoSort.DateAsc) {
+                        insertSeparators { b: GalleryGridItem?, a: GalleryGridItem? ->
+                            val bMedia = b as? GalleryGridItem.Media
+                            val aMedia = a as? GalleryGridItem.Media
+                            if (aMedia == null) null
+                            else if (bMedia == null || !sameDay(bMedia.item.dateAdded, aMedia.item.dateAdded)) {
+                                val headerTitle = SimpleDateFormat("MMMM dd, yyyy", Locale.getDefault()).format(Date(aMedia.item.dateAdded * 1000))
+                                GalleryGridItem.Header("header_${aMedia.item.dateAdded}", headerTitle, 0)
+                            }
+                            else null
+                        }
+                    } else this
                 }
         }
     }.cachedIn(viewModelScope)
 
-    // Same as above, but just for a specific Album folder
-    fun getPagedMediaForAlbumStream(albumId: String, filter: MediaTypeFilter, query: String): Flow<PagingData<GalleryGridItem>> {
+    fun getPagedMediaForAlbumStream(
+        albumId: String, filter: MediaTypeFilter, query: String,
+        sort: PhotoSort = PhotoSort.DateDesc
+    ): Flow<PagingData<GalleryGridItem>> {
         return combine(secureIds, trashBin, _hiddenAlbums) { sec, trash, hidden ->
             FilterState(filter, query, sec, trash, hidden, albumId)
         }.distinctUntilChanged().flatMapLatest { state ->
@@ -956,43 +848,45 @@ class GalleryViewModel @Inject constructor(
                     query = state.q,
                     albumId = effectiveAlbumId,
                     hiddenAlbums = state.h,
-                    favoriteIds = favoriteIds.value
+                    favoriteIds = favoriteIds.value,
+                    sort = sort
                 ).also { activePagingSources.add(it) }
             }.flow.map { pd ->
                 val secSet = state.s.toHashSet()
                 val trashSet = state.t.map { it.contentUri }.toHashSet()
                 pd.filter { item -> item.uri != Uri.EMPTY && !secSet.contains(item.id) && !trashSet.contains(item.uri.toString()) }
-                    .map { GalleryGridItem.Media(it) }
-                    .insertSeparators { b, a ->
-                        if (a == null) null
-                        else if (b == null || !sameDay(b.item.dateAdded, a.item.dateAdded)) GalleryGridItem.Header("header_${a.item.dateAdded}", a.item.dateHeader, 0)
-                        else null
+                    .map { GalleryGridItem.Media(it) as GalleryGridItem }
+                    .run {
+                        if (sort == PhotoSort.DateDesc || sort == PhotoSort.DateAsc) {
+                            insertSeparators { b: GalleryGridItem?, a: GalleryGridItem? ->
+                                val bMedia = b as? GalleryGridItem.Media
+                                val aMedia = a as? GalleryGridItem.Media
+                                if (aMedia == null) null
+                                else if (bMedia == null || !sameDay(bMedia.item.dateAdded, aMedia.item.dateAdded)) {
+                                    val headerTitle = SimpleDateFormat("MMMM dd, yyyy", Locale.getDefault()).format(Date(aMedia.item.dateAdded * 1000))
+                                    GalleryGridItem.Header("header_${aMedia.item.dateAdded}", headerTitle, 0)
+                                }
+                                else null
+                            }
+                        } else this
                     }
             }
         }.cachedIn(viewModelScope)
     }
 
-    // A sensor that listens to the Android operating system.
-    // If the user takes a picture with their Camera app, Android yells "Hey, files changed!", and we reload our library.
     private var reloadJob: Job? = null
     private val mediaObserver = object : ContentObserver(Handler(Looper.getMainLooper())) {
         @Deprecated("Deprecated in Java")
         override fun onChange(selfChange: Boolean) {
             reloadJob?.cancel()
-            // Wait half a second before reloading, in case the camera is saving 10 burst photos at once.
             reloadJob = viewModelScope.launch { delay(500); safeLoadLibrary() }
         }
     }
 
-    /**
-     * THE MORNING ROUTINE (`init`)
-     * This is the very first thing that happens when the Manager (ViewModel) wakes up.
-     */
     init {
-        application.registerComponentCallbacks(this) // Sign up to receive "Low Memory" warnings from Android
+        application.registerComponentCallbacks(this)
         recalculateDynamicScaling()
 
-        // Setup the temperature thermometer
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val powerManager = application.getSystemService(Context.POWER_SERVICE) as PowerManager
             powerManager.addThermalStatusListener { status -> _thermalState.value = status; recalculateDynamicScaling() }
@@ -1000,7 +894,6 @@ class GalleryViewModel @Inject constructor(
 
         _hiddenAlbums.value = engine.getHiddenAlbums()
 
-        // Attach our ear to the wall to listen for other apps taking pictures/videos
         val resolver = application.contentResolver
         resolver.registerContentObserver(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, true, mediaObserver)
         resolver.registerContentObserver(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, true, mediaObserver)
@@ -1008,15 +901,13 @@ class GalleryViewModel @Inject constructor(
             resolver.registerContentObserver(MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL), true, mediaObserver)
         }
 
-        clearTempVaultCache() // Sweep the floors
-        viewModelScope.launch { safeLoadLibrary() } // Fetch all the photos!
+        clearTempVaultCache()
+        viewModelScope.launch { safeLoadLibrary() }
 
-        // Set up the garbage truck to come by once a day to empty the trash bin
         viewModelScope.launch(Dispatchers.IO) {
             try { schedulePeriodicTrashCleanup() } catch (e: Exception) { Log.e(TAG, "Worker schedule fail", e) }
         }
 
-        // Watch the database. If a user favorites an item, immediately rebuild the lists to show the heart icon.
         viewModelScope.launch(Dispatchers.Default) {
             combine(trashBin, favoriteIds, secureIds, albumMeta, _hiddenAlbums, _albumSort, manualAlbums) { _ -> }
                 .debounce(250)
@@ -1028,7 +919,6 @@ class GalleryViewModel @Inject constructor(
                 }
         }
 
-        // Keeps the Video Player's playlist perfectly synced with whatever photos/videos the user is looking at.
         viewModelScope.launch(Dispatchers.Default) {
             processedMedia.collect { list ->
                 val newVideoPlaylist = list.filter { it.isVideo }.map { it.uri.toString() }
@@ -1050,7 +940,6 @@ class GalleryViewModel @Inject constructor(
         }
     }
 
-    // Android is yelling that the phone is running out of memory. We need to dump our memory boxes immediately.
     override fun onTrimMemory(level: Int) {
         recalculateDynamicScaling()
         if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) {
@@ -1060,7 +949,6 @@ class GalleryViewModel @Inject constructor(
         }
     }
 
-    // The user rotated the phone or changed dark/light mode. Recalculate scaling.
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
         recalculateDynamicScaling()
     }
@@ -1073,7 +961,6 @@ class GalleryViewModel @Inject constructor(
         viewModelScope.launch { safeLoadLibrary(forceRefresh = true) }
     }
 
-    // When we move or delete a file, we wait a moment and then refresh three times just to be absolutely sure Android noticed the change.
     fun refreshAfterFileOperation() {
         viewModelScope.launch {
             delay(500); safeLoadLibrary(forceRefresh = true)
@@ -1084,16 +971,11 @@ class GalleryViewModel @Inject constructor(
 
     fun refreshData() = forceSync()
 
-    /**
-     * INVENTORY TIME.
-     * This function reaches into the deep guts of Android (the MediaStore) and asks for every single photo and video on the phone.
-     */
     @Volatile private var isReloading = false
     private suspend fun safeLoadLibrary(forceRefresh: Boolean = false) {
-        if (isReloading) return // Already doing it, stop bothering me.
+        if (isReloading) return
         val now = System.currentTimeMillis()
 
-        // If we just checked 5 seconds ago, don't check again (unless forced).
         if (!forceRefresh && _rawMedia.value.isNotEmpty() && (now - lastSyncTime < 5000)) {
             _isBusy.value = false
             return
@@ -1102,7 +984,6 @@ class GalleryViewModel @Inject constructor(
         if (now - lastSyncTime < 150 && !forceRefresh) return
 
         val memoryPressure = 1.0 - getMemoryFactor()
-        // If the phone is melting or entirely out of RAM, refuse to do a giant inventory scan.
         if (!forceRefresh && (_thermalState.value >= PowerManager.THERMAL_STATUS_SEVERE || memoryPressure > 0.85)) return
 
         lastSyncTime = now
@@ -1112,9 +993,8 @@ class GalleryViewModel @Inject constructor(
             _isBusy.value = true
             try {
                 val isAndroid11Plus = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
-                val needsFullScan = forceRefresh || (now - lastFullScanTime > 30 * 60 * 1000L) // Do a full scan every 30 minutes
+                val needsFullScan = forceRefresh || (now - lastFullScanTime > 30 * 60 * 1000L)
 
-                // If possible, only ask Android for the NEW photos (Incremental), rather than downloading the whole list of 10,000 photos again.
                 val localMedia = if (isAndroid11Plus && !needsFullScan && _rawMedia.value.isNotEmpty()) {
                     val fetched = withContext(Dispatchers.IO) { engine.fetchIncrementalMedia(lastMediaStoreGeneration) }
                     val merged = java.util.HashMap<Long, MediaItem>(_rawMedia.value.size + fetched.size)
@@ -1129,10 +1009,10 @@ class GalleryViewModel @Inject constructor(
                 }
 
                 _rawMedia.value = localMedia
-                rebuildIndexesAndAlbums(localMedia) // Sort them into folders
-                invalidatePagingSources() // Tell the waiters to grab fresh plates of data
+                rebuildIndexesAndAlbums(localMedia)
+                invalidatePagingSources()
             } catch (e: Exception) {
-                _events.trySend(GalleryEvent.ShowToast("Library load failed: ${e.localizedMessage}"))
+                _events.tryEmit(GalleryEvent.ShowToast("Library load failed: ${e.localizedMessage}"))
             } finally {
                 _isBusy.value = false
                 isReloading = false
@@ -1140,34 +1020,26 @@ class GalleryViewModel @Inject constructor(
         }
     }
 
-    /**
-     * THE DETECTIVE.
-     * Looks through every photo to find exact copies.
-     * Because looking at millions of pixels takes forever, we do a fast "partial hash" (checking just a few pieces) first.
-     * Only if they match do we do a slow "full hash" to confirm they are identical twins.
-     */
     fun scanForDuplicates() = viewModelScope.launch(Dispatchers.Default) {
         val memoryPressure = 1.0 - getMemoryFactor()
         if (_thermalState.value >= PowerManager.THERMAL_STATUS_MODERATE || memoryPressure > 0.85) {
-            _events.send(GalleryEvent.ShowToast("System busy or warm. Scan paused."))
+            _events.emit(GalleryEvent.ShowToast("System busy or warm. Scan paused."))
             return@launch
         }
 
         _isBusy.value = true
         val allImages = _mediaIndexes.value.photos
-        val cores = Runtime.getRuntime().availableProcessors() // Use all the phone's CPU brains to do this fast
+        val cores = Runtime.getRuntime().availableProcessors()
         val activeThreads = maxOf(1, ((cores - 1) * getThermalFactor()).toInt())
 
-        // Step 1: Group photos that have the EXACT same file size. If file size is different, they aren't twins.
         val sizeGrouped = allImages.groupBy { it.size }.filter { it.value.size > 1 }.values.flatten()
         val partialHashes = ConcurrentHashMap<String, MutableList<MediaItem>>()
 
-        // Step 2: Look closely at the file data (Partial check)
         withContext(Dispatchers.IO.limitedParallelism(activeThreads)) {
             sizeGrouped.map { item ->
                 async {
                     try {
-                        if (item.size < 25_000_000) { // Don't try this on 500MB videos, too slow.
+                        if (item.size < 25_000_000) {
                             val resolver = getApplication<Application>().contentResolver
                             val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                             resolver.openInputStream(item.uri)?.use { input -> BitmapFactory.decodeStream(input, null, options) }
@@ -1179,7 +1051,6 @@ class GalleryViewModel @Inject constructor(
                                 var bytesRead: Int
                                 while (input.read(buffer).also { bytesRead = it } != -1) { partialMd.update(buffer, 0, bytesRead) }
                             }
-                            // The hash is a short text string like "1080x1920-a1b2c3d4..." that represents the image data
                             val partialHash = "$resolutionKey-" + partialMd.digest().joinToString("") { "%02x".format(it) }
                             partialHashes.getOrPut(partialHash) { Collections.synchronizedList(mutableListOf()) }.add(item)
                         }
@@ -1191,7 +1062,6 @@ class GalleryViewModel @Inject constructor(
         val collisionCandidates = partialHashes.values.filter { it.size > 1 }
         val finalHashes = ConcurrentHashMap<String, MutableList<MediaItem>>()
 
-        // Step 3: Full check to absolutely confirm
         withContext(Dispatchers.IO.limitedParallelism(activeThreads)) {
             collisionCandidates.flatten().map { item ->
                 async {
@@ -1210,12 +1080,11 @@ class GalleryViewModel @Inject constructor(
             }.awaitAll()
         }
 
-        _duplicates.value = finalHashes.values.filter { it.size > 1 } // Save the twins to the scoreboard
+        _duplicates.value = finalHashes.values.filter { it.size > 1 }
         _isBusy.value = false
-        _events.send(GalleryEvent.ShowToast("Scan complete. Found ${_duplicates.value.size} duplicate sets."))
+        _events.emit(GalleryEvent.ShowToast("Scan complete. Found ${_duplicates.value.size} duplicate sets."))
     }
 
-    // Grabs the first 4 photos of every album so we can make a pretty 4-square cover for the album folder.
     private fun cacheAlbumPreviews(validMedia: List<MediaItem>) {
         albumPreviewCacheMap.clear()
 
@@ -1255,11 +1124,10 @@ class GalleryViewModel @Inject constructor(
         _albumPreviewCache.value = albumPreviewCacheMap.toMap()
     }
 
-    // Adds or removes an album from the "Hidden" list
     fun toggleHiddenAlbum(albumId: String) {
         _hiddenAlbums.update { if (it.contains(albumId)) it - albumId else it + albumId }
         invalidatePagingSources()
-        purgeHiddenFromPlayback() // Stop playing videos if the album was just hidden
+        purgeHiddenFromPlayback()
     }
 
     fun hideAlbums(albumIds: List<String>) = viewModelScope.launch(Dispatchers.IO) {
@@ -1274,7 +1142,6 @@ class GalleryViewModel @Inject constructor(
 
     fun clearDuplicates() { _duplicates.value = emptyList() }
 
-    // Gets a tiny list of photos for the virtual albums (like Recents or Favorites) without hitting the heavy database.
     fun getPagedMediaForAlbum(albumId: String): Flow<PagingData<GalleryGridItem>> = _mediaIndexes.map { indexes ->
         val filtered = when (albumId) {
             ID_RECENT -> indexes.recent
@@ -1284,7 +1151,6 @@ class GalleryViewModel @Inject constructor(
         PagingData.from(filtered.map { GalleryGridItem.Media(it) })
     }
 
-    // Manually edit our internal list without waiting for the slow Android system to tell us about the change.
     private suspend fun updateMediaLocally(id: Long, update: (MediaItem) -> MediaItem) = withContext(Dispatchers.Default) {
         val current = _mediaMap.value[id] ?: return@withContext
         val updated = update(current)
@@ -1319,12 +1185,11 @@ class GalleryViewModel @Inject constructor(
         invalidatePagingSources()
     }
 
-    // Takes edits from the Photo Editor (brightness, crop, etc.) and permanently saves a new image file to the phone.
     fun saveMedia(originalMediaId: Long, saveMode: SaveMode = SaveMode.SAVE_AS_NEW, editState: EditState, exportAsSticker: Boolean = false) {
         if (!tryBeginFileOperation()) return
         val item = getMediaItemById(originalMediaId)
         if (item == null) {
-            _events.trySend(GalleryEvent.ShowToast("Error: Cannot find original media"))
+            _events.tryEmit(GalleryEvent.ShowToast("Error: Cannot find original media"))
             endFileOperation()
             return
         }
@@ -1334,17 +1199,16 @@ class GalleryViewModel @Inject constructor(
             _fileOperationState.value = FileOperationState.Editing(0f)
             try {
                 delay(100)
-                // Ask the EditingEngine to do the heavy math
                 val newFile = editingEngine.saveMedia(uri = item.uri, state = editState, isVideo = item.isVideo, asSticker = exportAsSticker) { progress ->
-                    _fileOperationState.value = FileOperationState.Editing(progress) // Update the progress bar
+                    _fileOperationState.value = FileOperationState.Editing(progress)
                 }
                 if (newFile == null) {
-                    _events.trySend(GalleryEvent.ShowToast("Export failed"))
+                    _events.tryEmit(GalleryEvent.ShowToast("Export failed"))
                 } else {
                     onMediaExported(newFile, if(saveMode == SaveMode.REPLACE_ORIGINAL) item.id else null, "Saved to Gallery!")
                 }
             } catch (e: Exception) {
-                _events.trySend(GalleryEvent.ShowToast("Error saving edits"))
+                _events.tryEmit(GalleryEvent.ShowToast("Error saving edits"))
             } finally {
                 _fileOperationState.value = FileOperationState.Idle
                 _isBusy.value = false
@@ -1354,11 +1218,9 @@ class GalleryViewModel @Inject constructor(
     }
 
     fun onMediaExported(newFile: File, originalMediaId: Long? = null, customMessage: String = "Media saved to gallery successfully!") {
-        // Tell the phone "Hey look! A brand new file!"
         MediaScannerConnection.scanFile(getApplication<Application>(), arrayOf(newFile.absolutePath), null, null)
         viewModelScope.launch(Dispatchers.Main) {
-            _events.send(GalleryEvent.ShowToast(customMessage))
-            // If they picked "Replace Original", we move the old unedited one to the trash.
+            _events.emit(GalleryEvent.ShowToast(customMessage))
             if (originalMediaId != null) {
                 _mediaMap.value[originalMediaId]?.let { originalItem -> moveToTrashInternal(listOf(originalItem)) }
             } else {
@@ -1367,7 +1229,6 @@ class GalleryViewModel @Inject constructor(
         }
     }
 
-    // Safely puts files into our custom Trash Bin so the user has 30 days to recover them.
     internal fun moveToTrashInternal(items: List<MediaItem>) = viewModelScope.launch(Dispatchers.IO) {
         if (items.isEmpty()) return@launch
         val resolver = getApplication<Application>().contentResolver
@@ -1382,20 +1243,17 @@ class GalleryViewModel @Inject constructor(
             )
         }
 
-        // On modern Android (11+), we have to ask the OS to do the trashing using a system popup.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             try {
                 val intentSender = MediaStore.createTrashRequest(resolver, items.map { it.uri }, true).intentSender
-                // Write our sticky notes to remember what to do when they click "Allow"
                 pendingInternalTrashEntities = trashItems
                 pendingInternalTrashIds = items.map { it.id }.toSet()
-                _events.send(GalleryEvent.RequestPermission(intentSender))
+                _events.emit(GalleryEvent.RequestPermission(intentSender))
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to create trash request", e)
-                _events.send(GalleryEvent.ShowToast("Failed to move to trash"))
+                _events.emit(GalleryEvent.ShowToast("Failed to move to trash"))
             }
         } else {
-            // Older Android lets us just delete the file directly.
             val successfulUris = mutableListOf<Uri>()
             items.forEach { media ->
                 try { if (resolver.delete(media.uri, null, null) > 0) successfulUris.add(media.uri) } catch (_: Exception) {}
@@ -1406,7 +1264,6 @@ class GalleryViewModel @Inject constructor(
         }
     }
 
-    // Takes out the trash and shuts down when the app closes completely.
     override fun onCleared() {
         super.onCleared()
         getApplication<Application>().contentResolver.unregisterContentObserver(mediaObserver)
@@ -1422,10 +1279,6 @@ class GalleryViewModel @Inject constructor(
         activePagingSources.clear()
     }
 
-    /**
-     * THE ORGANIZER.
-     * Takes the massive list of flat files, sorts out the trashed/hidden ones, and groups the rest into neat Folders (Albums).
-     */
     private suspend fun rebuildIndexesAndAlbums(localMedia: List<MediaItem>) = withContext(Dispatchers.Default) {
         val map = java.util.HashMap<Long, MediaItem>(localMedia.size * 2)
         val photos = ArrayList<MediaItem>()
@@ -1440,10 +1293,8 @@ class GalleryViewModel @Inject constructor(
         val validMedia = ArrayList<MediaItem>(localMedia.size)
 
         for (item in localMedia) {
-            // Skip things in the trash, in the secure vault, or in hidden albums.
             if (trashSet.contains(item.uri.toString()) || secureSet.contains(item.id.toString()) || hiddenAlbumSet.contains(item.bucketId)) continue
 
-            // Mark it if it's favorited
             val mappedItem = if (item.isFavorite == favSet.contains(item.id)) item else item.copy(isFavorite = favSet.contains(item.id))
             map[mappedItem.id] = mappedItem
             validMedia.add(mappedItem)
@@ -1455,24 +1306,21 @@ class GalleryViewModel @Inject constructor(
             }
         }
 
-        validMedia.sortByDescending { it.dateAdded } // Sort newest first
+        validMedia.sortByDescending { it.dateAdded }
         recents.addAll(validMedia)
 
         val favorites = validMedia.filter { favSet.contains(it.id) }
         _mediaMap.value = map
         _mediaIndexes.value = MediaIndexes(validMedia, photos, videos, gifs, recents)
 
-        // Find all the unique Folders (Bucket IDs) on the phone
         val metaMap = albumMeta.value.associateBy { it.id }
         val mappedAlbums = validMedia.groupBy { it.bucketId }.mapNotNull { (bucketId, items) ->
             val latestItem = items.maxByOrNull { it.dateAdded } ?: return@mapNotNull null
-            // Check if the user renamed this album in our app
             val albumName = metaMap[bucketId]?.customName?.takeIf { it.isNotBlank() } ?: latestItem.bucketName.ifBlank { "Unknown" }
-            if (albumName.matches(Regex("^\\d+$"))) return@mapNotNull null // Ignore folders named entirely of numbers
+            if (albumName.matches(Regex("^\\d+$"))) return@mapNotNull null
             Album(bucketId, albumName, latestItem.uri, items.size, items.sumOf { it.size }, metaMap[bucketId]?.isPinned == true)
         }
 
-        // Check for empty albums the user created but hasn't put pictures in yet
         val emptyManualAlbums = manualAlbums.value.mapNotNull { entity ->
             val existingPhysical = mappedAlbums.find { it.name.equals(entity.name, ignoreCase = true) }
             if (existingPhysical != null) {
@@ -1491,7 +1339,6 @@ class GalleryViewModel @Inject constructor(
 
         val combinedMappedAlbums = mappedAlbums + emptyManualAlbums
 
-        // Construct the special Virtual Albums
         val virtualAlbums = listOfNotNull(
             if (recents.isNotEmpty()) Album(ID_RECENT, "Recent", recents.first().uri, recents.size, recents.sumOf { it.size }, true) else null,
             if (favorites.isNotEmpty()) Album(ID_FAVORITES, "Favorites", favorites.firstOrNull()?.uri ?: Uri.EMPTY, favorites.size, favorites.sumOf { it.size }, true) else null
@@ -1511,6 +1358,20 @@ class GalleryViewModel @Inject constructor(
         _albumsState.value = allAlbums.filterNot { hiddenAlbumSet.contains(it.id) }
         cacheAlbumPreviews(validMedia)
     }
+
+    fun toggleAlbumPin(album: Album) = viewModelScope.launch(Dispatchers.IO) {
+        try {
+            if (album.isPinned) dao.removePinnedAlbum(album.id) else dao.addPinnedAlbum(AlbumEntity(id = album.id, isPinned = true))
+        } catch (e: Exception) {}
+    }
+
+    fun hideItems(ids: List<Long>) = viewModelScope.launch(Dispatchers.IO) {
+        try { engine.hideItems(ids) } finally { removeMediaLocally(ids.toSet()) }
+    }.let { Unit }
+
+    fun unhideMedia(ids: List<Long>) = viewModelScope.launch(Dispatchers.IO) {
+        try { ids.forEach { dao.removeFromSecure(it) } } finally { refreshAfterFileOperation() }
+    }.let { Unit }
 
     fun toggleFavorite(id: Long) = viewModelScope.launch(Dispatchers.IO) {
         val isFav = favoriteIds.value.contains(id)
@@ -1583,63 +1444,99 @@ class GalleryViewModel @Inject constructor(
         pendingOperationOnComplete = null
     }
 
-    // Stops a moving/copying process immediately. Uses a rollback feature to undo partial moves so data isn't lost.
+    fun abortFileOperation() {
+        val onComplete = pendingOperationOnComplete
+        pendingInternalTrashEntities = emptyList()
+        pendingInternalTrashIds = emptySet()
+        clearPendingOperationStates()
+        _fileOperationState.value = FileOperationState.Idle
+        _isBusy.value = false
+        endFileOperation()
+        onComplete?.invoke(MediaOpResult.Cancelled)
+    }
+
     fun cancelCurrentOperation() {
         editingEngine.cancelExport()
-        if (fileOpMutex.isLocked) {
-            fileOperationJob?.cancel()
-            viewModelScope.launch(Dispatchers.IO) {
-                if (pendingRollbackUris.isNotEmpty()) {
-                    mediaOpEngine.rollback(pendingRollbackUris)
-                }
-                _fileOperationState.value = FileOperationState.Idle
-                clearPendingOperationStates()
-                _isBusy.value = false
-                endFileOperation()
-                refreshAfterFileOperation()
-                _events.send(GalleryEvent.ShowToast("Operation cancelled safely"))
-            }
+        fileOperationJob?.cancel()
+        val rollback = pendingRollbackUris
+        viewModelScope.launch(Dispatchers.IO) {
+            if (rollback.isNotEmpty()) mediaOpEngine.rollback(rollback)
+            abortFileOperation()
+            refreshAfterFileOperation()
+            _events.emit(GalleryEvent.ShowToast("Operation cancelled safely"))
         }
     }
 
-    // Move all items from several folders into one target folder.
+    private suspend fun resolveRealAlbumByName(name: String): Pair<String, String>? =
+        withContext(Dispatchers.IO) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return@withContext null
+            val resolver = getApplication<Application>().contentResolver
+            val uri = MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL)
+            val proj = arrayOf(
+                MediaStore.Files.FileColumns.BUCKET_ID,
+                MediaStore.MediaColumns.RELATIVE_PATH
+            )
+            val sel = "${MediaStore.Files.FileColumns.BUCKET_DISPLAY_NAME} = ? COLLATE NOCASE " +
+                    "AND ${MediaStore.Files.FileColumns.MEDIA_TYPE} IN (1,3)"
+            try {
+                resolver.query(uri, proj, sel, arrayOf(name), null)?.use { c ->
+                    if (c.moveToFirst()) {
+                        val bucket = c.getString(0)
+                        val rel = c.getString(1)
+                        if (!bucket.isNullOrBlank() && !rel.isNullOrBlank())
+                            return@withContext bucket to rel
+                    }
+                }
+            } catch (e: Exception) { Log.e(TAG, "resolveRealAlbumByName failed", e) }
+            null
+        }
+
+    private suspend fun buildTargetAlbum(targetAlbumId: String, fallbackName: String? = null): TargetAlbum? {
+        val name = allAlbumsState.value.firstOrNull { it.id == targetAlbumId }?.name
+            ?: fallbackName ?: return null
+        val sample = _rawMedia.value.firstOrNull { it.bucketId == targetAlbumId }
+        var bucketId = targetAlbumId
+        var relPath = sample?.relativePath?.takeIf { it.isNotBlank() }
+        if (relPath == null) {
+            resolveRealAlbumByName(name)?.let { (realBucket, realPath) ->
+                bucketId = realBucket
+                relPath = realPath
+            }
+        }
+        if (relPath == null) relPath = "Pictures/$name/"
+        val volumeName = sample?.volumeName?.takeIf { it.isNotBlank() }
+            ?: resolveAlbumVolumeName(bucketId)
+        val isSd = mediaOpEngine.isSdCardAlbum(bucketId, volumeName)
+        return TargetAlbum(
+            id = targetAlbumId,
+            name = name,
+            relativePath = relPath,
+            bucketId = bucketId,
+            volumeName = volumeName,
+            isSdCard = isSd
+        )
+    }
+
     fun mergeAlbums(sourceAlbumIds: List<String>, targetAlbumId: String, mergeMode: MergeMode = MergeMode.MOVE_AND_DELETE) {
         if (!tryBeginFileOperation()) {
-            _events.trySend(GalleryEvent.ShowToast("An operation is already in progress"))
+            _events.tryEmit(GalleryEvent.ShowToast("An operation is already in progress"))
             return
         }
 
         viewModelScope.launch(Dispatchers.Default) {
             val mediaToProcess = _rawMedia.value.filter { sourceAlbumIds.contains(it.bucketId) }.map { it.id }
             if (mediaToProcess.isEmpty()) {
-                _events.send(GalleryEvent.ShowToast("No media found to merge"))
+                _events.emit(GalleryEvent.ShowToast("No media found to merge"))
                 endFileOperation()
                 return@launch
             }
 
-            val album = allAlbumsState.value.firstOrNull { it.id == targetAlbumId } ?: run { endFileOperation(); return@launch }
             dao.updateAlbumUsed(targetAlbumId, true)
-
-            val sample = _rawMedia.value.firstOrNull { it.bucketId == targetAlbumId }
-            var relPath = sample?.relativePath
-
-            if (relPath.isNullOrBlank()) {
-                if (targetAlbumId.startsWith("manual_")) {
-                    relPath = "Pictures/${album.name}/"
-                } else {
-                    endFileOperation()
-                    _events.trySend(GalleryEvent.ShowToast("Error: Cannot resolve path for existing album."))
-                    return@launch
-                }
+            val targetAlbum = buildTargetAlbum(targetAlbumId) ?: run {
+                endFileOperation()
+                _events.emit(GalleryEvent.ShowToast("Cannot resolve destination album"))
+                return@launch
             }
-
-            val isSd = mediaOpEngine.isSdCardAlbum(targetAlbumId)
-            val volumeName = if (isSd) null else resolveAlbumVolumeName(targetAlbumId)
-
-            val targetAlbum = TargetAlbum(
-                id = targetAlbumId, name = album.name, relativePath = relPath,
-                bucketId = targetAlbumId, volumeName = volumeName, isSdCard = isSd
-            )
 
             val isMove = mergeMode == MergeMode.MOVE || mergeMode == MergeMode.MOVE_AND_DELETE
 
@@ -1647,14 +1544,13 @@ class GalleryViewModel @Inject constructor(
                 if (mergeMode == MergeMode.MOVE_AND_DELETE && (result is MediaOpResult.Success || result is MediaOpResult.AlreadyExists)) {
                     viewModelScope.launch {
                         sourceAlbumIds.forEach { albumId -> deleteEmptyAlbum(albumId) }
-                        _events.send(GalleryEvent.ShowToast("${sourceAlbumIds.size} albums merged successfully"))
+                        _events.emit(GalleryEvent.ShowToast("${sourceAlbumIds.size} albums merged successfully"))
                     }
                 }
             }
         }
     }
 
-    // Cleans up our internal database if a folder is now completely empty
     private suspend fun deleteEmptyAlbum(albumId: String) {
         val albumStillHasMedia = _rawMedia.value.any { it.bucketId == albumId }
         if (albumStillHasMedia) return
@@ -1670,7 +1566,6 @@ class GalleryViewModel @Inject constructor(
     fun deleteAlbum(albumId: String) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                // Find every photo that belongs to this album
                 val mediaToTrash = _rawMedia.value.filter { item ->
                     when (albumId) {
                         ID_FAVORITES -> favoriteIds.value.contains(item.id)
@@ -1686,15 +1581,15 @@ class GalleryViewModel @Inject constructor(
                 }
 
                 if (mediaToTrash.isNotEmpty()) {
-                    moveToTrashInternal(mediaToTrash) // Put them all in the bin
+                    moveToTrashInternal(mediaToTrash)
                 } else {
                     try { dao.deleteManualAlbum(albumId) } catch (_: Exception) {}
                     try { dao.deleteAlbumMeta(albumId) } catch (_: Exception) {}
                 }
-                _events.trySend(GalleryEvent.ShowToast("Album moved to Trash"))
+                _events.tryEmit(GalleryEvent.ShowToast("Album moved to Trash"))
             } catch (e: Exception) {
                 Log.e(TAG, "Delete album failed", e)
-                _events.trySend(GalleryEvent.ShowToast("Failed to move album to Trash"))
+                _events.tryEmit(GalleryEvent.ShowToast("Failed to move album to Trash"))
             }
         }
     }
@@ -1714,125 +1609,76 @@ class GalleryViewModel @Inject constructor(
 
     fun openViewer(mediaId: Long) {
         val item = _mediaMap.value[mediaId]
-
         if (item == null) {
-            _events.trySend(
-                GalleryEvent.ShowToast("Media item is not loaded.")
-            )
+            _events.tryEmit(GalleryEvent.ShowToast("Media item is not loaded."))
             return
         }
-
         openViewer(item)
     }
 
     fun openViewer(item: MediaItem) {
         if (item.uri == Uri.EMPTY) {
-            _events.trySend(
-                GalleryEvent.ShowToast("Media file is unavailable.")
-            )
+            _events.tryEmit(GalleryEvent.ShowToast("Media file is unavailable."))
             return
         }
 
-        // Add 1 point to the usage scoreboard so we remember the user opened this photo
         viewModelScope.launch(Dispatchers.IO) {
             runCatching {
-                dao.incrementUsageStats(
-                    item.id,
-                    System.currentTimeMillis()
-                )
+                dao.incrementUsageStats(item.id, System.currentTimeMillis())
             }
         }
 
         val current = _viewerState.value
-
-        if (
-            current !is GalleryViewerState.Open ||
-            current.mediaId != item.id
-        ) {
-            _viewerState.value =
-                GalleryViewerState.Open(
-                    mediaId = item.id,
-                    isVideo = item.isVideo,
-                    uri = item.uri
-                )
+        if (current !is GalleryViewerState.Open || current.mediaId != item.id) {
+            _viewerState.value = GalleryViewerState.Open(
+                mediaId = item.id,
+                isVideo = item.isVideo,
+                uri = item.uri
+            )
         }
     }
 
-    fun moveData(ids: List<Long>, targetAlbumId: String) {
+    fun moveData(ids: List<Long>, targetAlbumId: String) = runOp(ids, targetAlbumId, isMove = true)
+    fun copyData(ids: List<Long>, targetAlbumId: String) = runOp(ids, targetAlbumId, isMove = false)
+    private fun runOp(ids: List<Long>, targetAlbumId: String, isMove: Boolean) {
         if (!tryBeginFileOperation()) {
-            _events.trySend(GalleryEvent.ShowToast("An operation is already in progress"))
+            _events.tryEmit(GalleryEvent.ShowToast("An operation is already in progress"))
             return
         }
-        val album = allAlbumsState.value.firstOrNull { it.id == targetAlbumId } ?: run { endFileOperation(); return }
         viewModelScope.launch(Dispatchers.IO) {
             dao.updateAlbumUsed(targetAlbumId, true)
-            val sample = _rawMedia.value.firstOrNull { it.bucketId == targetAlbumId }
-            var relPath = sample?.relativePath
-
-            if (relPath.isNullOrBlank()) {
-                if (targetAlbumId.startsWith("manual_")) {
-                    relPath = "Pictures/${album.name}/"
-                } else {
-                    endFileOperation()
-                    _events.trySend(GalleryEvent.ShowToast("Error: Cannot resolve path for existing album."))
-                    return@launch
-                }
+            val target = buildTargetAlbum(targetAlbumId)
+            if (target == null) {
+                _fileOperationState.value = FileOperationState.Idle
+                endFileOperation()
+                _events.emit(GalleryEvent.ShowToast("Album not found — pull to refresh"))
+                return@launch
             }
-
-            val isSd = mediaOpEngine.isSdCardAlbum(targetAlbumId)
-            val volumeName = if (isSd) null else resolveAlbumVolumeName(targetAlbumId)
-
-            val targetAlbum = TargetAlbum(
-                id = targetAlbumId, name = album.name, relativePath = relPath,
-                bucketId = targetAlbumId, volumeName = volumeName, isSdCard = isSd
-            )
-            performMediaOperation(ids, targetAlbum, isMove = true)
-        }
-    }
-
-    fun copyData(ids: List<Long>, targetAlbumId: String) {
-        if (!tryBeginFileOperation()) {
-            _events.trySend(GalleryEvent.ShowToast("An operation is already in progress"))
-            return
-        }
-        val album = allAlbumsState.value.firstOrNull { it.id == targetAlbumId } ?: run { endFileOperation(); return }
-        viewModelScope.launch(Dispatchers.IO) {
-            dao.updateAlbumUsed(targetAlbumId, true)
-            val sample = _rawMedia.value.firstOrNull { it.bucketId == targetAlbumId }
-            var relPath = sample?.relativePath
-
-            if (relPath.isNullOrBlank()) {
-                if (targetAlbumId.startsWith("manual_")) {
-                    relPath = "Pictures/${album.name}/"
-                } else {
-                    endFileOperation()
-                    _events.trySend(GalleryEvent.ShowToast("Error: Cannot resolve path for existing album."))
-                    return@launch
-                }
-            }
-
-            val isSd = mediaOpEngine.isSdCardAlbum(targetAlbumId)
-            val volumeName = if (isSd) null else resolveAlbumVolumeName(targetAlbumId)
-
-            val targetAlbum = TargetAlbum(
-                id = targetAlbumId, name = album.name, relativePath = relPath,
-                bucketId = targetAlbumId, volumeName = volumeName, isSdCard = isSd
-            )
-            performMediaOperation(ids, targetAlbum, isMove = false)
+            performMediaOperation(ids, target, isMove)
         }
     }
 
     fun createAndMove(ids: List<Long>, newAlbumName: String) {
         if (!tryBeginFileOperation()) {
-            _events.trySend(GalleryEvent.ShowToast("An operation is already in progress"))
+            _events.tryEmit(GalleryEvent.ShowToast("An operation is already in progress"))
             return
         }
         viewModelScope.launch(Dispatchers.IO) {
             val name = newAlbumName.trim()
+            val existing = resolveRealAlbumByName(name)
+            if (existing != null) {
+                val (bucket, rel) = existing
+                performMediaOperation(
+                    ids,
+                    TargetAlbum(id = bucket, name = name, relativePath = rel, bucketId = bucket, volumeName = resolveAlbumVolumeName(bucket)),
+                    isMove = true
+                )
+                return@launch
+            }
             val root = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
             val albumDir = File(root, name)
             if (!albumDir.exists()) {
-                albumDir.mkdirs() // Make the physical folder
+                albumDir.mkdirs()
             }
             val bucketId = albumDir.absolutePath.lowercase(Locale.ROOT).hashCode().toString()
 
@@ -1852,11 +1698,21 @@ class GalleryViewModel @Inject constructor(
 
     fun createAndCopy(ids: List<Long>, newAlbumName: String) {
         if (!tryBeginFileOperation()) {
-            _events.trySend(GalleryEvent.ShowToast("An operation is already in progress"))
+            _events.tryEmit(GalleryEvent.ShowToast("An operation is already in progress"))
             return
         }
         viewModelScope.launch(Dispatchers.IO) {
             val name = newAlbumName.trim()
+            val existing = resolveRealAlbumByName(name)
+            if (existing != null) {
+                val (bucket, rel) = existing
+                performMediaOperation(
+                    ids,
+                    TargetAlbum(id = bucket, name = name, relativePath = rel, bucketId = bucket, volumeName = resolveAlbumVolumeName(bucket)),
+                    isMove = false
+                )
+                return@launch
+            }
             val root = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
             val albumDir = File(root, name)
             if (!albumDir.exists()) {
@@ -1888,8 +1744,6 @@ class GalleryViewModel @Inject constructor(
                     val newAlbumId = "manual_${System.currentTimeMillis()}"
                     var physicallyCreated = false
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                        // On modern Android, folders don't really exist until you put a file in them.
-                        // So we create a tiny, invisible ".nomedia" file just to force Android to create the folder.
                         val resolver = getApplication<Application>().contentResolver
                         val collection = MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
                         val values = ContentValues().apply {
@@ -1906,12 +1760,12 @@ class GalleryViewModel @Inject constructor(
                         physicallyCreated = File(root, trimmed).mkdirs()
                     }
                     dao.insertManualAlbum(ManualAlbumEntity(id = newAlbumId, name = trimmed, hasBeenUsed = false))
-                    _events.trySend(
+                    _events.tryEmit(
                         if (physicallyCreated) GalleryEvent.ShowToast("Album '$trimmed' created!")
                         else GalleryEvent.ShowToast("Album added, but folder creation failed on disk")
                     )
                 } catch (e: Exception) {
-                    _events.trySend(GalleryEvent.ShowToast("Failed to create album: ${e.message}"))
+                    _events.tryEmit(GalleryEvent.ShowToast("Failed to create album: ${e.message}"))
                 }
             }
             return
@@ -1921,8 +1775,8 @@ class GalleryViewModel @Inject constructor(
         if (treeUri == null) {
             pendingSdAlbumName = trimmed
             viewModelScope.launch {
-                _events.send(GalleryEvent.ShowToast("Select your SD card's root so albums can be created there"))
-                _events.send(GalleryEvent.LaunchIntent(
+                _events.emit(GalleryEvent.ShowToast("Select your SD card's root so albums can be created there"))
+                _events.emit(GalleryEvent.LaunchIntent(
                     Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).addFlags(
                         Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
                     )
@@ -1936,7 +1790,7 @@ class GalleryViewModel @Inject constructor(
             val newId = "manual_${System.currentTimeMillis()}"
             dao.insertManualAlbum(ManualAlbumEntity(id = newId, name = trimmed, hasBeenUsed = false))
             mediaOpEngine.markAlbumAsSdCard(newId)
-            _events.send(
+            _events.emit(
                 if (created) GalleryEvent.ShowToast("Album '$trimmed' created on SD card!")
                 else GalleryEvent.ShowToast("Couldn't create the folder on SD card")
             )
@@ -1952,12 +1806,13 @@ class GalleryViewModel @Inject constructor(
 
         if (itemsInAlbum.isEmpty()) {
             if (!tryBeginFileOperation()) {
-                _events.trySend(GalleryEvent.ShowToast("An operation is already in progress"))
+                _events.tryEmit(GalleryEvent.ShowToast("An operation is already in progress"))
                 return
             }
             viewModelScope.launch(Dispatchers.IO) {
                 try {
-                    val isSd = mediaOpEngine.isSdCardAlbum(album.id)
+                    val sample = _rawMedia.value.firstOrNull { it.bucketId == album.id }
+                    val isSd = mediaOpEngine.isSdCardAlbum(album.id, sample?.volumeName)
                     val isPrimary = !isSd
 
                     if (isPrimary) {
@@ -1997,15 +1852,15 @@ class GalleryViewModel @Inject constructor(
                         val newManualId = "manual_${System.currentTimeMillis()}"
                         dao.insertManualAlbum(ManualAlbumEntity(id = newManualId, name = trimmed, hasBeenUsed = false))
 
-                        _events.send(GalleryEvent.ShowToast(if (renamed) "Album renamed" else "Renamed in app, but folder update failed"))
+                        _events.emit(GalleryEvent.ShowToast(if (renamed) "Album renamed" else "Renamed in app, but folder update failed"))
                     } else {
                         val treeUri = findPersistedSdCardTreeUri()
                         if (treeUri == null) {
                             pendingSdRenameAlbumId = album.id
                             pendingSdRenameOldName = album.name
                             pendingSdRenameNewName = trimmed
-                            _events.send(GalleryEvent.ShowToast("Select your SD card's root to finish renaming"))
-                            _events.send(GalleryEvent.LaunchIntent(
+                            _events.emit(GalleryEvent.ShowToast("Select your SD card's root to finish renaming"))
+                            _events.emit(GalleryEvent.LaunchIntent(
                                 Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).addFlags(
                                     Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
                                 )
@@ -2018,11 +1873,11 @@ class GalleryViewModel @Inject constructor(
                             dao.insertManualAlbum(ManualAlbumEntity(id = newManualId, name = trimmed, hasBeenUsed = false))
                             mediaOpEngine.markAlbumAsSdCard(newManualId)
 
-                            _events.send(GalleryEvent.ShowToast(if (renamed) "Album renamed" else "Renamed in app, but folder update failed on SD card"))
+                            _events.emit(GalleryEvent.ShowToast(if (renamed) "Album renamed" else "Renamed in app, but folder update failed on SD card"))
                         }
                     }
                 } catch (e: Exception) {
-                    _events.send(GalleryEvent.ShowToast("Failed to rename: ${e.message}"))
+                    _events.emit(GalleryEvent.ShowToast("Failed to rename: ${e.message}"))
                 } finally {
                     endFileOperation()
                 }
@@ -2031,12 +1886,13 @@ class GalleryViewModel @Inject constructor(
         }
 
         if (!tryBeginFileOperation()) {
-            _events.trySend(GalleryEvent.ShowToast("An operation is already in progress"))
+            _events.tryEmit(GalleryEvent.ShowToast("An operation is already in progress"))
             return
         }
 
         viewModelScope.launch(Dispatchers.IO) {
-            val isSd = mediaOpEngine.isSdCardAlbum(album.id)
+            val sample = _rawMedia.value.firstOrNull { it.bucketId == album.id }
+            val isSd = mediaOpEngine.isSdCardAlbum(album.id, sample?.volumeName)
             val volumeName = if (isSd) null else resolveAlbumVolumeName(album.id)
             val targetAlbum = TargetAlbum(
                 id = album.id,
@@ -2058,10 +1914,23 @@ class GalleryViewModel @Inject constructor(
         }
     }
 
-    /**
-     * THE WORKHORSE.
-     * Hands off all the IDs to the MediaOpEngine (which handles the ugly Android code of copying data byte by byte).
-     */
+    private suspend fun reconcileManualAlbumBucket(manualAlbumId: String, movedIds: List<Long>) {
+        if (!manualAlbumId.startsWith("manual_") || movedIds.isEmpty()) return
+        try {
+            val fresh = withContext(Dispatchers.IO) { engine.fetchIncrementalMedia(lastMediaStoreGeneration) }
+            val realBucketId = fresh.firstOrNull { it.id in movedIds }?.bucketId ?: return
+            if (realBucketId.isBlank() || realBucketId == manualAlbumId) return
+            val meta = dao.getAlbumMetaSync(manualAlbumId)
+            if (meta != null) {
+                dao.insertAlbumMeta(meta.copy(id = realBucketId))
+                dao.deleteAlbumMeta(manualAlbumId)
+            }
+            dao.deleteManualAlbum(manualAlbumId)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to reconcile manual album bucket for $manualAlbumId", e)
+        }
+    }
+
     private fun performMediaOperation(ids: List<Long>, targetAlbum: TargetAlbum, isMove: Boolean, onComplete: ((MediaOpResult) -> Unit)? = null) {
         pendingOperationIds = ids
         pendingOperationTargetAlbum = targetAlbum
@@ -2070,15 +1939,18 @@ class GalleryViewModel @Inject constructor(
         fileOperationJob = viewModelScope.launch(Dispatchers.IO) {
             _isBusy.value = true
             var waitingForPermission = false
+            _fileOperationState.value = FileOperationState.Processing("Starting", 0f, 0, ids.size)
             try {
-                val validItems = ids.mapNotNull { _mediaMap.value[it] }
+                val byId = _mediaMap.value
+                val raw = _rawMedia.value
+                val validItems = ids.mapNotNull { id -> byId[id] ?: raw.firstOrNull { it.id == id } }
                 if (validItems.isEmpty()) {
+                    _fileOperationState.value = FileOperationState.Idle
                     clearPendingOperationStates()
+                    _events.emit(GalleryEvent.ShowToast("Items not loaded yet — try again"))
                     onComplete?.invoke(MediaOpResult.Failed("No valid items found"))
                     return@launch
                 }
-
-                _fileOperationState.value = FileOperationState.Processing("Starting", 0f, 0, validItems.size)
 
                 val result = if (isMove) {
                     mediaOpEngine.moveMedia(validItems, targetAlbum) { phase, current, total ->
@@ -2111,10 +1983,14 @@ class GalleryViewModel @Inject constructor(
                                 }
                             }
                         }
+
+                        reconcileManualAlbumBucket(targetAlbum.id, validItems.map { it.id })
+
                         refreshAfterFileOperation()
                         invalidatePagingSources()
 
-                        _events.send(GalleryEvent.ShowToast(msg.ifEmpty { "Operation successful" }))
+                        _events.emit(GalleryEvent.ShowToast(msg.ifEmpty { "Operation successful" }))
+                        _events.emit(GalleryEvent.OperationSuccess)
                         clearPendingOperationStates()
                         onComplete?.invoke(result)
                     }
@@ -2128,30 +2004,30 @@ class GalleryViewModel @Inject constructor(
                         pendingIsWriteRequest = result.isWriteRequest
                         pendingOperationOnComplete = onComplete
                         waitingForPermission = true
-                        _events.send(GalleryEvent.RequestPermission(result.intentSender))
+                        _events.emit(GalleryEvent.RequestPermission(result.intentSender))
                     }
                     is MediaOpResult.SafPermissionRequired -> {
                         _fileOperationState.value = FileOperationState.WaitingForPermission
                         pendingRollbackUris = result.pendingRollbackUris
                         pendingOperationOnComplete = onComplete
                         waitingForPermission = true
-                        _events.send(GalleryEvent.LaunchIntent(result.intent))
+                        _events.emit(GalleryEvent.LaunchIntent(result.intent))
                     }
                     is MediaOpResult.Failed -> {
                         _fileOperationState.value = FileOperationState.Idle
-                        _events.send(GalleryEvent.ShowToast("Operation failed: ${result.reason}"))
+                        _events.emit(GalleryEvent.ShowToast("Operation failed: ${result.reason}"))
                         clearPendingOperationStates()
                         onComplete?.invoke(result)
                     }
                     is MediaOpResult.Cancelled -> {
                         _fileOperationState.value = FileOperationState.Idle
-                        _events.send(GalleryEvent.ShowToast("Operation cancelled safely"))
+                        _events.emit(GalleryEvent.ShowToast("Operation cancelled safely"))
                         clearPendingOperationStates()
                         onComplete?.invoke(result)
                     }
                     is MediaOpResult.AlreadyExists -> {
                         _fileOperationState.value = FileOperationState.Idle
-                        _events.send(GalleryEvent.ShowToast(result.message))
+                        _events.emit(GalleryEvent.ShowToast(result.message))
                         clearPendingOperationStates()
                         onComplete?.invoke(result)
                     }
@@ -2160,7 +2036,7 @@ class GalleryViewModel @Inject constructor(
                 Log.e(TAG, "Media operation failed", e)
                 _fileOperationState.value = FileOperationState.Idle
                 clearPendingOperationStates()
-                _events.send(GalleryEvent.ShowToast("Operation failed: ${e.localizedMessage ?: "Unknown error"}"))
+                _events.emit(GalleryEvent.ShowToast("Operation failed: ${e.localizedMessage ?: "Unknown error"}"))
                 onComplete?.invoke(MediaOpResult.Failed(e.localizedMessage ?: "Unknown error"))
             } finally {
                 if (!waitingForPermission) {
@@ -2171,17 +2047,14 @@ class GalleryViewModel @Inject constructor(
         }
     }
 
-    /**
-     * Wakes up when the user clicks "Allow" or "Deny" on the Android Permission popup.
-     */
     fun onPermissionResult(granted: Boolean) = viewModelScope.launch(Dispatchers.IO) {
         if (pendingInternalTrashEntities.isNotEmpty()) {
             if (granted) {
                 dao.insertTrashItemsBulk(pendingInternalTrashEntities)
                 removeMediaLocally(pendingInternalTrashIds)
-                _events.send(GalleryEvent.OperationSuccess)
+                _events.emit(GalleryEvent.OperationSuccess)
             } else {
-                _events.send(GalleryEvent.ShowToast("Trash permission denied"))
+                _events.emit(GalleryEvent.ShowToast("Trash permission denied"))
             }
             pendingInternalTrashEntities = emptyList()
             pendingInternalTrashIds = emptySet()
@@ -2217,8 +2090,8 @@ class GalleryViewModel @Inject constructor(
                     } ?: removeMediaLocally(pendingMoveIds)
                     refreshAfterFileOperation()
                     invalidatePagingSources()
-                    _events.trySend(GalleryEvent.OperationSuccess)
-                    _events.trySend(GalleryEvent.ShowToast("Operation completed successfully"))
+                    _events.tryEmit(GalleryEvent.OperationSuccess)
+                    _events.tryEmit(GalleryEvent.ShowToast("Operation completed successfully"))
                     onComplete?.invoke(MediaOpResult.Success(deletedCount = pendingMoveIds.size))
                 } else if (pendingMoveOperation && pendingDeleteUris.isNotEmpty()) {
                     val result = mediaOpEngine.resumeDelete(pendingDeleteUris)
@@ -2233,14 +2106,14 @@ class GalleryViewModel @Inject constructor(
                             } ?: removeMediaLocally(pendingMoveIds)
                             refreshAfterFileOperation()
                             invalidatePagingSources()
-                            _events.trySend(GalleryEvent.OperationSuccess)
-                            _events.trySend(GalleryEvent.ShowToast("Operation completed successfully"))
+                            _events.tryEmit(GalleryEvent.OperationSuccess)
+                            _events.tryEmit(GalleryEvent.ShowToast("Operation completed successfully"))
                             onComplete?.invoke(result)
                         }
                         is MediaOpResult.Failed -> {
                             mediaOpEngine.rollback(pendingRollbackUris)
                             refreshAfterFileOperation()
-                            _events.trySend(GalleryEvent.ShowToast(result.reason))
+                            _events.tryEmit(GalleryEvent.ShowToast(result.reason))
                             onComplete?.invoke(result)
                         }
                         else -> {}
@@ -2257,16 +2130,16 @@ class GalleryViewModel @Inject constructor(
                     }
                     refreshAfterFileOperation()
                     invalidatePagingSources()
-                    _events.trySend(GalleryEvent.OperationSuccess)
-                    _events.trySend(GalleryEvent.ShowToast("Operation completed successfully"))
+                    _events.tryEmit(GalleryEvent.OperationSuccess)
+                    _events.tryEmit(GalleryEvent.ShowToast("Operation completed successfully"))
                     onComplete?.invoke(MediaOpResult.Success())
                 }
             } else {
                 if (pendingRollbackUris.isNotEmpty()) {
-                    mediaOpEngine.rollback(pendingRollbackUris) // Undo any files we accidentally copied before they denied delete permission
+                    mediaOpEngine.rollback(pendingRollbackUris)
                 }
                 refreshAfterFileOperation()
-                _events.trySend(GalleryEvent.ShowToast("Permission denied. Rollback complete."))
+                _events.tryEmit(GalleryEvent.ShowToast("Permission denied. Rollback complete."))
                 onComplete?.invoke(MediaOpResult.Cancelled)
             }
         } finally {
@@ -2299,27 +2172,12 @@ class GalleryViewModel @Inject constructor(
         }
     }
 
-    fun toggleAlbumPin(album: Album) = viewModelScope.launch(Dispatchers.IO) {
-        try {
-            if (album.isPinned) dao.removePinnedAlbum(album.id) else dao.addPinnedAlbum(AlbumEntity(id = album.id, isPinned = true))
-        } catch (e: Exception) {}
-    }
-
-    fun hideItems(ids: List<Long>) = viewModelScope.launch(Dispatchers.IO) {
-        try { engine.hideItems(ids) } finally { removeMediaLocally(ids.toSet()) }
-    }.let { Unit }
-
-    fun unhideMedia(ids: List<Long>) = viewModelScope.launch(Dispatchers.IO) {
-        try { ids.forEach { dao.removeFromSecure(it) } } finally { refreshAfterFileOperation() }
-    }.let { Unit }
-
     fun deleteSecureMedia(ids: List<Long>) = viewModelScope.launch(Dispatchers.IO) {
         ids.forEach { dao.removeFromSecure(it) }
-        _events.trySend(GalleryEvent.OperationSuccess)
+        _events.tryEmit(GalleryEvent.OperationSuccess)
         removeMediaLocally(ids.toSet())
     }
 
-    // Unlocks a secured vault photo and loads it into temporary memory so the user can see it
     suspend fun decryptToMemory(encryptedFilePath: String): ByteArray? = withContext(Dispatchers.IO) {
         try {
             val resolver = getApplication<Application>().contentResolver
@@ -2328,7 +2186,6 @@ class GalleryViewModel @Inject constructor(
         } catch (e: Exception) { null }
     }
 
-    // Shrinks a vault photo into a tiny square so the gallery grid loads fast
     suspend fun decryptThumbnailToMemory(encryptedFilePath: String): ByteArray? = withContext(Dispatchers.IO) {
         try {
             val bytes = decryptToMemory(encryptedFilePath) ?: return@withContext null
@@ -2346,8 +2203,6 @@ class GalleryViewModel @Inject constructor(
         } catch (e: Exception) { null }
     }
 
-    // Because ExoPlayer (DVD Player) can't play videos straight out of encrypted memory,
-    // we have to write it to a secret temporary file on the hard drive first.
     suspend fun decryptToTempFile(encryptedFilePath: String): File? = withContext(Dispatchers.IO) {
         try {
             val out = File(File(getApplication<Application>().cacheDir, "secure_vault_playback").apply { mkdirs() }, "temp_${System.currentTimeMillis()}.mp4")
@@ -2360,12 +2215,10 @@ class GalleryViewModel @Inject constructor(
         } catch (e: Exception) { null }
     }
 
-    // Deletes the secret temporary video file as soon as the user closes it.
     fun deleteTempFile(file: File) {
         if (file.exists() && file.absolutePath.contains("secure_vault_playback")) file.delete()
     }
 
-    // A broom that sweeps up any temporary vault files that got left behind (e.g. if the app crashed).
     fun clearTempVaultCache() = viewModelScope.launch(Dispatchers.IO) {
         try {
             val cacheDir = File(getApplication<Application>().cacheDir, "secure_vault_playback")
@@ -2376,7 +2229,6 @@ class GalleryViewModel @Inject constructor(
         } catch (e: Exception) {}
     }.let { Unit }
 
-    // Schedules a background worker (TrashCleanupWorker) to wake up once a day at 2 AM to permanently delete photos in the Trash that are 30 days old.
     fun schedulePeriodicTrashCleanup() = runCatching {
         WorkManager.getInstance(getApplication()).enqueueUniquePeriodicWork(
             "TrashCleanupPeriodic",
@@ -2390,56 +2242,51 @@ class GalleryViewModel @Inject constructor(
     fun getNextMediaUri(currentUri: String): String? = processedMedia.value.indexOfFirst { it.uri.toString() == currentUri }.takeIf { it != -1 && it < processedMedia.value.lastIndex }?.let { processedMedia.value[it + 1].uri.toString() }
     fun getPreviousMediaUri(currentUri: String): String? = processedMedia.value.indexOfFirst { it.uri.toString() == currentUri }.takeIf { it > 0 }?.let { processedMedia.value[it - 1].uri.toString() }
 
-    // Asks the app to secretly load the next picture into RAM while the user is still looking at the current one, making swiping instant.
     fun preloadNextMedia(currentUri: String, preloadCallback: (Uri) -> Unit) {
         val nextIndex = processedMedia.value.indexOfFirst { it.uri.toString() == currentUri } + 1
         if (nextIndex in 1..processedMedia.value.lastIndex) preloadCallback(processedMedia.value[nextIndex].uri)
     }
-
 }
 
-/**
- * THE WAITER (PagingSource)
- * When you scroll down your phone, this class runs to the kitchen (Database),
- * grabs exactly 64 more photos, and brings them back to the screen.
- * This ensures the app uses almost zero RAM even if you have 100,000 photos.
- */
 class MediaPagingSource(
     private val contentResolver: ContentResolver,
     private val filter: MediaTypeFilter,
     private val query: String,
     private val albumId: String? = null,
     private val hiddenAlbums: Set<String> = emptySet(),
-    private val favoriteIds: List<Long> = emptyList()
+    private val favoriteIds: List<Long> = emptyList(),
+    private val sort: PhotoSort = PhotoSort.DateDesc
 ) : PagingSource<Int, MediaItem>() {
 
-    // If the list gets mixed up, this tells the Waiter where to start serving from again.
+    private val sortColumn = when (sort) {
+        PhotoSort.NameAsc, PhotoSort.NameDesc -> MediaStore.Files.FileColumns.DISPLAY_NAME
+        PhotoSort.SizeDesc -> MediaStore.Files.FileColumns.SIZE
+        else -> MediaStore.Files.FileColumns.DATE_ADDED
+    }
+    private val sortDesc = sort != PhotoSort.NameAsc && sort != PhotoSort.DateAsc
+
     override fun getRefreshKey(state: PagingState<Int, MediaItem>): Int? = state.anchorPosition?.let {
         state.closestPageToPosition(it)?.prevKey?.plus(state.config.pageSize) ?: state.closestPageToPosition(it)?.nextKey?.minus(state.config.pageSize)
     }
 
-    // The actual "Go to the kitchen" command.
     override suspend fun load(params: LoadParams<Int>): LoadResult<Int, MediaItem> = withContext(Dispatchers.IO) {
         try {
-            val position = params.key ?: 0 // Start point (offset)
-            val pageSize = params.loadSize // How many plates to carry (limit)
+            val position = params.key ?: 0
+            val pageSize = params.loadSize
             val mediaList = ArrayList<MediaItem>(pageSize)
 
-            // Look into the External storage where pictures are saved
             val uri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL) else MediaStore.Files.getContentUri("external")
 
-            // Creating the SQL Database search filter. (e.g. "Only give me Images, not Text documents")
             var selection = when (filter) {
-                MediaTypeFilter.ALL -> "(${MediaStore.Files.FileColumns.MEDIA_TYPE} IN (1, 3))" // 1 = Image, 3 = Video
+                MediaTypeFilter.ALL -> "(${MediaStore.Files.FileColumns.MEDIA_TYPE} IN (1, 3))"
                 MediaTypeFilter.PHOTOS -> "${MediaStore.Files.FileColumns.MEDIA_TYPE} = ${MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE} AND ${MediaStore.Files.FileColumns.MIME_TYPE} NOT LIKE 'application/%' AND ${MediaStore.Files.FileColumns.MIME_TYPE} NOT LIKE 'text/%'"
                 MediaTypeFilter.VIDEOS -> "${MediaStore.Files.FileColumns.MEDIA_TYPE} = ${MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO}"
             }
 
             val selectionArgsList = mutableListOf<String>()
 
-            // If we are looking inside a specific album, narrow down the SQL search
             when (albumId) {
-                ID_RECENT -> {} // Recent applies to everything, no extra filter needed.
+                ID_RECENT -> {}
                 ID_VIDEOS -> {
                     selection += " AND ${MediaStore.Files.FileColumns.MEDIA_TYPE} = ${MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO}"
                 }
@@ -2447,7 +2294,6 @@ class MediaPagingSource(
                     if (favoriteIds.isEmpty()) {
                         return@withContext LoadResult.Page(emptyList(), if (position == 0) null else position - pageSize, null)
                     }
-                    // Creates a list of question marks: "WHERE ID IN (?, ?, ?)"
                     val placeholders = favoriteIds.joinToString(",") { "?" }
                     selection += " AND ${MediaStore.Files.FileColumns._ID} IN ($placeholders)"
                     selectionArgsList.addAll(favoriteIds.map { it.toString() })
@@ -2471,7 +2317,6 @@ class MediaPagingSource(
                 }
             }
 
-            // If the user typed something in the search bar, filter by file name
             if (query.isNotBlank()) {
                 selection += " AND (${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE ? OR ${MediaStore.Files.FileColumns.BUCKET_DISPLAY_NAME} LIKE ?)"
                 val safeQuery = "%$query%"
@@ -2479,7 +2324,6 @@ class MediaPagingSource(
                 selectionArgsList.add(safeQuery)
             }
 
-            // Remove hidden albums from the search
             if (hiddenAlbums.isNotEmpty()) {
                 val placeholders = hiddenAlbums.joinToString(",") { "?" }
                 selection += " AND ${MediaStore.Files.FileColumns.BUCKET_ID} NOT IN ($placeholders)"
@@ -2488,8 +2332,6 @@ class MediaPagingSource(
 
             val selArgsArray = if (selectionArgsList.isNotEmpty()) selectionArgsList.toTypedArray() else null
 
-            // Which columns (pieces of data) we actually want Android to give us.
-            // We only ask for what we need so it's super fast.
             val projection = mutableListOf(
                 MediaStore.Files.FileColumns._ID,
                 MediaStore.Files.FileColumns.MIME_TYPE,
@@ -2499,40 +2341,38 @@ class MediaPagingSource(
                 MediaStore.Files.FileColumns.BUCKET_ID,
                 MediaStore.Files.FileColumns.BUCKET_DISPLAY_NAME,
                 MediaStore.Files.FileColumns.WIDTH,
-                MediaStore.Files.FileColumns.HEIGHT
+                MediaStore.Files.FileColumns.HEIGHT,
+                MediaStore.MediaColumns.DURATION
             ).apply {
+                add(MediaStore.Files.FileColumns.DATA)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     add(MediaStore.Files.FileColumns.RELATIVE_PATH)
                     add(MediaStore.MediaColumns.VOLUME_NAME)
-                } else {
-                    add(MediaStore.Files.FileColumns.DATA)
                 }
             }
 
-            // Executing the query on the database.
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 val bundle = Bundle().apply {
                     putString(ContentResolver.QUERY_ARG_SQL_SELECTION, selection)
                     if (selArgsArray != null) putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, selArgsArray)
-                    putStringArray(ContentResolver.QUERY_ARG_SORT_COLUMNS, arrayOf(MediaStore.Files.FileColumns.DATE_ADDED))
-                    putInt(ContentResolver.QUERY_ARG_SORT_DIRECTION, ContentResolver.QUERY_SORT_DIRECTION_DESCENDING) // Newest first
-                    putInt(ContentResolver.QUERY_ARG_LIMIT, pageSize) // Give me 64 items
-                    putInt(ContentResolver.QUERY_ARG_OFFSET, position) // Starting at item #128
+                    putStringArray(ContentResolver.QUERY_ARG_SORT_COLUMNS, arrayOf(sortColumn))
+                    putInt(ContentResolver.QUERY_ARG_SORT_DIRECTION, if(sortDesc) ContentResolver.QUERY_SORT_DIRECTION_DESCENDING else ContentResolver.QUERY_SORT_DIRECTION_ASCENDING)
+                    putInt(ContentResolver.QUERY_ARG_LIMIT, pageSize)
+                    putInt(ContentResolver.QUERY_ARG_OFFSET, position)
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) putInt(MediaStore.QUERY_ARG_MATCH_TRASHED, MediaStore.MATCH_EXCLUDE)
                 }
                 contentResolver.query(uri, projection.toTypedArray(), bundle, null)?.use { cursor -> processCursor(cursor, mediaList) }
             } else {
-                contentResolver.query(uri, projection.toTypedArray(), selection, selArgsArray, "${MediaStore.Files.FileColumns.DATE_ADDED} DESC LIMIT $pageSize OFFSET $position")?.use { cursor -> processCursor(cursor, mediaList) }
+                val sortOrderString = if(sortDesc) "DESC" else "ASC"
+                contentResolver.query(uri, projection.toTypedArray(), selection, selArgsArray, "$sortColumn $sortOrderString LIMIT $pageSize OFFSET $position")?.use { cursor -> processCursor(cursor, mediaList) }
             }
 
-            // Tell the caller we successfully loaded a page of items, and give them the numbers to find the NEXT page when they are ready.
             LoadResult.Page(mediaList, if (position == 0) null else position - pageSize, if (mediaList.isEmpty() || mediaList.size < pageSize) null else position + pageSize)
         } catch (e: Exception) {
-            LoadResult.Error(e) // Oops, dropped the plates.
+            LoadResult.Error(e)
         }
     }
 
-    // Translates the raw Android Database "Cursor" row into a nice, clean `MediaItem` box that our app understands.
     private fun processCursor(c: Cursor, list: MutableList<MediaItem>) {
         val iC = c.getColumnIndexOrThrow(MediaStore.Files.FileColumns._ID)
         val mC = c.getColumnIndexOrThrow(MediaStore.Files.FileColumns.MIME_TYPE)
@@ -2542,13 +2382,14 @@ class MediaPagingSource(
         val bIC = c.getColumnIndexOrThrow(MediaStore.Files.FileColumns.BUCKET_ID)
         val bNC = c.getColumnIndexOrThrow(MediaStore.Files.FileColumns.BUCKET_DISPLAY_NAME)
         val rpC = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) c.getColumnIndex(MediaStore.Files.FileColumns.RELATIVE_PATH) else -1
-        val pC = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) c.getColumnIndex(MediaStore.Files.FileColumns.DATA) else -1
+        val pC = c.getColumnIndex(MediaStore.Files.FileColumns.DATA)
         val wC = c.getColumnIndex(MediaStore.Files.FileColumns.WIDTH)
         val hC = c.getColumnIndex(MediaStore.Files.FileColumns.HEIGHT)
         val volC = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) c.getColumnIndex(MediaStore.MediaColumns.VOLUME_NAME) else -1
+        val durC = c.getColumnIndex(MediaStore.MediaColumns.DURATION)
 
         while (c.moveToNext()) {
-            val p = if (rpC >= 0) (c.getString(rpC) ?: "") + (c.getString(nC) ?: "") else if (pC >= 0) c.getString(pC) ?: "" else ""
+            val p = if (pC >= 0) c.getString(pC) ?: "" else (if (rpC >= 0) (c.getString(rpC) ?: "") + (c.getString(nC) ?: "") else "")
             val rp = if (rpC >= 0) c.getString(rpC) ?: "" else p.substringBeforeLast('/')
             val m = c.getString(mC) ?: ""
             val rd = c.getLong(dC)
@@ -2559,24 +2400,31 @@ class MediaPagingSource(
             val w = if (wC >= 0) c.getInt(wC) else 0
             val h = if (hC >= 0) c.getInt(hC) else 0
 
+            val volName = if (volC >= 0) c.getString(volC) ?: "" else ""
+            val baseUri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && volName.isNotBlank()) {
+                if (isV) MediaStore.Video.Media.getContentUri(volName)
+                else MediaStore.Images.Media.getContentUri(volName)
+            } else {
+                if (isV) MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+                else MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+            }
+
             list.add(MediaItem(
                 id = id,
-                // Create a special content link (URI) so Android knows how to display this file later
-                uri = if (isV) ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, id) else ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id),
+                uri = ContentUris.withAppendedId(baseUri, id),
                 path = p,
                 relativePath = rp,
                 name = c.getString(nC) ?: "",
-                // Convert huge numbers into standard seconds-since-1970 format
                 dateAdded = if (rd > 1000000000000L) rd / 1000L else if (rd > 0) rd else System.currentTimeMillis() / 1000L,
                 size = c.getLong(sC),
                 isVideo = isV,
-                duration = 0L,
+                duration = if (durC >= 0) c.getLong(durC) else 0L,
                 width = w,
                 height = h,
                 mimeType = m,
                 bucketId = c.getString(bIC) ?: "",
                 bucketName = c.getString(bNC) ?: "",
-                volumeName = if (volC >= 0) c.getString(volC) ?: "" else "",
+                volumeName = volName,
                 isFavorite = false,
                 isHidden = false
             ))

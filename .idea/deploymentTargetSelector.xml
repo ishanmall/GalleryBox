@@ -48,22 +48,14 @@
       </SelectionState>
       <SelectionState runConfigName="main">
         <option name="selectionMode" value="DROPDOWN" />
-        <DropdownSelection timestamp="2026-09-10T16:00:08.364642600Z">
+        <DropdownSelection timestamp="2026-10-07T06:15:13.578641300Z">
           <Target type="DEFAULT_BOOT">
             <handle>
-              <DeviceId pluginId="Wireless" identifier="serviceName=adb-RZ8N619C0BZ-mX48Oa" />
+              <DeviceId pluginId="Wireless" identifier="serviceName=adb-RZGYB227R9K-Hcdt22" />
             </handle>
           </Target>
         </DropdownSelection>
-        <DialogSelection>
-          <targets>
-            <Target type="DEFAULT_BOOT">
-              <handle>
-                <DeviceId pluginId="Wireless" identifier="serviceName=adb-RZ8N619C0BZ-mX48Oa" />
-              </handle>
-            </Target>
-          </targets>
-        </DialogSelection>
+        <DialogSelection />
       </SelectionState>
     </selectionStates>
   </component>

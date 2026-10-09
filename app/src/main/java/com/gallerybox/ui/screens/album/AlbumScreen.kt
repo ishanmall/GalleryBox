@@ -3,6 +3,9 @@
 
 package com.gallerybox.ui.screens.album
 
+// =========================================================================================
+// 🧰 THE TOOLBOX (IMPORTS)
+// =========================================================================================
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.ActivityManager
@@ -30,10 +33,13 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.*
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.*
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
@@ -72,6 +78,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -88,6 +95,8 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.fragment.app.FragmentActivity
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.PlayerView
@@ -118,7 +127,7 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 
 // ---------------------------------------------------------------------------
-// 🖼️ GALLERY DATA & VIEWMODELS
+// 🧠 GALLERY DATA & VIEWMODELS
 // ---------------------------------------------------------------------------
 import com.gallerybox.data.Album
 import com.gallerybox.data.MediaItem
@@ -134,16 +143,13 @@ import com.gallerybox.viewmodel.SecurityViewModel
 import com.gallerybox.viewmodel.TrashViewModel
 
 // ---------------------------------------------------------------------------
-// 🧠 ADAPTIVE LOGIC IMPORTS
+// 📱 ADAPTIVE LOGIC IMPORTS
 // ---------------------------------------------------------------------------
 import com.gallerybox.ui.screens.adaptive.AdaptiveState
+import com.gallerybox.ui.screens.adaptive.DevicePosture
 import com.gallerybox.ui.screens.adaptive.rememberAdaptiveState
 import com.gallerybox.ui.screens.adaptive.WindowWidthSize
 
-/**
- * Constants used to identify "Virtual" albums (albums that aren't real folders,
- * but act like them—such as the "Favorites" folder or "Recent" folder).
- */
 const val ID_CAMERA = "virtual_camera"
 const val ID_RECENT = "virtual_recent"
 const val ID_FAVORITES = "virtual_favorites"
@@ -158,12 +164,44 @@ enum class DeviceTier { LOW, MID, HIGH }
 
 private val monthYearFormatter by lazy { SimpleDateFormat("MMM yyyy", Locale.getDefault()) }
 
-/**
- * =========================================================================================
- * 🛠️ HELPER CLASSES
- * =========================================================================================
- * These keep track of the different menus/dialogs the user can open.
- */
+private val PremiumSpring = spring<Float>(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMediumLow)
+private val PremiumEnter = scaleIn(PremiumSpring) + fadeIn(tween(180, easing = FastOutSlowInEasing))
+private val PremiumExit = scaleOut(tween(120)) + fadeOut(tween(120))
+
+@Composable
+fun ScaleButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (isPressed) 0.9f else 1f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
+        label = "scale"
+    )
+
+    Box(
+        modifier = modifier
+            .scale(scale)
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = onClick
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        content()
+    }
+}
+
+enum class UiMediaFilter(val label: String) {
+    ALL("All"),
+    PHOTOS("Photos"),
+    VIDEOS("Videos")
+}
+
 @Stable
 data class AlbumActions(
     val onAlbumClick: (Album) -> Unit,
@@ -210,10 +248,6 @@ sealed class DetailUiDialog {
     data class Delete(val mediaIds: List<Long>) : DetailUiDialog()
 }
 
-/**
- * Helper to dig through Android's system to find the actual Activity.
- * Needed for showing Dialogs and Biometric Prompts.
- */
 fun Context.findFragmentActivity(): FragmentActivity? {
     var context = this
     while (context is ContextWrapper) {
@@ -252,10 +286,6 @@ fun getFolderName(path: String): String {
     }
 }
 
-/**
- * Checks how much RAM the phone has to decide if we should load high-quality
- * images or low-quality images to prevent the app from crashing on cheap phones.
- */
 fun getDeviceTier(context: Context): DeviceTier {
     val m = ActivityManager.MemoryInfo()
     (context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).getMemoryInfo(m)
@@ -313,9 +343,6 @@ fun shareMediaItems(context: Context, items: List<MediaItem>) {
     }
 }
 
-/**
- * Safely asks the user for their fingerprint before enabling/disabling the App Lock.
- */
 fun toggleAppLock(
     context: Context,
     securityViewModel: SecurityViewModel,
@@ -380,11 +407,6 @@ private fun refreshAndClearCache(context: Context, viewModel: GalleryViewModel, 
     }
 }
 
-/**
- * =========================================================================================
- * 🏎️ CUSTOM SCROLLBARS
- * =========================================================================================
- */
 @Composable
 fun PagedSamsungFastScrollbar(
     gridState: LazyGridState,
@@ -530,7 +552,7 @@ fun PagedSamsungFastScrollbar(
                         .offset {
                             IntOffset(
                                 x = with(density) { (-100.dp).roundToPx() },
-                                y = (thumbOffsetPx - with(density) { 24.dp.toPx() }).toInt().coerceAtLeast(0)
+                                y = (thumbOffsetPx + with(density) { 24.dp.toPx() }).toInt().coerceAtLeast(0)
                             )
                         },
                     shape = RoundedCornerShape(18.dp),
@@ -738,8 +760,8 @@ fun AlbumScreen(
     actions: AlbumActions
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
 
-    // 🧠 1. Bring in the Adaptive Engine to know if this is a phone or tablet!
     val adaptiveState = rememberAdaptiveState()
 
     val deviceTier = remember { getDeviceTier(context) }
@@ -753,12 +775,23 @@ fun AlbumScreen(
         viewModel.onSafTreeGranted(result.data?.data)
     }
 
-    LaunchedEffect(viewModel) {
-        viewModel.events.collect { event ->
-            when (event) {
-                is GalleryEvent.ShowToast -> Toast.makeText(context, event.message, Toast.LENGTH_SHORT).show()
-                is GalleryEvent.LaunchIntent -> safTreeLauncher.launch(event.intent)
-                else -> {}
+    val intentSenderLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
+        val granted = result.resultCode == Activity.RESULT_OK
+        viewModel.onPermissionResult(granted)
+        if (!granted) {
+            Toast.makeText(context, "Permission Denied", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    LaunchedEffect(viewModel, lifecycleOwner) {
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            viewModel.events.collect { event ->
+                when (event) {
+                    is GalleryEvent.ShowToast -> Toast.makeText(context, event.message, Toast.LENGTH_SHORT).show()
+                    is GalleryEvent.RequestPermission -> intentSenderLauncher.launch(IntentSenderRequest.Builder(event.intentSender).build())
+                    is GalleryEvent.LaunchIntent -> safTreeLauncher.launch(event.intent)
+                    else -> {}
+                }
             }
         }
     }
@@ -781,8 +814,15 @@ fun AlbumScreen(
     var showSelectionMenu by remember { mutableStateOf(false) }
     var optimisticallyRemovedAlbums by remember { mutableStateOf(persistentSetOf<String>()) }
 
-    LaunchedEffect(viewerState, isSelectionMode) {
-        onViewerStateChanged(viewerState is GalleryViewerState.Open || isSelectionMode)
+    LaunchedEffect(viewerState) {
+        onViewerStateChanged(viewerState is GalleryViewerState.Open)
+    }
+
+    LaunchedEffect(vmAlbums) {
+        if (optimisticallyRemovedAlbums.isNotEmpty()) {
+            delay(2500)
+            optimisticallyRemovedAlbums = persistentSetOf()
+        }
     }
 
     val albumPreviews = remember(rawAlbumPreviews) {
@@ -858,19 +898,21 @@ fun AlbumScreen(
     }
 
     val dynamicList = remember { mutableStateListOf<Album>() }
+    var lastReorderAtMs by remember { mutableLongStateOf(0L) }
 
     LaunchedEffect(displayAlbums) {
-        if (!isDragging) {
-            val oldIds = dynamicList.map { it.id }
-            val newIds = displayAlbums.map { it.id }
-            if (oldIds != newIds) {
-                dynamicList.clear()
-                dynamicList.addAll(displayAlbums)
-            } else {
-                displayAlbums.forEachIndexed { i, a ->
-                    if (dynamicList[i] != a) {
-                        dynamicList[i] = a
-                    }
+        if (isDragging) return@LaunchedEffect
+        // give the DB write time to land before we let the VM order overwrite the user's drop
+        if (System.currentTimeMillis() - lastReorderAtMs < 2000) return@LaunchedEffect
+        val oldIds = dynamicList.map { it.id }
+        val newIds = displayAlbums.map { it.id }
+        if (oldIds != newIds) {
+            dynamicList.clear()
+            dynamicList.addAll(displayAlbums)
+        } else {
+            displayAlbums.forEachIndexed { i, a ->
+                if (dynamicList[i] != a) {
+                    dynamicList[i] = a
                 }
             }
         }
@@ -879,40 +921,33 @@ fun AlbumScreen(
     val screenWidthDp = LocalConfiguration.current.screenWidthDp.toFloat()
     val prefs = remember { context.getSharedPreferences("gallery_prefs", Context.MODE_PRIVATE) }
 
-    // 🎨 2. SMART ADAPTIVE GRID COLUMNS
-    // If the user hasn't explicitly set a custom grid size, we use the Adaptive State
-    // to automatically pick the best size for their specific screen!
     var columnCount by remember {
         mutableIntStateOf(
-            prefs.getInt("gallery_album_grid_columns",
-                when (adaptiveState.widthSize) {
-                    WindowWidthSize.COMPACT -> 2  // Normal phones get 2 big folders per row
-                    WindowWidthSize.MEDIUM -> 3   // Small tablets get 3
-                    WindowWidthSize.EXPANDED -> 5 // Huge tablets get 5
-                }
-            )
+            prefs.getInt("gallery_album_grid_columns", 3)
         )
     }
     val gridState = rememberLazyGridState()
 
-    val intentSenderLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
+    val intentSenderLauncherTrash = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
         val g = result.resultCode == Activity.RESULT_OK
         trashViewModel.onPermissionResultGlobal(g)
         if (!g) Toast.makeText(context, "Permission Denied", Toast.LENGTH_SHORT).show()
     }
 
-    LaunchedEffect(trashViewModel) {
+    LaunchedEffect(trashViewModel, lifecycleOwner) {
         trashViewModel.onRefreshGallery = { refreshAndClearCache(context, viewModel) }
-        trashViewModel.events.collect { event ->
-            when (event) {
-                is GalleryEvent.RequestPermission -> intentSenderLauncher.launch(IntentSenderRequest.Builder(event.intentSender).build())
-                is GalleryEvent.OperationSuccess -> {
-                    isSelectionMode = false
-                    selectedIds = persistentListOf<String>().toImmutableSet()
-                    Toast.makeText(context, "Moved to Trash", Toast.LENGTH_SHORT).show()
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            trashViewModel.events.collect { event ->
+                when (event) {
+                    is GalleryEvent.RequestPermission -> intentSenderLauncherTrash.launch(IntentSenderRequest.Builder(event.intentSender).build())
+                    is GalleryEvent.OperationSuccess -> {
+                        isSelectionMode = false
+                        selectedIds = persistentListOf<String>().toImmutableSet()
+                        Toast.makeText(context, "Moved to Trash", Toast.LENGTH_SHORT).show()
+                    }
+                    is GalleryEvent.ShowToast -> Toast.makeText(context, event.message, Toast.LENGTH_SHORT).show()
+                    else -> {}
                 }
-                is GalleryEvent.ShowToast -> Toast.makeText(context, event.message, Toast.LENGTH_SHORT).show()
-                else -> {}
             }
         }
     }
@@ -1130,7 +1165,7 @@ fun AlbumScreen(
                             screenWidthDp = screenWidthDp,
                             deviceTier = deviceTier,
                             sdCardAlbums = sdCardAlbums,
-                            onOrderSaved = { albums: List<Album> -> viewModel.saveCustomAlbumOrder(albums) },
+                            onOrderSaved = { },
                             onAlbumClick = { album ->
                                 if (isSelectionMode) {
                                     val newSelection = if (selectedIds.contains(album.id)) {
@@ -1144,13 +1179,16 @@ fun AlbumScreen(
                                     actions.onAlbumClick(album)
                                 }
                             },
-                            onAlbumLongClick = { album ->
-                                isSelectionMode = true
-                                selectedIds = persistentSetOf(album.id)
+                            onSelectionChange = { newSelection ->
+                                selectedIds = newSelection
+                            },
+                            onSelectionModeChange = { mode ->
+                                isSelectionMode = mode
                             },
                             onDragStateChange = { dragging ->
                                 isDragging = dragging
                                 if (!dragging) {
+                                    lastReorderAtMs = System.currentTimeMillis()
                                     viewModel.saveCustomAlbumOrder(dynamicList.toList())
                                 }
                             }
@@ -1346,8 +1384,8 @@ fun AlbumDetailScreen(
     actions: DetailActions
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
 
-    // 🧠 1. Bring in the Adaptive Engine!
     val adaptiveState = rememberAdaptiveState()
 
     val haptic = LocalHapticFeedback.current
@@ -1378,10 +1416,10 @@ fun AlbumDetailScreen(
 
     var openedMediaItem by remember { mutableStateOf<MediaItem?>(null) }
 
-    val pagedMediaFlow = remember(albumId, mediaFilter, debouncedSearchQuery) {
+    val pagedMediaFlow: kotlinx.coroutines.flow.Flow<androidx.paging.PagingData<GalleryGridItem>> = remember(albumId, mediaFilter, debouncedSearchQuery) {
         viewModel.getPagedMediaForAlbumStream(albumId, mediaFilter, debouncedSearchQuery)
-            .map { pagingData ->
-                pagingData.filter { it is GalleryGridItem.Media }
+            .map { pagingData: androidx.paging.PagingData<GalleryGridItem> ->
+                pagingData.filter { item -> item is GalleryGridItem.Media }
             }
     }
     val pagedMedia = pagedMediaFlow.collectAsLazyPagingItems()
@@ -1389,31 +1427,53 @@ fun AlbumDetailScreen(
     var selectedIds by remember { mutableStateOf<ImmutableSet<Long>>(persistentListOf<Long>().toImmutableSet()) }
     val dragSelection = remember { mutableSetOf<Long>() }
 
-    val intentSenderLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
+    val intentSenderLauncherTrash = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
         val g = result.resultCode == Activity.RESULT_OK
         trashViewModel.onPermissionResultGlobal(g)
         if (!g) Toast.makeText(context, "Permission Denied", Toast.LENGTH_SHORT).show()
     }
 
-    LaunchedEffect(trashViewModel) {
+    val intentSenderLauncherViewModel = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
+        val granted = result.resultCode == Activity.RESULT_OK
+        viewModel.onPermissionResult(granted)
+        if (!granted) {
+            Toast.makeText(context, "Permission Denied", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    LaunchedEffect(trashViewModel, lifecycleOwner) {
         trashViewModel.onRefreshGallery = { refreshAndClearCache(context, viewModel) }
-        trashViewModel.events.collect { event ->
-            when (event) {
-                is GalleryEvent.RequestPermission -> intentSenderLauncher.launch(IntentSenderRequest.Builder(event.intentSender).build())
-                is GalleryEvent.OperationSuccess -> {
-                    isSelectionMode = false
-                    selectedIds = persistentListOf<Long>().toImmutableSet()
-                    viewModel.closeViewer()
-                    Toast.makeText(context, "Moved to Trash", Toast.LENGTH_SHORT).show()
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            trashViewModel.events.collect { event ->
+                when (event) {
+                    is GalleryEvent.RequestPermission -> intentSenderLauncherTrash.launch(IntentSenderRequest.Builder(event.intentSender).build())
+                    is GalleryEvent.OperationSuccess -> {
+                        isSelectionMode = false
+                        selectedIds = persistentListOf<Long>().toImmutableSet()
+                        viewModel.closeViewer()
+                        Toast.makeText(context, "Moved to Trash", Toast.LENGTH_SHORT).show()
+                    }
+                    is GalleryEvent.ShowToast -> Toast.makeText(context, event.message, Toast.LENGTH_SHORT).show()
+                    else -> {}
                 }
-                is GalleryEvent.ShowToast -> Toast.makeText(context, event.message, Toast.LENGTH_SHORT).show()
-                else -> {}
             }
         }
     }
 
-    LaunchedEffect(viewerState, isSelectionMode) {
-        onViewerStateChanged(viewerState is GalleryViewerState.Open || isSelectionMode)
+    LaunchedEffect(viewModel, lifecycleOwner) {
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            viewModel.events.collect { event ->
+                when (event) {
+                    is GalleryEvent.ShowToast -> Toast.makeText(context, event.message, Toast.LENGTH_SHORT).show()
+                    is GalleryEvent.RequestPermission -> intentSenderLauncherViewModel.launch(IntentSenderRequest.Builder(event.intentSender).build())
+                    else -> {}
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(viewerState) {
+        onViewerStateChanged(viewerState is GalleryViewerState.Open)
     }
 
     LaunchedEffect(isSelectionMode) {
@@ -1452,18 +1512,9 @@ fun AlbumDetailScreen(
 
     val prefs = remember { context.getSharedPreferences("gallery_prefs", Context.MODE_PRIVATE) }
 
-    // 🎨 2. SMART ADAPTIVE MEDIA COLUMNS
-    // If inside an album, we want photos to be smaller so we can see more of them.
-    // We adjust the grid based on the device width!
     var detailColumns by remember {
         mutableIntStateOf(
-            prefs.getInt("gallery_media_grid_columns",
-                when (adaptiveState.widthSize) {
-                    WindowWidthSize.COMPACT -> 4  // Normal phones get 4 squares per row
-                    WindowWidthSize.MEDIUM -> 6   // Small tablets get 6
-                    WindowWidthSize.EXPANDED -> 8 // Huge tablets get 8
-                }
-            )
+            prefs.getInt("gallery_media_grid_columns", 4)
         )
     }
 
@@ -2158,13 +2209,20 @@ fun ModernDateHeader(modifier: Modifier = Modifier, title: String, onSelectAllFo
 fun StatelessAlbumGrid(
     gridState: LazyGridState, bottomPadding: Dp, columnCount: Int, dynamicList: SnapshotStateList<Album>, albumPreviews: ImmutableMap<String, ImmutableList<Uri>>,
     isSelectionMode: Boolean, selectedIds: ImmutableSet<String>, sortOption: AlbumSort, searchQuery: String, screenWidthDp: Float, deviceTier: DeviceTier, sdCardAlbums: Set<String>,
-    onOrderSaved: (List<Album>) -> Unit, onAlbumClick: (Album) -> Unit, onAlbumLongClick: (Album) -> Unit, onDragStateChange: (Boolean) -> Unit
+    onOrderSaved: (List<Album>) -> Unit, onAlbumClick: (Album) -> Unit, onSelectionChange: (ImmutableSet<String>) -> Unit, onSelectionModeChange: (Boolean) -> Unit, onDragStateChange: (Boolean) -> Unit
 ) {
     val haptic = LocalHapticFeedback.current
+    val density = LocalDensity.current
     var draggedIndex by remember { mutableIntStateOf(-1) }
     var dragOffset by remember { mutableStateOf(Offset.Zero) }
     var scrollVelocity by remember { mutableFloatStateOf(0f) }
+    var suppressNextAlbumClick by remember { mutableStateOf(false) }
+
     val actualColumns = columnCount.coerceAtLeast(1)
+    val currentSelectionMode by rememberUpdatedState(isSelectionMode)
+    val currentSelectedIds by rememberUpdatedState(selectedIds)
+    val currentOnSelectionChange by rememberUpdatedState(onSelectionChange)
+    val currentOnSelectionModeChange by rememberUpdatedState(onSelectionModeChange)
 
     var isScrollingFast by remember { mutableStateOf(false) }
     LaunchedEffect(gridState) {
@@ -2185,6 +2243,7 @@ fun StatelessAlbumGrid(
         (raw / 40) * 40
     }
 
+    // Auto-scroll for manual reordering
     LaunchedEffect(scrollVelocity) {
         if (scrollVelocity != 0f) {
             while (isActive) {
@@ -2207,8 +2266,6 @@ fun StatelessAlbumGrid(
             itemsIndexed(items = dynamicList, key = { _, album -> album.id }, contentType = { _, _ -> "album" }) { index, album ->
                 val isBeingDragged = draggedIndex == index
                 val reorderEnabled = sortOption == AlbumSort.Custom && searchQuery.isBlank()
-                val isSelectedSolo = isSelectionMode && selectedIds.size == 1 && selectedIds.contains(album.id)
-                val canDrag = reorderEnabled && isSelectedSolo
 
                 fun checkAndPerformSwap() {
                     val layoutInfo = gridState.layoutInfo
@@ -2239,70 +2296,88 @@ fun StatelessAlbumGrid(
                     }
                 }
 
-                val dragModifier = if (canDrag) {
-                    Modifier.pointerInput(album.id) {
-                        awaitEachGesture {
-                            val down = awaitFirstDown(requireUnconsumed = false)
-                            if (draggedIndex != -1) return@awaitEachGesture
+                val gestureModifier = Modifier.pointerInput(album.id, reorderEnabled) {
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
 
-                            val smoothThresholdPx = with(this) { 4.dp.toPx() }
-                            var accumulated = Offset.Zero
-                            var started = false
-                            var lastSwapCheckMs = 0L
+                        if (draggedIndex != -1) {
+                            return@awaitEachGesture
+                        }
 
+                        val longPress = awaitLongPressOrCancellation(down.id) ?: return@awaitEachGesture
+
+                        // Long press owns this entire gesture.
+                        suppressNextAlbumClick = true
+
+                        longPress.consume()
+
+                        var accumulated = Offset.Zero
+                        var started = false
+                        var lastSwapCheckMs = 0L
+
+                        try {
                             while (true) {
                                 val event = awaitPointerEvent()
                                 val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                change.consume()
+
                                 if (!change.pressed) break
+                                if (!reorderEnabled) continue
+
                                 val delta = change.positionChange()
                                 if (!started) {
                                     accumulated += delta
-                                    if (accumulated.getDistance() > smoothThresholdPx) {
+                                    if (accumulated.getDistance() > viewConfiguration.touchSlop) {
                                         started = true
                                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                         draggedIndex = index
                                         dragOffset = accumulated
                                         onDragStateChange(true)
-                                        change.consume()
                                         checkAndPerformSwap()
                                         lastSwapCheckMs = System.currentTimeMillis()
                                     }
                                 } else {
-                                    change.consume()
                                     dragOffset += delta
                                     val now = System.currentTimeMillis()
-                                    val swapInterval = if (deviceTier == DeviceTier.LOW) 48 else 32
+                                    val swapInterval = if (deviceTier == DeviceTier.LOW) 48L else 32L
                                     if (now - lastSwapCheckMs > swapInterval) {
                                         checkAndPerformSwap()
                                         lastSwapCheckMs = now
                                     }
                                 }
-                                if (!event.changes.any { it.pressed }) break
                             }
+                        } finally {
+                            if (!started) {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
 
-                            if (started) {
+                                if (!currentSelectionMode) {
+                                    currentOnSelectionModeChange(true)
+                                    currentOnSelectionChange(
+                                        setOf(album.id).toImmutableSet()
+                                    )
+                                } else if (!currentSelectedIds.contains(album.id)) {
+                                    currentOnSelectionChange(
+                                        (currentSelectedIds + album.id).toImmutableSet()
+                                    )
+                                }
+                            } else {
                                 draggedIndex = -1
                                 dragOffset = Offset.Zero
                                 scrollVelocity = 0f
                                 onDragStateChange(false)
-                                onOrderSaved(dynamicList.toList())
                             }
                         }
                     }
-                } else Modifier
+                }
 
-                val itemModifier = Modifier
-
-                Box(modifier = itemModifier
+                Box(modifier = Modifier
                     .zIndex(if (isBeingDragged) 1f else 0f)
                     .graphicsLayer {
                         if (isBeingDragged) {
                             translationX = dragOffset.x
                             translationY = dragOffset.y
                             if (deviceTier != DeviceTier.LOW) {
-                                scaleX = 1.04f
-                                scaleY = 1.04f
-                                shadowElevation = 16.dp.toPx()
+                                scaleX = 1.04f; scaleY = 1.04f; shadowElevation = 16.dp.toPx()
                             }
                         }
                     }
@@ -2312,13 +2387,18 @@ fun StatelessAlbumGrid(
                         previews = albumPreviews[album.id] ?: persistentListOf(),
                         isSelected = selectedIds.contains(album.id),
                         isSelectionMode = isSelectionMode,
-                        canDrag = canDrag,
+                        canDrag = reorderEnabled,
                         isSdCard = sdCardAlbums.contains(album.id),
                         deviceTier = deviceTier,
-                        dragModifier = dragModifier,
+                        dragModifier = gestureModifier,
                         thumbSize = dynamicThumbSize,
-                        onClick = { onAlbumClick(album) },
-                        onLongClick = { onAlbumLongClick(album) }
+                        onClick = {
+                            if (suppressNextAlbumClick) {
+                                suppressNextAlbumClick = false
+                            } else {
+                                onAlbumClick(album)
+                            }
+                        }
                     )
                 }
             }
@@ -2354,6 +2434,7 @@ fun StatelessMediaGrid(
 ) {
 
     val haptic = LocalHapticFeedback.current
+    val density = LocalDensity.current
 
     var isScrollingFast by remember { mutableStateOf(false) }
     LaunchedEffect(gridState) {
@@ -2374,8 +2455,11 @@ fun StatelessMediaGrid(
         (raw / 40) * 40
     }
 
+    val currentMediaMap by rememberUpdatedState(mediaMap)
     var autoScrollSpeed by remember { mutableFloatStateOf(0f) }
     var lastPointerPosition by remember { mutableStateOf<Offset?>(null) }
+    var pendingDownOffset by remember { mutableStateOf(Offset.Zero) }
+    var longPressHandled by remember { mutableStateOf(false) }
 
     fun indexAt(offset: Offset): Int {
         val layoutInfo = gridState.layoutInfo
@@ -2386,6 +2470,7 @@ fun StatelessMediaGrid(
         } ?: return -1
         return itemInfo.index - 1
     }
+
     var dragAnchorIndex by remember { mutableIntStateOf(-1) }
     var dragLastIndex by remember { mutableIntStateOf(-1) }
     val currentOnSelectRange by rememberUpdatedState(onSelectRange)
@@ -2398,27 +2483,12 @@ fun StatelessMediaGrid(
         for (i in lo..hi) {
             val gridItem = runCatching { pagedMedia.peek(i) }.getOrNull()
             if (gridItem is GalleryGridItem.Media) {
-                itemsToSelect.add(mediaMap[gridItem.item.id] ?: gridItem.item)
+                itemsToSelect.add(currentMediaMap[gridItem.item.id] ?: gridItem.item)
             }
         }
         if (itemsToSelect.isNotEmpty()) {
             currentOnSelectRange(itemsToSelect)
         }
-    }
-
-    val currentIsSelectionMode by rememberUpdatedState(isSelectionMode)
-    val currentOnMediaLongClick by rememberUpdatedState(onMediaLongClick)
-
-    fun beginDrag(offset: Offset) {
-        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-        if (!currentIsSelectionMode) {
-            currentOnMediaLongClick()
-        }
-        val idx = indexAt(offset)
-        dragAnchorIndex = idx
-        dragLastIndex = idx
-        lastPointerPosition = offset
-        if (idx >= 0) applyRangeSelect(dragAnchorIndex, dragAnchorIndex)
     }
 
     fun updateDrag(position: Offset, boxHeightPx: Int, densityScale: Float) {
@@ -2450,6 +2520,7 @@ fun StatelessMediaGrid(
     fun endDrag() {
         autoScrollSpeed = 0f
         lastPointerPosition = null
+        pendingDownOffset = Offset.Zero
     }
 
     LaunchedEffect(autoScrollSpeed) {
@@ -2468,39 +2539,45 @@ fun StatelessMediaGrid(
         }
     }
 
-    val slideModifier = if (isSelectionMode) {
-        Modifier.pointerInput(pagedMedia.itemCount) {
-            var lastDragUpdateMs = 0L
-            detectDragGestures(
-                onDragStart = { offset -> beginDrag(offset) },
-                onDrag = { change, _ ->
+    // Long press = select (handled by the tile). Keep holding + move = extend the range.
+    // Movement before the long press is a plain scroll and is never intercepted.
+    val slideModifier = Modifier.pointerInput(Unit) {
+        var lastDragUpdateMs = 0L
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false)
+            pendingDownOffset = down.position
+            val slop = viewConfiguration.touchSlop
+            val timeoutMs = viewConfiguration.longPressTimeoutMillis
+            val downTimeMs = System.currentTimeMillis()
+            var longPressed = false
+            while (!longPressed) {
+                val event = awaitPointerEvent()
+                val change = event.changes.firstOrNull { it.id == down.id } ?: return@awaitEachGesture
+                if (!change.pressed) return@awaitEachGesture
+                if (change.positionChange().getDistance() > slop) return@awaitEachGesture  // it's a scroll
+                if (System.currentTimeMillis() - downTimeMs >= timeoutMs) longPressed = true
+            }
+            longPressHandled = true
+            // the tile's onLongClick already selected the item under the finger
+            val anchor = indexAt(down.position)
+            dragAnchorIndex = anchor
+            dragLastIndex = anchor
+            lastPointerPosition = down.position
+            try {
+                while (true) {
+                    val event = awaitPointerEvent()
+                    val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                    if (!change.pressed) break
                     change.consume()
                     val now = System.currentTimeMillis()
                     if (now - lastDragUpdateMs > 32) {
-                        updateDrag(change.position, size.height, density)
+                        updateDrag(change.position, size.height, density.density)
                         lastDragUpdateMs = now
                     }
-                },
-                onDragEnd = { endDrag() },
-                onDragCancel = { endDrag() }
-            )
-        }
-    } else {
-        Modifier.pointerInput(pagedMedia.itemCount) {
-            var lastDragUpdateMs = 0L
-            detectDragGesturesAfterLongPress(
-                onDragStart = { offset -> beginDrag(offset) },
-                onDrag = { change, _ ->
-                    change.consume()
-                    val now = System.currentTimeMillis()
-                    if (now - lastDragUpdateMs > 32) {
-                        updateDrag(change.position, size.height, density)
-                        lastDragUpdateMs = now
-                    }
-                },
-                onDragEnd = { endDrag() },
-                onDragCancel = { endDrag() }
-            )
+                }
+            } finally {
+                endDrag()      // guarantees autoScrollSpeed = 0 -> no more "stuck" grid
+            }
         }
     }
 
@@ -2508,7 +2585,9 @@ fun StatelessMediaGrid(
         LazyVerticalGrid(
             columns = GridCells.Fixed(columnCount),
             state = gridState,
-            modifier = Modifier.fillMaxSize().then(slideModifier),
+            modifier = Modifier
+                .fillMaxSize()
+                .then(slideModifier),
             contentPadding = PaddingValues(start = 4.dp, end = 4.dp, top = 8.dp, bottom = 8.dp + bottomPadding),
             verticalArrangement = Arrangement.spacedBy(4.dp),
             horizontalArrangement = Arrangement.spacedBy(4.dp)
@@ -2563,10 +2642,21 @@ fun StatelessMediaGrid(
                                 isSelectionMode = isSelectionMode,
                                 deviceTier = deviceTier,
                                 onClick = {
-                                    if (isSelectionMode) {
-                                        onToggleSelection(currentItem)
-                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                    } else onMediaClick(currentItem)
+                                    if (longPressHandled) {
+                                        longPressHandled = false
+                                    } else {
+                                        if (isSelectionMode) {
+                                            onToggleSelection(currentItem)
+                                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        } else {
+                                            onMediaClick(currentItem)
+                                        }
+                                    }
+                                },
+                                onLongClick = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    if (!isSelectionMode) onMediaLongClick()
+                                    onSelectRange(listOf(currentItem))   // additive only — never toggles off
                                 },
                                 onToggleFavorite = { onToggleFavorite(currentItem.id) }
                             )
@@ -2598,14 +2688,17 @@ fun StatelessMediaGrid(
 @Composable
 private fun OptimizedAlbumTile(
     album: Album, previews: ImmutableList<Uri>, isSelected: Boolean, isSelectionMode: Boolean, canDrag: Boolean, isSdCard: Boolean, deviceTier: DeviceTier,
-    thumbSize: Int, dragModifier: Modifier = Modifier, onClick: () -> Unit, onLongClick: () -> Unit
+    thumbSize: Int, dragModifier: Modifier = Modifier, onClick: () -> Unit
 ) {
     val interactionSource = remember { MutableInteractionSource() }
-    val clickModifier = if (canDrag) {
-        Modifier.then(dragModifier).clickable(interactionSource = interactionSource, indication = null, onClick = onClick)
-    } else {
-        Modifier.combinedClickable(interactionSource = interactionSource, indication = null, onClick = onClick, onLongClick = onLongClick)
-    }
+    val clickModifier = Modifier
+        .clickable(
+            interactionSource = interactionSource,
+            indication = null,
+            onClick = onClick
+        )
+        .then(dragModifier)   // must come AFTER clickable so it sees (and consumes) events first
+
     val tileShape = RoundedCornerShape(20.dp)
 
     Column(modifier = Modifier.fillMaxWidth().then(clickModifier)) {
@@ -2735,10 +2828,11 @@ private fun OptimizedAlbumTile(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ModernMediaGridTile(
     modifier: Modifier = Modifier, item: MediaItem, thumbSize: Int, isSelected: Boolean, isSelectionMode: Boolean, deviceTier: DeviceTier,
-    onClick: () -> Unit, onToggleFavorite: () -> Unit
+    onClick: () -> Unit, onLongClick: () -> Unit, onToggleFavorite: () -> Unit
 ) {
     val animatedRadius = if (isSelected) 16.dp else 12.dp
     val scale = if (isSelected) 0.85f else 1f
@@ -2751,7 +2845,12 @@ fun ModernMediaGridTile(
             .graphicsLayer { scaleX = scale; scaleY = scale }
             .clip(RoundedCornerShape(animatedRadius))
             .background(MaterialTheme.colorScheme.surfaceContainerHighest)
-            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onClick)
+            .combinedClickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onClick,
+                onLongClick = onLongClick
+            )
     ) {
         val effectiveSize = remember(thumbSize) {
             thumbSize.coerceIn(160, 480)
@@ -3888,20 +3987,42 @@ fun MetadataRow(icon: ImageVector, label: String, value: String) {
     }
 }
 
+/**
+ * =========================================================================================
+ * 🖼️ FULL SCREEN VIEWER OVERLAY
+ * =========================================================================================
+ * The pop-up overlay that shows a photo/video in full screen when you tap it in the grid.
+ * It lets you swipe left and right to view all the photos.
+ */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun FullscreenMediaPager(
-    initialIndex: Int, mediaList: List<MediaItem>, mediaMap: Map<Long, MediaItem>, favoriteIds: List<Long>, sharedPlayer: Player,
-    onPageChanged: (MediaItem) -> Unit, onClose: () -> Unit, onToggleFavorite: (Long) -> Unit, onEdit: (MediaItem) -> Unit, onPlayVideo: (String, List<String>) -> Unit, onDelete: (MediaItem) -> Unit, onMove: (MediaItem) -> Unit, onCopy: (MediaItem) -> Unit, onWallpaper: (MediaItem) -> Unit
+    initialIndex: Int, // The exact photo they tapped
+    mediaList: List<MediaItem>,
+    mediaMap: Map<Long, MediaItem>,
+    favoriteIds: List<Long>,
+    sharedPlayer: Player, // The DVD Player engine
+    onPageChanged: (MediaItem) -> Unit,
+    onClose: () -> Unit,
+    onToggleFavorite: (Long) -> Unit,
+    onEdit: (MediaItem) -> Unit,
+    onPlayVideo: (String, List<String>) -> Unit,
+    onDelete: (MediaItem) -> Unit,
+    onMove: (MediaItem) -> Unit,
+    onCopy: (MediaItem) -> Unit,
+    onWallpaper: (MediaItem) -> Unit
 ) {
     if (mediaList.isEmpty()) return
     val ctx = LocalContext.current
     val vi = LocalView.current
+
+    // The engine that handles the swiping left/right animation
     val safe = initialIndex.coerceIn(0, maxOf(mediaList.lastIndex, 0))
     val st = rememberPagerState(initialPage = safe) { mediaList.size }
-    var ctrl by remember { mutableStateOf(true) }
-    var meta by remember { mutableStateOf(false) }
-    var more by remember { mutableStateOf(false) }
+
+    var ctrl by remember { mutableStateOf(true) } // Show top/bottom menus?
+    var meta by remember { mutableStateOf(false) } // Show metadata sheet?
+    var more by remember { mutableStateOf(false) } // Show 3-dot More menu?
     val act = remember { ctx.findActivity() }
     val vid = remember(mediaList) { mediaList.filter { it.isVideo } }
 
@@ -3928,38 +4049,45 @@ fun FullscreenMediaPager(
         currId?.let { mediaMap[it] ?: mediaList.find { i -> i.id == it } }
     }
 
+    // Preload all the videos into the Video Engine so it doesn't stutter when you swipe to one.
     LaunchedEffect(vid) {
         if (vid.isNotEmpty()) {
             sharedPlayer.setMediaItems(vid.map { Media3Item.fromUri(it.uri) })
+            sharedPlayer.repeatMode = Player.REPEAT_MODE_ONE // Tell the video engine to LOOP endlessly
             sharedPlayer.playWhenReady = false
             sharedPlayer.prepare()
         }
     }
 
+    // THE AUTO-PILOT & THE MASTER PLAY/PAUSE CONTROLLER
+    // ONLY this master pager is allowed to tell the video engine to Play or Pause.
+    // This stops individual pages from fighting with each other over the controls.
     LaunchedEffect(st.currentPage, vid) {
-        ctrl = true
+        ctrl = true // Bring the menus back
 
-        val current = mediaList.getOrNull(st.currentPage)
-            ?: return@LaunchedEffect
+        val current = mediaList.getOrNull(st.currentPage) ?: return@LaunchedEffect
 
         val resolvedCurrent = mediaMap[current.id] ?: current
 
         onPageChanged(resolvedCurrent)
 
+        // If they swiped to a video, tell the Video Engine to start playing it IMMEDIATELY!
         if (current.isVideo) {
             val videoIndex = vid.indexOfFirst { it.id == current.id }
 
             if (videoIndex >= 0 && videoIndex < sharedPlayer.mediaItemCount) {
-                sharedPlayer.pause()
-                sharedPlayer.seekTo(videoIndex, 0L)
-                sharedPlayer.playWhenReady = false
+                sharedPlayer.seekTo(videoIndex, 0L) // Rewind the new video to the beginning
+                sharedPlayer.playWhenReady = true // Turn Auto-Play ON!
+                sharedPlayer.play() // Action!
             }
         } else {
+            // If they swiped to a photo, pause the Video Engine so it stops making noise!
             sharedPlayer.pause()
             sharedPlayer.playWhenReady = false
         }
     }
 
+    // Hide the phone's clock/battery bar at the top, and the swipe-up bar at the bottom. True full screen!
     DisposableEffect(act) {
         val w = act?.window
         if (w != null) {
@@ -3981,7 +4109,7 @@ fun FullscreenMediaPager(
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         HorizontalPager(
             state = st,
-            pageSpacing = 18.dp,
+            pageSpacing = 18.dp, // Add a tiny gap between photos as you swipe so they don't touch
             key = { mediaList[it].id },
             modifier = Modifier.fillMaxSize()
         ) { p ->
@@ -3989,12 +4117,14 @@ fun FullscreenMediaPager(
             if (itm.isVideo) {
                 VideoPreviewPage(
                     item = itm,
-                    videoItems = vid,
                     isCurrentPage = st.currentPage == p,
                     showControls = ctrl,
                     sharedPlayer = sharedPlayer,
                     onTap = { ctrl = !ctrl },
-                    onPlay = { onPlayVideo(itm.uri.toString(), vid.map { it.uri.toString() }) }
+                    onPlay = {
+                        sharedPlayer.pause() // Pause the preview loop
+                        onPlayVideo(itm.uri.toString(), vid.map { it.uri.toString() }) // Starts full playback
+                    }
                 )
             } else {
                 ZoomableImagePage(
@@ -4008,6 +4138,7 @@ fun FullscreenMediaPager(
         }
 
         if (ctrl) {
+            // The Top Bar (Back button)
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -4033,6 +4164,7 @@ fun FullscreenMediaPager(
         }
 
         if (ctrl && curr != null) {
+            // The Bottom Bar (Favorite, Edit, Share, Delete)
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -4073,6 +4205,7 @@ fun FullscreenMediaPager(
         }
     }
 
+    // The slide-up Details menu
     if (meta && curr != null) {
         MediaMetadataSheet(item = curr) { meta = false }
     }
@@ -4119,36 +4252,74 @@ fun FullscreenMediaPager(
     }
 }
 
+// Shows an auto-playing, looping preview of a video when you swipe to it in the full screen viewer!
 @SuppressLint("ClickableViewAccessibility")
 @OptIn(UnstableApi::class)
 @Composable
 fun VideoPreviewPage(
     item: MediaItem,
-    videoItems: List<MediaItem>,
-    isCurrentPage: Boolean,
+    isCurrentPage: Boolean, // A vital check to ensure this video is actually on screen!
     showControls: Boolean,
     sharedPlayer: Player,
     onTap: () -> Unit,
     onPlay: () -> Unit
 ) {
     val ctx = LocalContext.current
-    var m by rememberSaveable(item.id) { mutableStateOf(true) }
 
-    LaunchedEffect(m) { sharedPlayer.volume = if (m) 0f else 1f }
+    // THE VOLUME KNOB
+    // False = Loud. True = Silent.
+    // Unmuted by default as requested.
+    var isMuted by rememberSaveable(item.id) { mutableStateOf(false) }
 
-    LaunchedEffect(isCurrentPage) {
-        if (!isCurrentPage) {
-            sharedPlayer.pause()
+    // Dimensions for the thumbnail ImageRequest
+    val d = LocalDensity.current
+    val conf = LocalConfiguration.current
+    val wPx = with(d) { conf.screenWidthDp.dp.roundToPx() }
+    val hPx = with(d) { conf.screenHeightDp.dp.roundToPx() }
+
+    // Instantly update the video player's volume when they click the Mute button,
+    // or when this page becomes the active page they swiped to!
+    LaunchedEffect(isMuted, isCurrentPage) {
+        if (isCurrentPage) {
+            sharedPlayer.volume = if (isMuted) 0f else 1f
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+    Box(modifier = Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
+
+        // BACKGROUND THUMBNAIL (Prevents black screen on swipe)
+        // While the video engine takes 0.5 seconds to "boot up" the video file, we instantly
+        // draw a picture of the video so the user isn't staring at a black screen!
+        AsyncImage(
+            model = remember(item.id, wPx, hPx) {
+                ImageRequest.Builder(ctx)
+                    .data(item.uri)
+                    .size(Size(wPx, hPx))
+                    .precision(Precision.INEXACT)
+                    .memoryCacheKey("full_${item.id}")
+                    .crossfade(true)
+                    .build()
+            },
+            placeholder = null,
+            contentDescription = null,
+            contentScale = ContentScale.Fit,
+            modifier = Modifier.fillMaxSize()
+        )
+
+        // THE PHYSICAL SCREEN (PlayerView)
         AndroidView(
             factory = {
+                // We create the actual TV screen that draws the video
                 PlayerView(ctx).apply {
-                    useController = false
-                    setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
+                    useController = false // Hide the standard play/pause bar
+                    setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER) // Hide the loading circle
                     layoutParams = android.view.ViewGroup.LayoutParams(-1, -1)
+
+                    // Make the TV Screen completely invisible until the video frame is ready to play.
+                    // This lets the Background Thumbnail (above) shine through perfectly!
+                    setBackgroundColor(android.graphics.Color.TRANSPARENT)
+                    setShutterBackgroundColor(android.graphics.Color.TRANSPARENT)
+
                     setOnTouchListener { view, event ->
                         if (event.action == MotionEvent.ACTION_UP) {
                             view.performClick()
@@ -4157,15 +4328,45 @@ fun VideoPreviewPage(
                     }
                 }
             },
-            update = {
-                if (it.player != sharedPlayer) it.player = sharedPlayer
+            update = { playerView ->
+                // THIS IS THE MOST IMPORTANT FIX:
+                // Only hand the DVD Player engine to the TV Screen if the user is actually looking at it!
+                // If they swiped away, yank the engine away so it doesn't break the new video.
+                if (isCurrentPage) {
+                    if (playerView.player != sharedPlayer) {
+                        playerView.player = sharedPlayer
+                    }
+                } else {
+                    if (playerView.player == sharedPlayer) {
+                        playerView.player = null
+                    }
+                }
             },
+            // Let the user tap the screen to hide/show the buttons
             modifier = Modifier.fillMaxSize().pointerInput(Unit) { detectTapGestures(onTap = { onTap() }) }
         )
+
+        // --- OVERLAY BUTTONS (Play and Mute) ---
         if (showControls) {
-            Box(modifier = Modifier.fillMaxWidth().align(Alignment.BottomCenter).padding(bottom = 120.dp)) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.BottomCenter)
+                    // Push everything high up so it NEVER overlaps with the bottom Action Bar
+                    .padding(bottom = 160.dp)
+                    // Add padding to the left and right so buttons aren't hugging the wall
+                    .padding(horizontal = 24.dp)
+            ) {
+
+                // 1. The "Play Video" Pill (Dead Center)
+                // Clicking this launches the dedicated, full Video Player Screen!
                 Surface(
-                    modifier = Modifier.align(Alignment.Center).clickable { sharedPlayer.pause(); onPlay() },
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .clickable {
+                            sharedPlayer.pause() // Pause the looping preview
+                            onPlay() // Fire the command to launch the real player!
+                        },
                     shape = RoundedCornerShape(50.dp),
                     color = Color.Black.copy(alpha = 0.55f)
                 ) {
@@ -4178,11 +4379,34 @@ fun VideoPreviewPage(
                         Text(text = "Play video", color = Color.White, fontSize = 14.sp)
                     }
                 }
+
+                // 2. The "Mute/Unmute" Button (Pushed to the far Right)
+                ScaleButton(
+                    onClick = {
+                        isMuted = !isMuted // Toggle the audio ON or OFF
+                    },
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .background(
+                            Color.Black.copy(alpha = 0.55f),
+                            CircleShape
+                        )
+                        .size(40.dp) // Make it a perfect circle that lines up nicely with the Play button!
+                ) {
+                    Icon(
+                        // Switch the icon depending on the current volume state
+                        imageVector = if (isMuted) Icons.Rounded.VolumeOff else Icons.Rounded.VolumeUp,
+                        contentDescription = if (isMuted) "Unmute" else "Mute",
+                        tint = Color.White,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
             }
         }
     }
 }
 
+// A reusable blueprint for the buttons in the Full Screen bottom menu
 @Composable
 fun PremiumViewerAction(icon: ImageVector, label: String, tint: Color = Color.White, onClick: () -> Unit) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -4209,20 +4433,29 @@ fun PremiumViewerAction(icon: ImageVector, label: String, tint: Color = Color.Wh
     }
 }
 
+/**
+ * --- THE MICROSCOPE (ZoomableImagePage) ---
+ * Handles the incredibly complex math of letting a user "Pinch to Zoom"
+ * into a photo without it accidentally swiping to the next page instead.
+ */
 @Composable
 fun ZoomableImagePage(item: MediaItem, onTap: () -> Unit, onDismiss: () -> Unit, onZoomChanged: (Boolean) -> Unit, onControlsVisibilityChange: (Boolean) -> Unit) {
     val ctx = LocalContext.current
     val d = LocalDensity.current
     val hap = LocalHapticFeedback.current
     val conf = LocalConfiguration.current
+
+    // Find exactly how many pixels wide and tall the user's phone is
     val wPx = with(d) { conf.screenWidthDp.dp.roundToPx() }
     val hPx = with(d) { conf.screenHeightDp.dp.roundToPx() }
+
+    // The "Dismiss Threshold". If they drag the photo down past 25% of the screen, we close it.
     val thr = remember(conf.screenHeightDp, d) { with(d) { conf.screenHeightDp.dp.toPx() * 0.25f } }
 
-    var sc by remember { mutableFloatStateOf(1f) }
-    var oX by remember { mutableFloatStateOf(0f) }
-    var oY by remember { mutableFloatStateOf(0f) }
-    var bA by remember { mutableFloatStateOf(1f) }
+    var sc by remember { mutableFloatStateOf(1f) } // Scale (Zoom level). 1f = 100%. 2f = 200%.
+    var oX by remember { mutableFloatStateOf(0f) } // Offset X (How far they dragged it left/right)
+    var oY by remember { mutableFloatStateOf(0f) } // Offset Y (How far they dragged it up/down)
+    var bA by remember { mutableFloatStateOf(1f) } // Background Alpha (How dark the black background should be)
 
     LaunchedEffect(sc) { onZoomChanged(sc > 1.05f) }
 
@@ -4231,6 +4464,7 @@ fun ZoomableImagePage(item: MediaItem, onTap: () -> Unit, onDismiss: () -> Unit,
             .fillMaxSize()
             .background(Color.Black.copy(alpha = bA))
             .graphicsLayer {
+                // As the user drags the photo down (oY gets bigger), we slowly shrink the photo and fade the black background away!
                 val ds = 1f - (abs(oY) / 2200f)
                 scaleX = sc * ds
                 scaleY = scaleX
@@ -4240,8 +4474,9 @@ fun ZoomableImagePage(item: MediaItem, onTap: () -> Unit, onDismiss: () -> Unit,
             }
             .pointerInput(Unit) {
                 detectTapGestures(
-                    onTap = { onTap() },
+                    onTap = { onTap() }, // Show/hide menus
                     onDoubleTap = {
+                        // Double tapping zooms in to 250%. Double tapping again resets to 100%.
                         sc = if (sc > 1f) 1f else 2.5f
                         oX = 0f
                         oY = 0f
@@ -4249,31 +4484,39 @@ fun ZoomableImagePage(item: MediaItem, onTap: () -> Unit, onDismiss: () -> Unit,
                     onLongPress = { hap.performHapticFeedback(HapticFeedbackType.LongPress) }
                 )
             }
+            // THIS is the Pinch-To-Zoom math!
             .pointerInput(Unit) {
                 awaitEachGesture {
-                    awaitFirstDown(requireUnconsumed = false)
+                    awaitFirstDown(requireUnconsumed = false) // Wait for the user to touch the screen
                     do {
-                        val event = awaitPointerEvent()
-                        val zoom = event.calculateZoom()
-                        val pan = event.calculatePan()
+                        val event = awaitPointerEvent() // Wait for their finger to move
+                        val zoom = event.calculateZoom() // Are two fingers moving apart?
+                        val pan = event.calculatePan() // Is a finger dragging?
+
+                        // Apply the zoom
                         if (abs(zoom - 1f) > 0.005f) {
-                            sc = (sc * zoom).coerceIn(1f, 4f)
+                            sc = (sc * zoom).coerceIn(1f, 4f) // Don't let them zoom in past 400%
                         }
+
+                        // If they are currently zoomed in...
                         if (sc > 1.05f) {
+                            // "Consume" the touch. This tells Android: "Do NOT swipe to the next photo! The user is just looking around inside this zoomed photo."
                             event.changes.forEach {
                                 if (it.positionChange() != Offset.Zero) {
                                     it.consume()
                                 }
                             }
+                            // Prevent them from dragging the photo entirely off the screen
                             val mx = (size.width * (sc - 1)) / 2f
                             val my = (size.height * (sc - 1)) / 2f
                             oX = (oX + pan.x).coerceIn(-mx, mx)
                             oY = (oY + pan.y).coerceIn(-my, my)
                         } else {
-                            val isV = abs(pan.y) > abs(pan.x)
-                            if (isV && event.changes.size == 1) {
-                                oY += pan.y
-                                bA = (1f - abs(oY) / 900f).coerceIn(0.35f, 1f)
+                            // If they are NOT zoomed in...
+                            val isV = abs(pan.y) > abs(pan.x) // Are they dragging down, or swiping sideways?
+                            if (isV && event.changes.size == 1) { // If dragging down with one finger...
+                                oY += pan.y // Move the photo down
+                                bA = (1f - abs(oY) / 900f).coerceIn(0.35f, 1f) // Fade the black background away
                                 event.changes.forEach {
                                     if (it.positionChange() != Offset.Zero) {
                                         it.consume()
@@ -4281,13 +4524,16 @@ fun ZoomableImagePage(item: MediaItem, onTap: () -> Unit, onDismiss: () -> Unit,
                                 }
                             }
                         }
-                    } while (event.changes.any { it.pressed })
+                    } while (event.changes.any { it.pressed }) // Keep doing this until they lift their finger
 
+                    // They lifted their finger!
                     if (sc <= 1.05f) {
+                        // Did they drag it far enough down to close it?
                         if (abs(oY) > thr) {
                             hap.performHapticFeedback(HapticFeedbackType.LongPress)
-                            onDismiss()
+                            onDismiss() // Close the full screen viewer!
                         } else {
+                            // They didn't drag it far enough. Snap the photo back to the center like a rubber band.
                             oY = 0f
                             bA = 1f
                         }
@@ -4296,6 +4542,7 @@ fun ZoomableImagePage(item: MediaItem, onTap: () -> Unit, onDismiss: () -> Unit,
             },
         contentAlignment = Alignment.Center
     ) {
+        // Fetch the ABSOLUTE HIGHEST QUALITY version of the photo so it looks crystal clear when zoomed in.
         AsyncImage(
             model = remember(item.id, wPx, hPx) {
                 ImageRequest.Builder(ctx)
@@ -4311,7 +4558,7 @@ fun ZoomableImagePage(item: MediaItem, onTap: () -> Unit, onDismiss: () -> Unit,
             },
             placeholder = null,
             contentDescription = null,
-            contentScale = ContentScale.Fit,
+            contentScale = ContentScale.Fit, // Never crop the full screen photo!
             modifier = Modifier.fillMaxSize()
         )
     }

@@ -1,5 +1,3 @@
-@file:Suppress("UnsafeOptInUsageError", "OPT_IN_USAGE", "unused", "DEPRECATION", "ObsoleteSdkInt")
-
 package com.gallerybox.ui.screens.music
 
 // =========================================================================================
@@ -70,7 +68,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.Locale
 
-// Importing our App's specific classes
+// Importing our App's specific classes and tools
 import com.gallerybox.engine.MusicService
 import com.gallerybox.viewmodel.AudioTrack
 import com.gallerybox.viewmodel.MusicViewModel
@@ -82,11 +80,13 @@ import com.gallerybox.ui.screens.adaptive.AdaptiveState
 import com.gallerybox.ui.screens.adaptive.rememberAdaptiveState
 import com.gallerybox.ui.screens.adaptive.WindowWidthSize
 
-// =========================================================================================
-// --- THE APP MAP (Routes) ---
-// Analogy: Think of this as the blueprints for a house. It tells the navigation system
-// exactly what rooms exist inside the Music section.
-// =========================================================================================
+/**
+ * =========================================================================================
+ * 🗺️ THE APP MAP (Routes)
+ * =========================================================================================
+ * Analogy: Think of this as the blueprints for a house. It tells the navigation system
+ * exactly what rooms exist inside the Music section.
+ */
 sealed class MusicRoute(val route: String) {
     data object Dashboard : MusicRoute("dashboard")
     data object Library : MusicRoute("library")
@@ -96,16 +96,18 @@ sealed class MusicRoute(val route: String) {
     data object OnlineFinder : MusicRoute("online_finder")
 }
 
-// =========================================================================================
-// --- THE MUSIC LOBBY (MusicScreen) ---
-// Analogy: This is the front desk of a hotel. It handles checking you into the different
-// rooms (Library, Folders, Radio) and keeps the background music playing while you walk around.
-// =========================================================================================
+/**
+ * =========================================================================================
+ * 🏨 THE MUSIC LOBBY (MusicScreen)
+ * =========================================================================================
+ * Analogy: This is the front desk of a hotel. It handles checking you into the different
+ * rooms (Library, Folders, Radio) and keeps the background music playing while you walk around.
+ */
 @androidx.media3.common.util.UnstableApi
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MusicScreen(
-    initialUri: String? = null,
+    initialUri: String? = null, // If the user clicked an MP3 in their files app, this holds the song address
     viewModel: MusicViewModel,
     trashViewModel: TrashViewModel = hiltViewModel(),
     onViewerStateChanged: (Boolean) -> Unit = {},
@@ -113,6 +115,7 @@ fun MusicScreen(
     onNavigateToRadio: () -> Unit,
     onNavigateToDuoPlayer: () -> Unit
 ) {
+    // The "Elevator" that moves the user between different music screens
     val navController = rememberNavController()
     val currentRoute = navController.currentBackStackEntryAsState().value?.destination?.route
     val context = LocalContext.current
@@ -121,13 +124,16 @@ fun MusicScreen(
     // We ask the engine: "Are we on a phone, or a giant tablet?"
     val adaptiveState = rememberAdaptiveState()
 
-    var showFullPlayer by remember { mutableStateOf(false) }
+    var showFullPlayer by remember { mutableStateOf(false) } // Is the user looking at the big spinning record player?
     var isSearchActive by remember { mutableStateOf(false) }
-    var trackToTrash by remember { mutableStateOf<AudioTrack?>(null) }
+    var trackToTrash by remember { mutableStateOf<AudioTrack?>(null) } // Remembers which song the user is trying to delete
     var hasPlayedInitial by remember { mutableStateOf(false) }
 
     var showQueueSheet by remember { mutableStateOf(false) }
     var showAudioInfoSheet by remember { mutableStateOf(false) }
+
+    // We hoist the selectedFolder state here so the TopAppBar can clear it instead of showing two back buttons!
+    var selectedFolder by remember { mutableStateOf<String?>(null) }
 
     // 📊 2. THE LIVE SCOREBOARDS (State)
     // We watch these values. If the song changes, the UI updates instantly!
@@ -136,6 +142,8 @@ fun MusicScreen(
     val loadedSongsRaw by viewModel.allAudioTracks.collectAsStateWithLifecycle()
     val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
 
+    // We use "Immutable Lists" to prevent the app from crashing if a background worker
+    // tries to delete a song at the exact millisecond the screen is trying to draw it.
     var loadedSongs by remember { mutableStateOf<ImmutableList<AudioTrack>>(persistentListOf()) }
     var displaySongs by remember { mutableStateOf<ImmutableList<AudioTrack>>(persistentListOf()) }
 
@@ -147,7 +155,7 @@ fun MusicScreen(
         }
     }
 
-    // If music starts playing, launch our Foreground Service so Android doesn't kill the app
+    // If music starts playing, launch our Background Service (VIP Worker) so Android doesn't kill the app
     // when the user turns their screen off.
     LaunchedEffect(isPlaying) {
         if (isPlaying) {
@@ -160,13 +168,14 @@ fun MusicScreen(
         }
     }
 
-    // Warehouse Workers: We process the heavy lists on a background thread so the screen doesn't freeze.
+    // Warehouse Workers: We copy the raw song list to our safe Immutable List in the background.
     LaunchedEffect(loadedSongsRaw) {
         withContext(Dispatchers.Default) {
             loadedSongs = loadedSongsRaw.toImmutableList()
         }
     }
 
+    // Filtering the list if the user typed something in the search bar!
     LaunchedEffect(loadedSongs, searchQuery) {
         withContext(Dispatchers.Default) {
             displaySongs = if (searchQuery.isBlank()) {
@@ -177,7 +186,7 @@ fun MusicScreen(
         }
     }
 
-    // If someone clicked an MP3 file from a File Manager, we automatically play it!
+    // If someone clicked an MP3 file from an outside File Manager app, we automatically find it and play it!
     LaunchedEffect(initialUri, loadedSongs) {
         if (!initialUri.isNullOrEmpty() && !hasPlayedInitial && loadedSongs.isNotEmpty()) {
             val targetUriStr = initialUri.trim()
@@ -197,6 +206,7 @@ fun MusicScreen(
     // Tells the main Gallery App to hide its bottom menu when the Full Screen Music Player is open.
     LaunchedEffect(showFullPlayer) { onViewerStateChanged(showFullPlayer) }
 
+    // The Bouncer: Asks the user "Are you sure you want to delete this?"
     val trashLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
         val isGranted = result.resultCode == Activity.RESULT_OK
         trashViewModel.onPermissionResultMusic(isGranted)
@@ -204,6 +214,7 @@ fun MusicScreen(
         else Toast.makeText(context, "Trash permission denied", Toast.LENGTH_SHORT).show()
     }
 
+    // If they clicked the delete button, show this confirmation popup!
     trackToTrash?.let { song ->
         AlertDialog(
             shape = RoundedCornerShape(24.dp),
@@ -221,20 +232,28 @@ fun MusicScreen(
         )
     }
 
+    // Prevent the Android Back button from closing the app if the player or search bar is open
     BackHandler(showFullPlayer || isSearchActive) {
         if (showFullPlayer) showFullPlayer = false else { isSearchActive = false; viewModel.setSearchQuery("") }
     }
 
+    // THE BLUEPRINT (Scaffold)
+    // Defines the Top Bar, Bottom Bar, and Middle Content
     Scaffold(
         containerColor = Color.Transparent,
-        modifier = Modifier.background(
-            Brush.verticalGradient(
-                colors = listOf(
-                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.15f),
-                    MaterialTheme.colorScheme.background
+        contentWindowInsets = WindowInsets(0, 0, 0, 0), // Fixes white block by neutralizing default inset padding
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                Brush.verticalGradient(
+                    colors = listOf(
+                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.15f),
+                        MaterialTheme.colorScheme.background
+                    )
                 )
             )
-        ),
+            .systemBarsPadding() // Applies system padding explicitly so the background draws under it
+            .imePadding(),
         topBar = {
             if (!showFullPlayer) {
                 MusicTopAppBar(
@@ -242,15 +261,24 @@ fun MusicScreen(
                     isSearchActive = isSearchActive,
                     searchQuery = searchQuery,
                     adaptiveState = adaptiveState, // Passing Adaptive State down
+                    selectedFolder = selectedFolder, // Passing selectedFolder to control title visibility
                     onSearchChange = viewModel::setSearchQuery,
                     onToggleSearch = { isSearchActive = it; if (!it) viewModel.setSearchQuery("") },
-                    onNavigateBack = navController::popBackStack,
+                    onNavigateBack = {
+                        // FIX: If we are in the Folders tab and a folder is open, use the top bar back button to close the folder!
+                        if (currentRoute == MusicRoute.Folders.route && selectedFolder != null) {
+                            selectedFolder = null
+                        } else {
+                            navController.popBackStack()
+                        }
+                    },
                     onNavigateToEqualizer = onNavigateToEqualizer
                 )
             }
         },
         bottomBar = {
-            // THE MINI PLAYER: Shows up at the bottom of the screen when music is playing
+            // 🎶 THE MINI PLAYER
+            // Shows up at the bottom of the screen when music is playing, like Spotify!
             AnimatedVisibility(
                 visible = currentTrack != null && !showFullPlayer,
                 enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
@@ -258,7 +286,7 @@ fun MusicScreen(
             ) {
                 currentTrack?.let { track ->
                     // 🎨 ADAPTIVE: If we are on a huge monitor, we don't want the mini player
-                    // stretching across the whole desk. We restrict its width and center it.
+                    // stretching 2 feet across the whole desk. We restrict its width to 600dp and center it.
                     val playerWidth = if (adaptiveState.widthSize == WindowWidthSize.EXPANDED) Modifier.width(600.dp) else Modifier.fillMaxWidth()
 
                     Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -269,7 +297,7 @@ fun MusicScreen(
                             adaptiveState = adaptiveState,
                             modifier = playerWidth, // Pass our smart width into the player
                             onPlayPause = viewModel::togglePlayPause,
-                            onClick = { showFullPlayer = true },
+                            onClick = { showFullPlayer = true }, // Click to open the big player!
                             onNext = viewModel::skipNext,
                             onPrev = viewModel::skipPrevious
                         )
@@ -278,6 +306,8 @@ fun MusicScreen(
             }
         }
     ) { padding ->
+        // The Middle Content Area
+        // NOTE: This modifier properly applies the dynamically calculated top and bottom padding from Scaffold!
         Box(Modifier.padding(padding).fillMaxSize()) {
 
             // 🗺️ THE INTERNAL GPS (NavHost)
@@ -285,6 +315,7 @@ fun MusicScreen(
             NavHost(
                 navController = navController,
                 startDestination = MusicRoute.Dashboard.route,
+                // Add smooth sliding animations when changing rooms
                 enterTransition = { slideInHorizontally { it / 2 } + fadeIn(tween(300)) },
                 exitTransition = { fadeOut(tween(300)) },
                 popEnterTransition = { fadeIn(tween(300)) },
@@ -308,8 +339,19 @@ fun MusicScreen(
                 }
                 composable(MusicRoute.Library.route) { LibraryContent(displaySongs, viewModel, adaptiveState) { trackToTrash = it } }
                 composable(MusicRoute.Favorites.route) { FavoritesScreen(viewModel, loadedSongs, adaptiveState) { trackToTrash = it } }
-                composable(MusicRoute.Folders.route) { FolderList(displaySongs, viewModel, adaptiveState) { trackToTrash = it } }
 
+                composable(MusicRoute.Folders.route) {
+                    FolderList(
+                        songs = displaySongs,
+                        vm = viewModel,
+                        adaptiveState = adaptiveState,
+                        selectedFolder = selectedFolder, // Now managed by the main screen
+                        onFolderSelected = { selectedFolder = it },
+                        onTrashClick = { trackToTrash = it }
+                    )
+                }
+
+                // The Internet Radio Screen
                 composable(MusicRoute.DigitalRadio.route) {
                     val radioViewModel = hiltViewModel<RadioViewModel>()
                     DigitalRadioScreen(
@@ -318,6 +360,7 @@ fun MusicScreen(
                     )
                 }
 
+                // The Web Search Screen
                 composable(MusicRoute.OnlineFinder.route) {
                     OnlineSongFinderScreen(
                         onBack = { navController.popBackStack() }
@@ -327,7 +370,7 @@ fun MusicScreen(
         }
     }
 
-    // THE FULL SCREEN PLAYER
+    // THE BIG FULL SCREEN PLAYER OVERLAY
     if (showFullPlayer) {
         PlayerScreen(
             onBack = { showFullPlayer = false },
@@ -340,6 +383,7 @@ fun MusicScreen(
         )
     }
 
+    // THE SLIDE-UP QUEUE MENU
     if (showQueueSheet) {
         QueueBottomSheet(
             viewModel = viewModel,
@@ -350,6 +394,7 @@ fun MusicScreen(
         )
     }
 
+    // THE SLIDE-UP METADATA DETAILS MENU
     if (showAudioInfoSheet) {
         AudioInfoBottomSheet(
             currentTrack = currentTrack,
@@ -359,10 +404,12 @@ fun MusicScreen(
     }
 }
 
-// =========================================================================================
-// --- THE TOP APP BAR ---
-// Shows either the title of the current page, or an active Search Bar.
-// =========================================================================================
+/**
+ * =========================================================================================
+ * 🏷️ THE TOP APP BAR
+ * Shows either the title of the current page, or an active text input for searching.
+ * =========================================================================================
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MusicTopAppBar(
@@ -370,6 +417,7 @@ fun MusicTopAppBar(
     isSearchActive: Boolean,
     searchQuery: String,
     adaptiveState: AdaptiveState,
+    selectedFolder: String?,
     onSearchChange: (String) -> Unit,
     onToggleSearch: (Boolean) -> Unit,
     onNavigateBack: () -> Unit,
@@ -378,7 +426,8 @@ fun MusicTopAppBar(
     val keyboard = LocalSoftwareKeyboardController.current
 
     if (isSearchActive) {
-        Surface(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).statusBarsPadding(), shape = CircleShape, color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+        // The Search Bar
+        Surface(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), shape = CircleShape, color = MaterialTheme.colorScheme.surfaceContainerHigh) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = { onToggleSearch(false); keyboard?.hide() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = MaterialTheme.colorScheme.onSurface) }
                 TextField(
@@ -395,7 +444,7 @@ fun MusicTopAppBar(
                         unfocusedTextColor = MaterialTheme.colorScheme.onSurface
                     ),
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                    keyboardActions = KeyboardActions(onSearch = { keyboard?.hide() }),
+                    keyboardActions = KeyboardActions(onSearch = { keyboard?.hide() }), // Hide keyboard when they hit Enter
                     modifier = Modifier.weight(1f),
                     trailingIcon = {
                         if (searchQuery.isNotEmpty()) {
@@ -408,9 +457,11 @@ fun MusicTopAppBar(
             }
         }
     } else {
+        // The Title Bar
         val title = when (currentRoute) {
             MusicRoute.Library.route -> "All Songs"
-            MusicRoute.Folders.route -> "Folders"
+            // FIX: If a specific folder is open, we hide the title text completely, as requested.
+            MusicRoute.Folders.route -> if (selectedFolder != null) "" else "Folders"
             MusicRoute.Favorites.route -> "Favorites"
             MusicRoute.Dashboard.route -> "Music"
             MusicRoute.DigitalRadio.route -> "Digital Radio"
@@ -428,6 +479,7 @@ fun MusicTopAppBar(
                     overflow = TextOverflow.Ellipsis
                 )
             },
+            // Show the back button on every screen EXCEPT the main dashboard
             navigationIcon = { if (currentRoute != MusicRoute.Dashboard.route) IconButton(onClick = onNavigateBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = MaterialTheme.colorScheme.onSurface) } },
             actions = {
                 if (currentRoute == MusicRoute.Dashboard.route || currentRoute == MusicRoute.Library.route || currentRoute == MusicRoute.Favorites.route || currentRoute == MusicRoute.Folders.route) {
@@ -441,10 +493,12 @@ fun MusicTopAppBar(
     }
 }
 
-// =========================================================================================
-// --- THE MAIN DASHBOARD ---
-// The grid of big, chunky buttons that let the user pick where to go next.
-// =========================================================================================
+/**
+ * =========================================================================================
+ * 🏠 THE MAIN DASHBOARD
+ * The grid of big, chunky buttons that let the user pick where to go next.
+ * =========================================================================================
+ */
 @Composable
 fun DashboardScreen(
     viewModel: MusicViewModel,
@@ -467,7 +521,8 @@ fun DashboardScreen(
     val dashboardWidth = if (adaptiveState.widthSize == WindowWidthSize.EXPANDED) Modifier.width(600.dp) else Modifier.fillMaxWidth()
 
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
-        LazyColumn(modifier = dashboardWidth, contentPadding = PaddingValues(top = 16.dp, bottom = 100.dp)) {
+        // Reduced bottom padding
+        LazyColumn(modifier = dashboardWidth, contentPadding = PaddingValues(top = 16.dp, bottom = 24.dp)) {
             item {
                 Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp)) {
                     Text(
@@ -478,6 +533,7 @@ fun DashboardScreen(
                         modifier = Modifier.padding(bottom = 24.dp)
                     )
 
+                    // Row 1
                     Row(Modifier.fillMaxWidth()) {
                         Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { QuickActionIcon(Icons.Rounded.Favorite, "Favorites", MaterialTheme.colorScheme.tertiaryContainer, MaterialTheme.colorScheme.onTertiaryContainer, adaptiveState, onNavigateToFavorites) }
                         Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { QuickActionIcon(Icons.Rounded.Folder, "Folders", MaterialTheme.colorScheme.secondaryContainer, MaterialTheme.colorScheme.onSecondaryContainer, adaptiveState, onNavigateToFolders) }
@@ -485,13 +541,17 @@ fun DashboardScreen(
                         Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { QuickActionIcon(Icons.Rounded.LibraryMusic, "All Songs", MaterialTheme.colorScheme.primaryContainer, MaterialTheme.colorScheme.onPrimaryContainer, adaptiveState, onNavigateToAllSongs) }
                     }
                     Spacer(Modifier.height(24.dp))
+
+                    // Row 2
                     Row(Modifier.fillMaxWidth()) {
                         Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { QuickActionIcon(Icons.Rounded.Radio, "FM Radio", MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.onSurfaceVariant, adaptiveState, onNavigateToRadio) }
                         Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { QuickActionIcon(Icons.Rounded.Headset, "Duo Player", MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.onSurfaceVariant, adaptiveState, onNavigateToDuoMode) }
                         Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                            // The Shuffle Button: Instantly mixes all your songs and starts playing!
                             QuickActionIcon(Icons.Rounded.Shuffle, "Shuffle", MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.onSurfaceVariant, adaptiveState) {
                                 scope.launch(Dispatchers.Default) {
                                     if (loadedSongs.isNotEmpty()) {
+                                        // Cap at 1000 so the app doesn't freeze shuffling 30,000 files
                                         val toPlay = if (loadedSongs.size > 1000) loadedSongs.shuffled().take(1000) else loadedSongs.shuffled()
                                         toPlay.firstOrNull()?.let { track ->
                                             withContext(Dispatchers.Main) { viewModel.playQueue(toPlay, track) }
@@ -507,6 +567,8 @@ fun DashboardScreen(
                         }
                     }
                     Spacer(Modifier.height(24.dp))
+
+                    // Row 3
                     Row(Modifier.fillMaxWidth()) {
                         Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
                             QuickActionIcon(Icons.Rounded.CellTower, "Web Radio", MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.onSurfaceVariant, adaptiveState, onNavigateToDigitalRadio)
@@ -514,7 +576,7 @@ fun DashboardScreen(
                         Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
                             QuickActionIcon(Icons.Rounded.TravelExplore, "Find Online", MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.onSurfaceVariant, adaptiveState, onNavigateToOnlineFinder)
                         }
-                        Box(Modifier.weight(1f))
+                        Box(Modifier.weight(1f)) // Empty placeholders to keep the grid aligned
                         Box(Modifier.weight(1f))
                     }
                 }
@@ -523,7 +585,7 @@ fun DashboardScreen(
     }
 }
 
-// A single big button on the dashboard
+// A reusable blueprint for a single square button on the dashboard
 @Composable
 fun QuickActionIcon(icon: ImageVector, label: String, containerColor: Color, contentColor: Color, adaptiveState: AdaptiveState, onClick: () -> Unit) {
     Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable(onClick = onClick, interactionSource = remember { MutableInteractionSource() }, indication = null).width(76.dp)) {
@@ -545,14 +607,16 @@ fun QuickActionIcon(icon: ImageVector, label: String, containerColor: Color, con
 }
 
 // =========================================================================================
-// --- THE LIST VIEWS ---
-// These are simple lists that show rows of songs.
+// --- THE LIST VIEWS (Conveyor Belts) ---
+// These are simple scrolling lists that show rows of songs.
 // =========================================================================================
+
 @Composable
 fun FavoritesScreen(viewModel: MusicViewModel, allSongs: ImmutableList<AudioTrack>, adaptiveState: AdaptiveState, onTrashClick: (AudioTrack) -> Unit) {
     val favoriteIdsRaw by viewModel.favoriteIds.collectAsStateWithLifecycle()
     var favoriteSongs by remember { mutableStateOf<ImmutableList<AudioTrack>>(persistentListOf()) }
 
+    // Grab only the songs the user has "Hearted"
     LaunchedEffect(allSongs, favoriteIdsRaw) {
         withContext(Dispatchers.Default) {
             val favSet = favoriteIdsRaw.toSet()
@@ -566,7 +630,7 @@ fun FavoritesScreen(viewModel: MusicViewModel, allSongs: ImmutableList<AudioTrac
         if (favoriteSongs.isEmpty()) {
             Box(Modifier.fillMaxSize(), Alignment.Center) { Text("No favorites yet", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         } else {
-            LazyColumn(modifier = listWidth.fillMaxHeight(), contentPadding = PaddingValues(bottom = 90.dp)) {
+            LazyColumn(modifier = listWidth.fillMaxHeight(), contentPadding = PaddingValues(bottom = 24.dp)) {
                 items(favoriteSongs, key = { it.id }, contentType = { "song" }) { song ->
                     InteractiveSongRow(song, viewModel, adaptiveState, { viewModel.playQueue(favoriteSongs, song) }, { onTrashClick(song) })
                 }
@@ -583,7 +647,7 @@ fun LibraryContent(displaySongs: ImmutableList<AudioTrack>, vm: MusicViewModel, 
         if (displaySongs.isEmpty()) {
             Box(Modifier.fillMaxSize(), Alignment.Center) { Text("No songs found", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         } else {
-            LazyColumn(modifier = listWidth.fillMaxHeight(), contentPadding = PaddingValues(bottom = 90.dp)) {
+            LazyColumn(modifier = listWidth.fillMaxHeight(), contentPadding = PaddingValues(bottom = 24.dp)) {
                 items(displaySongs, key = { it.id }, contentType = { "song" }) { song ->
                     InteractiveSongRow(song, vm, adaptiveState, { vm.playQueue(displaySongs, song) }, { onTrashClick(song) })
                 }
@@ -593,13 +657,19 @@ fun LibraryContent(displaySongs: ImmutableList<AudioTrack>, vm: MusicViewModel, 
 }
 
 @Composable
-fun FolderList(songs: ImmutableList<AudioTrack>, vm: MusicViewModel, adaptiveState: AdaptiveState, onTrashClick: (AudioTrack) -> Unit) {
+fun FolderList(
+    songs: ImmutableList<AudioTrack>,
+    vm: MusicViewModel,
+    adaptiveState: AdaptiveState,
+    selectedFolder: String?,
+    onFolderSelected: (String?) -> Unit,
+    onTrashClick: (AudioTrack) -> Unit
+) {
     var folders by remember { mutableStateOf<Map<String, List<AudioTrack>>>(emptyMap()) }
     var folderKeys by remember { mutableStateOf<ImmutableList<String>>(persistentListOf()) }
     var activeTracks by remember { mutableStateOf<ImmutableList<AudioTrack>>(persistentListOf()) }
-    var selectedFolder by remember { mutableStateOf<String?>(null) }
 
-    // Run folder grouping in background
+    // Run folder grouping in the background warehouse
     LaunchedEffect(songs) {
         withContext(Dispatchers.Default) {
             val grouped = songs.filter { it.path.isNotBlank() }
@@ -615,7 +685,7 @@ fun FolderList(songs: ImmutableList<AudioTrack>, vm: MusicViewModel, adaptiveSta
         }
     }
 
-    // Refresh active tracks when folder changes
+    // Refresh active tracks when the folder changes
     LaunchedEffect(selectedFolder, folders) {
         withContext(Dispatchers.Default) {
             activeTracks = if (selectedFolder != null) {
@@ -626,20 +696,23 @@ fun FolderList(songs: ImmutableList<AudioTrack>, vm: MusicViewModel, adaptiveSta
         }
     }
 
-    BackHandler(enabled = selectedFolder != null) { selectedFolder = null }
+    // Intercept hardware back button to close the folder instead of closing the app!
+    BackHandler(enabled = selectedFolder != null) { onFolderSelected(null) }
 
     val contentWidth = if (adaptiveState.widthSize == WindowWidthSize.EXPANDED) Modifier.width(800.dp) else Modifier.fillMaxWidth()
 
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
         AnimatedContent(targetState = selectedFolder, transitionSpec = { if (targetState == null) slideInHorizontally { -it } togetherWith slideOutHorizontally { it } else slideInHorizontally { it } togetherWith slideOutHorizontally { -it } }, label = "FolderTransition") { activeFolder ->
             if (activeFolder == null) {
+                // Showing the Grid of Folders
                 if (folders.isEmpty()) {
                     Box(Modifier.fillMaxSize(), Alignment.Center) { Text("No folders found", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 } else {
-                    LazyVerticalGrid(columns = GridCells.Adaptive(160.dp), contentPadding = PaddingValues(16.dp, 16.dp, 16.dp, 90.dp), horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp), modifier = contentWidth.fillMaxHeight()) {
+                    LazyVerticalGrid(columns = GridCells.Adaptive(160.dp), contentPadding = PaddingValues(16.dp), horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp), modifier = contentWidth.fillMaxHeight()) {
                         items(folderKeys, key = { it }, contentType = { "folder" }) { path ->
+                            // Use the first song's album art as the folder's cover picture
                             val firstTrack = folders[path]?.firstOrNull { it.albumId > 0 }
-                            Surface(shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh, modifier = Modifier.fillMaxWidth().aspectRatio(1f).clickable { selectedFolder = path }) {
+                            Surface(shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh, modifier = Modifier.fillMaxWidth().aspectRatio(1f).clickable { onFolderSelected(path) }) {
                                 Box {
                                     if (firstTrack != null) {
                                         AsyncImage(getArtRequest(firstTrack.albumId), null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
@@ -658,15 +731,12 @@ fun FolderList(songs: ImmutableList<AudioTrack>, vm: MusicViewModel, adaptiveSta
                     }
                 }
             } else {
+                // Showing the list of songs INSIDE a specific folder
                 Column(contentWidth.fillMaxHeight()) {
-                    Row(modifier = Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        IconButton(onClick = { selectedFolder = null }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = MaterialTheme.colorScheme.onSurface) }
-                        Text(activeFolder.substringAfterLast("/"), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.padding(start = 8.dp))
-                    }
                     if (activeTracks.isEmpty()) {
                         Box(Modifier.fillMaxWidth().weight(1f), Alignment.Center) { Text("Folder is empty", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                     } else {
-                        LazyColumn(modifier = Modifier.fillMaxWidth().weight(1f), contentPadding = PaddingValues(bottom = 90.dp)) {
+                        LazyColumn(modifier = Modifier.fillMaxWidth().weight(1f), contentPadding = PaddingValues(bottom = 24.dp)) {
                             items(activeTracks, key = { it.id }, contentType = { "song" }) { song ->
                                 InteractiveSongRow(song, vm, adaptiveState, { vm.playQueue(activeTracks, song) }, { onTrashClick(song) })
                             }
@@ -679,7 +749,7 @@ fun FolderList(songs: ImmutableList<AudioTrack>, vm: MusicViewModel, adaptiveSta
 }
 
 // =========================================================================================
-// --- BOTTOM SHEETS ---
+// --- BOTTOM SHEETS (The Clipboards) ---
 // The pop-up menus that slide up from the bottom of the screen.
 // =========================================================================================
 @OptIn(ExperimentalMaterial3Api::class)
@@ -759,8 +829,9 @@ fun AudioInfoItem(label: String, value: String, adaptiveState: AdaptiveState) {
 }
 
 // =========================================================================================
-// --- THE FULL SCREEN PLAYER ---
+// --- THE FULL SCREEN PLAYER (The VIP Room) ---
 // This is what opens up when you click the Mini Player at the bottom of the screen.
+// It has the big spinning record, the progress slider, and the play/pause controls.
 // =========================================================================================
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -794,6 +865,7 @@ fun PlayerScreen(
     LaunchedEffect(isPlaying, currentTrack?.id) {
         if (isPlaying) {
             while (isActive) {
+                // Spin it 360 degrees every 14 seconds
                 rotation.animateTo(
                     targetValue = rotation.value + 360f,
                     animationSpec = tween(durationMillis = 14000, easing = LinearEasing)
@@ -802,17 +874,19 @@ fun PlayerScreen(
         }
     }
 
+    // If the user pauses, shrink the record slightly. If they play, make it pop out!
     val artScale by animateFloatAsState(if (isPlaying) 1f else 0.92f, animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy), label = "artScale")
 
-    // 🎨 ADAPTIVE: Keep the player slim and centered on huge monitors
+    // 🎨 ADAPTIVE: Keep the player slim and centered on huge monitors so it doesn't look stretched
     val playerWidth = if (adaptiveState.widthSize == WindowWidthSize.EXPANDED) Modifier.width(600.dp) else Modifier.fillMaxWidth()
 
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background), contentAlignment = Alignment.Center) {
         // Blur Background
         AsyncImage(bgArtworkReq, null, modifier = Modifier.fillMaxSize().blur(48.dp), contentScale = ContentScale.Crop, alpha = 0.4f)
+        // Add a dark tint over the blur so the white buttons are easy to read
         Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.5f), Color.Black.copy(alpha = 0.9f)))))
 
-        Column(modifier = playerWidth.fillMaxHeight().statusBarsPadding().padding(horizontal = 24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Column(modifier = playerWidth.fillMaxHeight().systemBarsPadding().padding(horizontal = 24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             PlayerHeader(currentTrack?.album, viewModel.sleepTimeRemaining, adaptiveState, onBack, { showSleepTimer = true }, { showEffectsSheet = true })
 
             // The Spinning CD / Vinyl Art
@@ -830,7 +904,7 @@ fun PlayerScreen(
                     shadowElevation = 24.dp,
                     modifier = Modifier
                         .fillMaxSize()
-                        .graphicsLayer { rotationZ = rotation.value }
+                        .graphicsLayer { rotationZ = rotation.value } // Apply the spinning math!
                 ) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         AsyncImage(
@@ -839,6 +913,7 @@ fun PlayerScreen(
                             contentScale = ContentScale.Crop,
                             modifier = Modifier.fillMaxSize().clip(CircleShape)
                         )
+                        // The tiny hole in the center of the CD
                         Box(
                             modifier = Modifier
                                 .size(48.dp)
@@ -860,6 +935,7 @@ fun PlayerScreen(
 
             TrackMetadata(currentTrack, adaptiveState)
             Spacer(Modifier.height(16.dp))
+            // The Slider letting you drag to a different part of the song
             IsolatedProgressBar(viewModel.currentPosition, currentTrack?.duration ?: 1L) { viewModel.seekTo(it, false) }
             Spacer(Modifier.height(32.dp))
 
@@ -907,6 +983,7 @@ fun PlayerScreen(
     if (showEffectsSheet) AdvancedEffectsBottomSheet(viewModel, adaptiveState) { showEffectsSheet = false }
 }
 
+// Reusable blueprint for the bottom buttons in the Full Screen Player
 @Composable
 fun PlayerBottomButton(icon: ImageVector, label: String, color: Color, adaptiveState: AdaptiveState, onClick: () -> Unit) {
     Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable(onClick = onClick).padding(8.dp)) {
@@ -933,7 +1010,7 @@ fun IsolatedProgressBar(positionFlow: Flow<Long>, duration: Long, onSeek: (Long)
         Slider(
             value = animatedProgress,
             onValueChange = { isDragging = true; sliderVal = it },
-            onValueChangeFinished = { onSeek((safeDur * sliderVal).toLong()); isDragging = false },
+            onValueChangeFinished = { onSeek((safeDur * sliderVal).toLong()); isDragging = false }, // Tell the player to jump when they let go!
             colors = SliderDefaults.colors(thumbColor = Color.White, activeTrackColor = Color.White, inactiveTrackColor = Color.White.copy(alpha = 0.3f)),
             modifier = Modifier.height(24.dp)
         )
@@ -960,13 +1037,14 @@ fun PlaybackControls(isPlaying: Boolean, isShuffleEnabled: Boolean, repeatMode: 
     }
 }
 
-// A single row containing a song inside the list
+// A blueprint for a single row containing a song inside any list
 @Composable
 fun InteractiveSongRow(song: AudioTrack, vm: MusicViewModel, adaptiveState: AdaptiveState, onClick: () -> Unit, onTrashClick: () -> Unit) {
     var showMenu by remember { mutableStateOf(false) }
     val currentTrackRaw by vm.currentTrack.collectAsStateWithLifecycle()
     val isPlaying = remember(currentTrackRaw?.id, song.id) { currentTrackRaw?.id == song.id }
 
+    // If this song is currently playing, turn the text blue!
     val titleColor by animateColorAsState(targetValue = if (isPlaying) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground, label = "titleColor")
     val bgColor by animateColorAsState(targetValue = if (isPlaying) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.15f) else Color.Transparent, label = "bgColor")
 
@@ -987,6 +1065,7 @@ fun InteractiveSongRow(song: AudioTrack, vm: MusicViewModel, adaptiveState: Adap
     }
 }
 
+// Slide-up menu letting you change the Speed and Pitch of a song while it's playing
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AdvancedEffectsBottomSheet(viewModel: MusicViewModel, adaptiveState: AdaptiveState, onDismiss: () -> Unit) {
@@ -1017,6 +1096,7 @@ fun AdvancedEffectsBottomSheet(viewModel: MusicViewModel, adaptiveState: Adaptiv
     }
 }
 
+// A neat little slider used in the Effects menu
 @Composable
 fun CompactSlider(label: String, value: Float, valueRange: ClosedFloatingPointRange<Float>, activeColor: Color, adaptiveState: AdaptiveState, onValueChange: (Float) -> Unit) {
     Column {
@@ -1034,7 +1114,7 @@ fun CompactSlider(label: String, value: Float, valueRange: ClosedFloatingPointRa
 }
 
 // =========================================================================================
-// --- THE MINI PLAYER ---
+// --- THE MINI PLAYER (The Pager) ---
 // This sits at the bottom of the screen while you navigate around the library.
 // =========================================================================================
 @Composable
@@ -1051,8 +1131,10 @@ fun ModernMiniPlayer(
 ) {
     val colors = MaterialTheme.colorScheme
     val view = LocalView.current
-    var swipeDirection by remember { mutableIntStateOf(1) }
+    var swipeDirection by remember { mutableIntStateOf(1) } // 1 for right, -1 for left
     val density = LocalDensity.current
+
+    // The user has to drag their finger 60 pixels to count as a "Swipe"
     val swipeThreshold = remember(density) { with(density) { 60.dp.toPx() } }
 
     Surface(
@@ -1061,27 +1143,27 @@ fun ModernMiniPlayer(
             .height(72.dp)
             .clip(RoundedCornerShape(24.dp))
             .pointerInput(Unit) {
-                detectTapGestures(onTap = { onClick() })
+                detectTapGestures(onTap = { onClick() }) // Single tap opens the Full Screen Player
             }
-            // Allowing the user to swipe Left/Right on the mini player to change the song!
+            // MAGIC: Allowing the user to swipe Left/Right on the mini player to change the song!
             .pointerInput(Unit) {
                 var accumulatedX = 0f
                 detectHorizontalDragGestures(
                     onDragEnd = {
                         if (accumulatedX > swipeThreshold) {
                             swipeDirection = -1
-                            onPrev()
-                            view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                            onPrev() // Tell Manager to skip to previous song
+                            view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY) // Buzz
                         } else if (accumulatedX < -swipeThreshold) {
                             swipeDirection = 1
-                            onNext()
-                            view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                            onNext() // Tell Manager to skip to next song
+                            view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY) // Buzz
                         }
                         accumulatedX = 0f
                     }
                 ) { change, dragAmount ->
                     change.consume()
-                    accumulatedX += dragAmount
+                    accumulatedX += dragAmount // Keep track of how far they are pulling their finger
                 }
             },
         shape = RoundedCornerShape(24.dp),
@@ -1090,6 +1172,8 @@ fun ModernMiniPlayer(
         shadowElevation = 8.dp
     ) {
         Box(Modifier.fillMaxSize()) {
+
+            // The Sliding Animation for when the song changes
             AnimatedContent(
                 targetState = track,
                 transitionSpec = {
@@ -1152,6 +1236,7 @@ fun ModernMiniPlayer(
     }
 }
 
+// The tiny blue line at the bottom of the Mini Player
 @Composable
 private fun BoxScope.MiniPlayerProgressBar(positionFlow: Flow<Long>, duration: Long) {
     val position by positionFlow.collectAsStateWithLifecycle(initialValue = 0L)
@@ -1178,6 +1263,7 @@ fun PlayerHeader(albumName: String?, sleepTimeRemaining: Long, adaptiveState: Ad
             Text(albumName ?: "Unknown Album", fontSize = (14 * adaptiveState.textScaleFactor).sp, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
+            // Show countdown if Sleep Timer is active
             if (sleepTimeRemaining > 0) Text("${sleepTimeRemaining / 60000L}m", color = MaterialTheme.colorScheme.primary, fontSize = (12 * adaptiveState.textScaleFactor).sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(end = 4.dp))
             IconButton(onClick = onSleepTimerClick) { Icon(Icons.Filled.Bedtime, "Sleep Timer", tint = if (sleepTimeRemaining > 0) MaterialTheme.colorScheme.primary else Color.White) }
             IconButton(onClick = onEffectsClick) { Icon(Icons.Rounded.GraphicEq, "Effects", tint = Color.White) }
@@ -1195,6 +1281,7 @@ fun TrackMetadata(track: AudioTrack?, adaptiveState: AdaptiveState) {
     }
 }
 
+// Allows the user to say "Stop the music in 15 minutes" so they can fall asleep
 @Composable
 fun SleepTimerDialog(onDismiss: () -> Unit, onSet: (Int) -> Unit, onCancel: () -> Unit, adaptiveState: AdaptiveState) {
     var customTime by remember { mutableStateOf("") }
@@ -1222,7 +1309,7 @@ fun SleepTimerDialog(onDismiss: () -> Unit, onSet: (Int) -> Unit, onCancel: () -
                 Spacer(Modifier.height(24.dp))
                 OutlinedTextField(
                     value = customTime,
-                    onValueChange = { customTime = it.filter { char -> char.isDigit() }.take(3) },
+                    onValueChange = { customTime = it.filter { char -> char.isDigit() }.take(3) }, // Only allow typing 3 numbers max
                     label = { Text("Custom minutes") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     singleLine = true,

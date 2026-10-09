@@ -49,10 +49,10 @@ android {
         targetSdk = 36
 
         // Internal tracker: Every time you update the app on the Play Store, this number MUST go up by 1.
-        versionCode = 95
+        versionCode = 96
 
         // The version number the user actually sees (e.g., "Version 95.0").
-        versionName = "95.0"
+        versionName = "1.0"
 
         // The robot that runs automatic tests on the app to make sure it doesn't crash.
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

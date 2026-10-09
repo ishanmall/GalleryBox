@@ -320,7 +320,7 @@ private fun DeveloperProfileCard(adaptiveState: AdaptiveState) {
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = "Android Software Developer",
+                        text = "Android Application Developer",
                         fontSize = (14 * adaptiveState.textScaleFactor).sp,
                         color = MaterialTheme.colorScheme.primary,
                         fontWeight = FontWeight.Medium
@@ -354,11 +354,11 @@ private fun DeveloperProfileCard(adaptiveState: AdaptiveState) {
                     SocialLinkItem(
                         icon = Icons.Outlined.Code,
                         platform = "GitHub Repository",
-                        handle = "github.com/balanandmishra",
+                        handle = "github.com/ishanmall",
                         adaptiveState = adaptiveState,
                         onClick = {
                             // This opens the web browser on the user's phone!
-                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/balanandmishra"))
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/ishanmall"))
                             context.startActivity(intent)
                         }
                     )
@@ -599,8 +599,6 @@ private fun getFeatureList(): List<FeatureSection> = listOf(
 
 private fun getTermsText(): String = """
 Terms of Use
-Last Updated: August 18, 2026
-
 Welcome to GalleryBox – Music & Video Editor. By downloading, installing, or using GalleryBox, you agree to these Terms of Use.
 
 1. About GalleryBox
@@ -659,15 +657,13 @@ Any updated version will be made available within GalleryBox or through the appl
 
 13. Contact
 For questions regarding these Terms of Use:
-Developer: Balanand Mishra
+Developer:  Ishan Mall
 Website: https://portfolio-b1973.web.app
-© 2026 Balanand Mishra. All rights reserved.
+© 2026 Ishan Mall . All rights reserved.
 """.trimIndent()
 
 private fun getPrivacyText(): String = """
 Privacy Policy
-Last Updated: August 18, 2026
-
 GalleryBox – Music & Video Editor ("GalleryBox", "we", "our", or "the app") respects your privacy.
 This Privacy Policy explains how GalleryBox handles information and device permissions when you use the application.
 
@@ -753,9 +749,9 @@ The latest version will be made available within GalleryBox or through its offic
 
 15. Contact
 If you have questions, concerns, or requests regarding this Privacy Policy, contact:
-Developer: Balanand Mishra
+Developer: Ishan Mall
 Website: https://portfolio-b1973.web.app
-© 2026 Balanand Mishra. All rights reserved.
+© 2026 Ishan Mall. All rights reserved.
 """.trimIndent()
 
 private fun getLicenseText(): String = """

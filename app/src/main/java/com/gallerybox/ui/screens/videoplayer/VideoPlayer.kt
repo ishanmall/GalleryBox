@@ -1,8 +1,20 @@
+// =========================================================================================
+// 🤫 COMPILER INSTRUCTIONS
+// =========================================================================================
+// These lines tell the Android building tools to ignore certain warnings.
+// Think of it like telling an overly strict spell-checker to ignore specific words
+// because we know what we are doing.
 @file:Suppress("unused", "UnsafeOptInUsageError", "UnstableApiUsage", "OPT_IN_USAGE", "DEPRECATION")
 @file:androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class, androidx.compose.material3.ExperimentalMaterial3Api::class, kotlinx.coroutines.FlowPreview::class)
 
 package com.gallerybox.ui.screens.videoplayer
 
+// =========================================================================================
+// 🧰 THE TOOLBOX (IMPORTS)
+// =========================================================================================
+// This is the toolbox area. We are importing all the tools we need from Android and Google
+// to build this video player. We bring in tools for drawing shapes, playing videos,
+// swiping the screen, and formatting text.
 import android.app.Activity
 import android.app.PictureInPictureParams
 import android.content.Context
@@ -97,6 +109,8 @@ import java.util.Locale
 // ---------------------------------------------------------------------------
 // 🧠 ADAPTIVE LOGIC IMPORTS
 // ---------------------------------------------------------------------------
+// These tools help the app figure out if you are using a normal phone,
+// a big tablet, or a foldable phone, so it can change the layout automatically!
 import com.gallerybox.ui.screens.adaptive.AdaptiveState
 import com.gallerybox.ui.screens.adaptive.DevicePosture
 import com.gallerybox.ui.screens.adaptive.rememberAdaptiveState
@@ -107,6 +121,7 @@ import com.gallerybox.ui.screens.adaptive.WindowWidthSize
  * 🛠️ HELPER CLASSES
  * =========================================================================================
  */
+// This finds the main "Window" of the app so we can draw things on top of it.
 fun Context.findActivity(): Activity? {
     var context = this
     while (context is ContextWrapper) {
@@ -116,10 +131,14 @@ fun Context.findActivity(): Activity? {
     return null
 }
 
+// These are categories. They tell the app what kind of gesture the user is doing,
+// how the video should fit the screen, and if it should loop.
 enum class GestureMode { NONE, SCRUB, VOLUME, BRIGHTNESS }
 enum class PremiumResizeMode { FIT, ZOOM, FILL, STRETCH, RATIO_16_9, RATIO_4_3 }
 enum class PremiumRepeatMode { OFF, ONE, ALL }
 
+// This acts like a super-fast magnifying glass. When you scrub through the video timeline,
+// this class fetches a quick picture of the video frame so you can see where you are.
 class VideoFrameLoader(private val context: Context) {
     private var retriever: MediaMetadataRetriever? = MediaMetadataRetriever()
     private val cache = object : LruCache<Long, Bitmap>(6144) {
@@ -171,6 +190,8 @@ class VideoFrameLoader(private val context: Context) {
     }
 }
 
+// Think of "State" as a notepad where the app writes down everything currently happening.
+// Here it writes down: "Is the user changing the volume? Is the brightness bar showing?"
 @Stable
 class PlayerGestureState {
     var mode by mutableStateOf(GestureMode.NONE)
@@ -183,6 +204,8 @@ class PlayerGestureState {
     var gestureText by mutableStateOf("")
 }
 
+// This is the "Brain" for screen touches. It does the math to figure out if dragging
+// your finger UP on the left side of the screen should change brightness or volume.
 class PlayerGestureEngine(private val context: Context, private val activity: Activity?, private val totalDuration: () -> Long) {
     private var accumulatedX = 0f
     private var accumulatedY = 0f
@@ -258,12 +281,15 @@ class PlayerGestureEngine(private val context: Context, private val activity: Ac
 }
 
 /**
+ * THE BOUNCY BUTTON.
  * A reusable button wrapper that shrinks slightly when you press it, like a real physical button.
  */
 @Composable
 fun ScaleButton(onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true, content: @Composable () -> Unit) {
     var pressed by remember { mutableStateOf(false) }
     val context = LocalContext.current
+
+    // Check if the phone is weak. If it is, don't use heavy bouncy animations, just fade it.
     val isLowEnd = remember {
         val am = context.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
         val mi = android.app.ActivityManager.MemoryInfo()
@@ -271,7 +297,10 @@ fun ScaleButton(onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boo
         (mi.totalMem / (1024.0 * 1024 * 1024)) <= 3.0
     }
     val animSpec: AnimationSpec<Float> = if (isLowEnd) tween(90) else spring(dampingRatio = Spring.DampingRatioMediumBouncy)
+
+    // Animate the size shrinking to 92% when pressed
     val scale by animateFloatAsState(if (pressed && enabled) 0.92f else 1.0f, animationSpec = animSpec, label = "scale")
+
     Box(
         modifier = modifier
             .scale(scale)
@@ -288,7 +317,7 @@ fun ScaleButton(onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boo
             },
         contentAlignment = Alignment.Center
     ) {
-        content()
+        content() // Draw whatever icon or text was placed inside this button
     }
 }
 
@@ -296,6 +325,8 @@ fun ScaleButton(onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boo
  * =========================================================================================
  * 🎬 MAIN VIDEO PLAYER WRAPPER
  * =========================================================================================
+ * This acts as the front door. It receives the link to the video, tells the ViewModel
+ * to load it, and then passes the real work to VideoPlayerContent.
  */
 @Composable
 fun VideoPlayerScreen(
@@ -304,6 +335,7 @@ fun VideoPlayerScreen(
     onBackPress: () -> Unit,
     onLockApp: () -> Unit = {}
 ) {
+    // "remember" acts as the app's short-term memory so it doesn't reload the video constantly
     var lastOpenedUrl by remember { mutableStateOf("") }
 
     LaunchedEffect(initialVideoUrl) {
@@ -324,6 +356,8 @@ fun VideoPlayerScreen(
  * =========================================================================================
  * 🎬 VIDEO PLAYER CONTENT (Where the magic happens)
  * =========================================================================================
+ * This draws the actual video screen, the play/pause buttons, the timeline slider,
+ * and the settings menu.
  */
 @Composable
 fun VideoPlayerContent(
@@ -333,16 +367,17 @@ fun VideoPlayerContent(
 ) {
     val context = LocalContext.current
 
-    // 🧠 1. Bring in the Adaptive Engine to know if this is a phone, tablet, or foldable!
+    // 🧠 Bring in the Adaptive Engine to know if this is a phone, tablet, or foldable!
     val adaptiveState = rememberAdaptiveState()
 
     val activity = remember { context.findActivity() }
     val view = LocalView.current
-    val scope = rememberCoroutineScope()
-    val haptic = LocalHapticFeedback.current
+    val scope = rememberCoroutineScope() // Gives us a space to run tasks in the background
+    val haptic = LocalHapticFeedback.current // Lets us trigger the phone's vibration motor
     val lifecycleOwner = LocalLifecycleOwner.current
     val insetsController = remember { activity?.window?.let { WindowCompat.getInsetsController(it, view) } }
 
+    // Fetch the video player engine and all its current settings from our ViewModel
     val player = remember(viewModel) { viewModel.getPlayer() }
     val currentVideoUri by viewModel.currentVideoUri.collectAsState()
     val isPlaying by viewModel.isPlaying.collectAsState()
@@ -351,6 +386,10 @@ fun VideoPlayerContent(
     val duration by viewModel.duration.collectAsState()
     val bufferedPosition by viewModel.bufferedPosition.collectAsState()
     val playbackSpeed by viewModel.playbackSpeed.collectAsState()
+
+    // ---> WE ARE GRABBING THE CURRENT PITCH VALUE FROM THE VIEWMODEL HERE!
+    val playbackPitch by viewModel.playbackPitch.collectAsState()
+
     val videoFormat by viewModel.videoFormat.collectAsState()
     val backgroundPlay by viewModel.backgroundPlay.collectAsState()
     val autoPlayNext by viewModel.autoPlayNext.collectAsState()
@@ -369,6 +408,7 @@ fun VideoPlayerContent(
 
     var cachedSystemBrightness by remember { mutableFloatStateOf(-1f) }
 
+    // This background task safely checks how bright the user's phone screen normally is.
     LaunchedEffect(Unit) {
         cachedSystemBrightness = withContext(Dispatchers.IO) {
             try { Settings.System.getInt(context.contentResolver, Settings.System.SCREEN_BRIGHTNESS) / 255f }
@@ -378,6 +418,7 @@ fun VideoPlayerContent(
 
     var videoSize by remember { mutableStateOf(VideoSize.UNKNOWN) }
 
+    // Restores the original screen brightness when the user closes the video player
     DisposableEffect(activity) {
         originalBrightness = activity?.window?.attributes?.screenBrightness ?: -1f
         onDispose {
@@ -385,6 +426,7 @@ fun VideoPlayerContent(
         }
     }
 
+    // Forces the phone into landscape mode if the user clicks the rotate button
     LaunchedEffect(manualRotateOverride) {
         if (manualRotateOverride) {
             activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
@@ -393,6 +435,7 @@ fun VideoPlayerContent(
         }
     }
 
+    // Listens for the video loading so we know exactly how wide and tall the video is
     DisposableEffect(Unit) {
         val sizeListener = object : Player.Listener {
             override fun onVideoSizeChanged(newSize: VideoSize) {
@@ -409,6 +452,7 @@ fun VideoPlayerContent(
         }
     }
 
+    // When the user drags the timeline slider, this asks the FrameLoader to fetch a quick picture.
     LaunchedEffect(gestureState) {
         snapshotFlow { gestureState.isSeeking to gestureState.seekPosition }
             .debounce(100)
@@ -426,10 +470,10 @@ fun VideoPlayerContent(
     var resizeModeToast by remember { mutableStateOf("") }
     var isMirrored by remember { mutableStateOf(false) }
 
-    var showControls by remember { mutableStateOf(true) }
-    var isLocked by remember { mutableStateOf(false) }
-    var hideJob by remember { mutableStateOf<Job?>(null) }
-    var isInPiPMode by remember { mutableStateOf(false) }
+    var showControls by remember { mutableStateOf(true) } // Are the play/pause buttons visible?
+    var isLocked by remember { mutableStateOf(false) } // Is the screen locked from accidental touches?
+    var hideJob by remember { mutableStateOf<Job?>(null) } // The invisible timer that hides the controls
+    var isInPiPMode by remember { mutableStateOf(false) } // Is Picture-in-Picture (floating window) active?
 
     var showDoubleTapText by remember { mutableStateOf("") }
     var doubleTapForward by remember { mutableStateOf(true) }
@@ -437,6 +481,7 @@ fun VideoPlayerContent(
     var doubleTapJob by remember { mutableStateOf<Job?>(null) }
     var showMenuSheet by remember { mutableStateOf(false) }
 
+    // A tiny background task that hides the "Stretch to fit" message after 1.5 seconds.
     LaunchedEffect(resizeModeToast) {
         if (resizeModeToast.isNotEmpty()) {
             delay(1500)
@@ -444,6 +489,7 @@ fun VideoPlayerContent(
         }
     }
 
+    // Configures Android's Picture-in-Picture mode (the little floating video that stays on screen when you go home)
     DisposableEffect(activity) {
         val compActivity = activity as? ComponentActivity
         val listener = Consumer<PictureInPictureModeChangedInfo> { info ->
@@ -462,6 +508,7 @@ fun VideoPlayerContent(
         }
     }
 
+    // Updates the Picture-in-Picture floating window to match the exact dimensions of the video
     LaunchedEffect(isPlaying, playbackState, videoSize) {
         val compActivity = activity as? ComponentActivity
         if (compActivity != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -486,14 +533,15 @@ fun VideoPlayerContent(
     val isLockedState = rememberUpdatedState(isLocked)
     val isInPiPState = rememberUpdatedState(isInPiPMode)
 
+    // This resets the 3-second countdown timer. If the timer hits zero, the buttons fade away.
     val resetControlsTimer: () -> Unit = remember(scope) {
         {
             showControls = true
             hideJob?.cancel()
             hideJob = scope.launch {
-                delay(3000)
+                delay(3000) // Wait 3 seconds
                 if (isPlayingState.value && !isLockedState.value && !isInPiPState.value) {
-                    showControls = false
+                    showControls = false // Hide everything
                 }
             }
         }
@@ -560,12 +608,14 @@ fun VideoPlayerContent(
         }
     }
 
+    // Auto-hides the controls when a video first starts playing
     LaunchedEffect(playbackState, isPlaying, showControls) {
         if (playbackState == Player.STATE_READY && isPlaying && showControls) {
             resetControlsTimer()
         }
     }
 
+    // Listens to the app minimizing or closing. Pauses the video automatically so it doesn't keep making sound.
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_PAUSE) {
@@ -576,19 +626,17 @@ fun VideoPlayerContent(
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
-        activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) // Don't let the screen fall asleep!
 
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
             activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-            insetsController?.show(WindowInsetsCompat.Type.systemBars())
+            insetsController?.show(WindowInsetsCompat.Type.systemBars()) // Bring the clock and battery bar back
         }
     }
 
-    // 2. Hide System UI based on the Adaptive Posture
+    // Hide System UI based on the Adaptive Posture (clock and battery icons at the top)
     LaunchedEffect(showControls, isLocked, isInPiPMode, adaptiveState.posture) {
-        // If we are bent in Half-Opened mode (like a laptop), we might want to keep the system bars.
-        // Otherwise, hide them.
         if (showControls && !isLocked && !isInPiPMode) {
             insetsController?.show(WindowInsetsCompat.Type.systemBars())
         } else {
@@ -597,14 +645,18 @@ fun VideoPlayerContent(
         }
     }
 
+    // If the back button is pressed, exit out of the video player
     BackHandler { if (!isInPiPMode) onBackPress() }
 
+    // "Box" is a layout that stacks things on top of each other, like a sandwich.
+    // The very bottom piece of bread is the Black Background.
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
 
-        // 3. TABLETOP MODE CHECK (HALF OPENED FOLDABLE)
+        // TABLETOP MODE CHECK (HALF OPENED FOLDABLE)
         // If the user's foldable phone is bent 90 degrees and resting on a table,
         // we shove the video to the TOP half, and the controls to the BOTTOM half!
         if (adaptiveState.posture == DevicePosture.HALF_OPENED) {
+            // "Column" stacks things vertically (Top to Bottom)
             Column(modifier = Modifier.fillMaxSize()) {
                 // Top Screen: The Video
                 Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
@@ -651,7 +703,9 @@ fun VideoPlayerContent(
                 }
             }
         } else {
-            // 4. NORMAL VIEW (Phones, Tablets, Flat Foldables)
+            // NORMAL VIEW (Phones, Tablets, Flat Foldables)
+
+            // This is the actual physical Android component that plays the video.
             AndroidView(
                 factory = { ctx ->
                     PlayerView(ctx).apply {
@@ -675,6 +729,7 @@ fun VideoPlayerContent(
                         PremiumResizeMode.RATIO_4_3 -> Modifier.aspectRatio(4f/3f)
                         else -> Modifier
                     })
+                    // Detect taps on the screen (Single tap shows controls, Double tap skips forward 10 seconds)
                     .pointerInput(isLocked, configuration.orientation) {
                         if (isLocked) {
                             detectTapGestures(
@@ -695,10 +750,11 @@ fun VideoPlayerContent(
                         }
                         detectTapGestures(
                             onPress = { _ ->
+                                // If the user holds down their finger for 0.4 seconds, we fast forward at 2x speed!
                                 val job = scope.launch {
                                     delay(400)
                                     isLongPressing = true
-                                    player.playbackParameters = PlaybackParameters((playbackSpeed * 2f).coerceAtMost(8f), viewModel.playbackPitch.value)
+                                    player.playbackParameters = PlaybackParameters((playbackSpeed * 2f).coerceAtMost(8f), playbackPitch)
                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 }
                                 tryAwaitRelease()
@@ -719,6 +775,7 @@ fun VideoPlayerContent(
                             onDoubleTap = { offset ->
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 val dynamicSeekMs = maxOf(10000L, (duration * 0.01).toLong())
+                                // Did they double tap the left side or the right side?
                                 if (offset.x < size.width / 2f) {
                                     viewModel.seekBackward(dynamicSeekMs)
                                     showDoubleTapText = "-${dynamicSeekMs / 1000}s"
@@ -735,6 +792,7 @@ fun VideoPlayerContent(
                             }
                         )
                     }
+                    // Detect swiping to change volume or brightness
                     .pointerInput(isLocked, configuration.orientation) {
                         if (isLocked) return@pointerInput
                         detectDragGestures(
@@ -761,6 +819,7 @@ fun VideoPlayerContent(
                     }
             )
 
+            // Volume Indicator Graphic
             AnimatedVisibility(
                 visible = gestureState.showVolume,
                 enter = fadeIn(),
@@ -770,6 +829,7 @@ fun VideoPlayerContent(
                 VolumeBrightnessBar(value = gestureState.volume, icon = Icons.Rounded.VolumeUp)
             }
 
+            // Brightness Indicator Graphic
             AnimatedVisibility(
                 visible = gestureState.showBrightness,
                 enter = fadeIn(),
@@ -779,6 +839,7 @@ fun VideoPlayerContent(
                 VolumeBrightnessBar(value = gestureState.brightness, icon = Icons.Rounded.BrightnessMedium)
             }
 
+            // The "+10s" text that pops up when you double tap
             AnimatedVisibility(
                 visible = showDoubleTapText.isNotEmpty(),
                 enter = scaleIn(initialScale = 0.8f) + fadeIn(),
@@ -793,12 +854,14 @@ fun VideoPlayerContent(
                 }
             }
 
+            // The text that pops up when you change the aspect ratio (e.g., "FIT", "ZOOM")
             AnimatedVisibility(visible = resizeModeToast.isNotEmpty(), enter = fadeIn(), exit = fadeOut(), modifier = Modifier.align(Alignment.Center)) {
                 Surface(color = Color.Black.copy(0.6f), shape = RoundedCornerShape(24.dp)) {
                     Text(resizeModeToast, color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp))
                 }
             }
 
+            // The "2x" text that pops up when you hold the screen to fast forward
             AnimatedVisibility(visible = isLongPressing && isPlaying, enter = fadeIn() + scaleIn(), exit = fadeOut() + scaleOut(), modifier = Modifier.align(Alignment.TopCenter).padding(top = 100.dp)) {
                 Surface(color = Color.Black.copy(0.6f), shape = CircleShape) {
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
@@ -809,9 +872,11 @@ fun VideoPlayerContent(
                 }
             }
 
+            // If we are NOT in floating window mode, draw the Top and Bottom Menus
             if (!isInPiPMode) {
                 val currentTitle = player.currentMediaItem?.mediaMetadata?.displayTitle?.toString() ?: player.currentMediaItem?.mediaMetadata?.title?.toString() ?: currentVideoUri?.substringAfterLast("/") ?: "Video"
 
+                // The Top Bar (Back Arrow, Title, Resolution, Settings Dots)
                 AnimatedVisibility(visible = showControls && !isLocked, enter = fadeIn(), exit = fadeOut()) {
                     VideoTopBar(
                         title = currentTitle,
@@ -822,6 +887,7 @@ fun VideoPlayerContent(
                     )
                 }
 
+                // The Bottom Bar (Play, Pause, Skip, Timeline Slider)
                 AnimatedVisibility(visible = showControls && !isLocked, enter = fadeIn(), exit = fadeOut()) {
                     VideoBottomControls(
                         isPlaying = isPlaying,
@@ -849,6 +915,7 @@ fun VideoPlayerContent(
                 }
             }
 
+            // The little Padlock button that floats on the screen when it is locked
             AnimatedVisibility(visible = isLocked && showControls, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.align(Alignment.CenterStart).padding(start = 32.dp)) {
                 ScaleButton(
                     onClick = {
@@ -864,9 +931,11 @@ fun VideoPlayerContent(
         }
     }
 
+    // Shows the slide-up Settings menu when the 3 dots are clicked
     if (showMenuSheet) {
         PlaybackMenuSheet(
             currentSpeed = playbackSpeed,
+            currentPitch = playbackPitch, // Passed in here!
             autoPlayNext = autoPlayNext,
             autoRepeat = repeatMode,
             backgroundPlay = backgroundPlay,
@@ -874,9 +943,10 @@ fun VideoPlayerContent(
             audioDelayMs = audioDelayMs,
             onDismissRequest = {
                 showMenuSheet = false
-                resetControlsTimer()
+                resetControlsTimer() // Start the hide timer again when menu closes
             },
             onSpeedChange = { viewModel.setPlaybackSpeed(it) },
+            onSetPitch = { viewModel.setPlaybackPitch(it) }, // Pass the new pitch back to ViewModel!
             onToggleAutoPlay = { viewModel.setAutoPlayNext(it) },
             onToggleAutoRepeat = { viewModel.cycleRepeatMode(it) },
             onToggleBackgroundPlay = { viewModel.setBackgroundPlay(it) },
@@ -902,9 +972,11 @@ fun VideoPlayerContent(
  * =========================================================================================
  * 🔘 VIDEO TOP BAR
  * =========================================================================================
+ * Draws the Back button, the Title of the video, and the "4K" / "HDR" tags if applicable.
  */
 @Composable
 fun VideoTopBar(title: String, format: Format?, onBack: () -> Unit, onMenu: () -> Unit, adaptiveState: AdaptiveState) {
+    // Check how tall the video is to figure out if it's 4K, 1080p, or lower quality.
     val height = format?.height ?: 0
     val resBadge = when {
         height >= 2160 -> "4K"
@@ -915,6 +987,7 @@ fun VideoTopBar(title: String, format: Format?, onBack: () -> Unit, onMenu: () -
         else -> null
     }
 
+    // Check if the video has crazy bright colors (HDR)
     val transfer = format?.colorInfo?.colorTransfer
     val isHdr = transfer == C.COLOR_TRANSFER_ST2084 || transfer == C.COLOR_TRANSFER_HLG
     val hdrBadge = when (transfer) {
@@ -923,12 +996,17 @@ fun VideoTopBar(title: String, format: Format?, onBack: () -> Unit, onMenu: () -
         else -> if (isHdr) "HDR" else null
     }
 
+    // Draws a black gradient at the top of the screen so the white text is always readable
     Box(Modifier.fillMaxWidth().height(80.dp).background(Brush.verticalGradient(listOf(Color.Black.copy(0.65f), Color.Transparent))))
+
+    // "Row" puts items horizontally next to each other.
     Row(Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 12.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
         ScaleButton(onClick = onBack, modifier = Modifier.size(44.dp).background(Color.Black.copy(0.2f), CircleShape)) {
             Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = Color.White)
         }
         Spacer(Modifier.width(16.dp))
+
+        // "Column" stacks the 4K tags on top of the Video Title
         Column(modifier = Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 hdrBadge?.let {
@@ -944,6 +1022,8 @@ fun VideoTopBar(title: String, format: Format?, onBack: () -> Unit, onMenu: () -
             }
             Text(title, color = Color.White, fontSize = (16 * adaptiveState.textScaleFactor).sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
+
+        // The 3 dots for Settings
         ScaleButton(onClick = onMenu, modifier = Modifier.size(44.dp).background(Color.Black.copy(0.2f), CircleShape)) {
             Icon(Icons.Default.MoreVert, null, tint = Color.White)
         }
@@ -954,6 +1034,7 @@ fun VideoTopBar(title: String, format: Format?, onBack: () -> Unit, onMenu: () -
  * =========================================================================================
  * 🔘 VIDEO BOTTOM CONTROLS (Play, Pause, Timeline)
  * =========================================================================================
+ * Draws all the buttons at the bottom of the screen.
  */
 @Composable
 fun VideoBottomControls(
@@ -966,6 +1047,7 @@ fun VideoBottomControls(
     onRotateToggle: () -> Unit, onAspectRatioToggle: () -> Unit,
     adaptiveState: AdaptiveState
 ) {
+    // If the phone is horizontal, push the buttons down a little lower.
     val bottomOffset = if (isLandscape) (-12).dp else 8.dp
 
     Box(Modifier.fillMaxSize()) {
@@ -977,14 +1059,17 @@ fun VideoBottomControls(
 
         Column(Modifier.align(Alignment.BottomCenter).then(controlWidth).navigationBarsPadding().padding(horizontal = 16.dp).offset(y = bottomOffset)) {
 
+            // Aspect Ratio button
             Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), horizontalArrangement = Arrangement.End) {
                 ScaleButton(onClick = onAspectRatioToggle) {
                     Icon(Icons.Outlined.AspectRatio, contentDescription = "Aspect Ratio", tint = Color.White, modifier = Modifier.size(24.dp))
                 }
             }
 
+            // The slider bar that lets you scrub through the video
             PlayerTimelineSection(currentMs, bufferedMs, durationMs, isSeeking, previewBitmap, seekPosition, gestureText, onSeek, onSeekFinished)
 
+            // The main playback buttons (Lock, Prev, Play, Next, Rotate)
             Row(
                 Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 24.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -1008,6 +1093,7 @@ fun VideoBottomControls(
                     Icon(Icons.Rounded.SkipNext, null, tint = if (hasNext) Color.White else Color.White.copy(0.3f), modifier = Modifier.size(32.dp))
                 }
 
+                // Animation for the Rotate button (spins it smoothly)
                 var rotateAngle by remember { mutableFloatStateOf(0f) }
                 val animatedAngle by animateFloatAsState(rotateAngle, spring(), label = "rotation")
                 ScaleButton(onClick = {
@@ -1021,6 +1107,7 @@ fun VideoBottomControls(
     }
 }
 
+// Draws the vertical volume/brightness sliders on the left/right of the screen
 @Composable
 fun VolumeBrightnessBar(value: Float, icon: ImageVector) {
     Column(
@@ -1035,6 +1122,7 @@ fun VolumeBrightnessBar(value: Float, icon: ImageVector) {
     }
 }
 
+// Combines the physical slider bar and the little pop-up preview image above it
 @Composable
 private fun PlayerTimelineSection(
     currentMs: Long,
@@ -1051,6 +1139,7 @@ private fun PlayerTimelineSection(
 
     Column(Modifier.fillMaxWidth()) {
         Box(Modifier.fillMaxWidth().height(60.dp)) {
+            // Draw the preview image if the user is dragging the slider
             if (isSeeking) {
                 if (previewBitmap != null) {
                     Column(
@@ -1074,6 +1163,7 @@ private fun PlayerTimelineSection(
                     }
                 }
             }
+            // The physical slider bar
             SamsungSeekBar(
                 current = if (isSeeking) seekPosition else currentMs.toFloat(),
                 buffered = bufferedMs.toFloat(),
@@ -1084,6 +1174,7 @@ private fun PlayerTimelineSection(
             )
         }
 
+        // The text timers (e.g., 00:15 / 03:45)
         Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, bottom = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(formatTime(currentMs), color = Color.White, style = MaterialTheme.typography.labelMedium)
             Text(formatTime(durationMs), color = Color.White.copy(0.7f), style = MaterialTheme.typography.labelMedium)
@@ -1091,6 +1182,7 @@ private fun PlayerTimelineSection(
     }
 }
 
+// The core drawing code for the slider bar. It paints the loaded portion grey and the played portion white.
 @Composable
 fun SamsungSeekBar(current: Float, buffered: Float, total: Float, modifier: Modifier, onSeek: (Float, Float) -> Unit, onSeekFinished: () -> Unit) {
     var width by remember { mutableFloatStateOf(0f) }
@@ -1133,11 +1225,13 @@ fun SamsungSeekBar(current: Float, buffered: Float, total: Float, modifier: Modi
  * =========================================================================================
  * ⚙️ VIDEO SETTINGS MENU
  * =========================================================================================
+ * The slide up menu you see when you click the 3 dots.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun PlaybackMenuSheet(
     currentSpeed: Float,
+    currentPitch: Float, // Takes the current pitch setting
     autoPlayNext: Boolean,
     autoRepeat: PremiumRepeatMode,
     backgroundPlay: Boolean,
@@ -1145,6 +1239,7 @@ private fun PlaybackMenuSheet(
     audioDelayMs: Float,
     onDismissRequest: () -> Unit,
     onSpeedChange: (Float) -> Unit,
+    onSetPitch: (Float) -> Unit, // Allows changing the pitch!
     onToggleAutoPlay: (Boolean) -> Unit,
     onToggleAutoRepeat: (PremiumRepeatMode) -> Unit,
     onToggleBackgroundPlay: (Boolean) -> Unit,
@@ -1152,10 +1247,13 @@ private fun PlaybackMenuSheet(
     onCancelSleepTimer: () -> Unit,
     onSetAudioDelay: (Float) -> Unit
 ) {
+    // Remembers which sub-menu is currently open (like if you clicked "Playback Speed" from the main list)
     var currentSubMenu by remember { mutableStateOf<String?>(null) }
 
     @kotlin.OptIn(ExperimentalMaterial3Api::class)
     ModalBottomSheet(onDismissRequest = onDismissRequest, shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)) {
+
+        // This makes the transition smooth when you dive into a sub-menu! It slides over like a page turning.
         AnimatedContent(
             targetState = currentSubMenu,
             transitionSpec = {
@@ -1164,6 +1262,7 @@ private fun PlaybackMenuSheet(
             label = "MenuTransition"
         ) { subMenu ->
             when (subMenu) {
+                // 1. The Speed Selection Sub-Menu
                 "SPEED" -> {
                     LazyColumn(Modifier.padding(horizontal = 24.dp, vertical = 12.dp)) {
                         item {
@@ -1180,12 +1279,45 @@ private fun PlaybackMenuSheet(
                                 trailingContent = { if (speed == currentSpeed) Icon(Icons.Default.Check, null, tint = MaterialTheme.colorScheme.primary) },
                                 modifier = Modifier.clickable {
                                     onSpeedChange(speed)
+                                    currentSubMenu = null // Go back to the main menu!
+                                }
+                            )
+                        }
+                    }
+                }
+                // 2. The Pitch Selection Sub-Menu
+                "PITCH" -> {
+                    LazyColumn(Modifier.padding(horizontal = 24.dp, vertical = 12.dp)) {
+                        item {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                // "Back" button to return to the main settings list
+                                IconButton(onClick = { currentSubMenu = null }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, null) }
+                                Text("Audio Pitch", fontWeight = FontWeight.Medium, style = MaterialTheme.typography.titleLarge)
+                            }
+                            Spacer(Modifier.height(12.dp))
+                        }
+                        // This list matches exactly what you requested!
+                        // It covers all increments from deep (-2.0) to squeaky (+2.0)
+                        val pitches = listOf(-2.0f, -1.75f, -1.5f, -1.25f, -1.0f, -0.75f, -0.5f, -0.25f, 0.0f, 0.25f, 0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f)
+                        items(pitches) { pitch ->
+                            ListItem(
+                                // Format the text beautifully so positive numbers get a "+" (like "+1.25")
+                                headlineContent = { Text(if (pitch > 0) "+$pitch" else "$pitch") },
+                                trailingContent = {
+                                    // Draw a checkmark next to the currently active setting
+                                    if (pitch == currentPitch) Icon(Icons.Default.Check, null, tint = MaterialTheme.colorScheme.primary)
+                                },
+                                modifier = Modifier.clickable {
+                                    // Send the new pitch value to the video player
+                                    onSetPitch(pitch)
+                                    // Close the sub-menu and return to the main list
                                     currentSubMenu = null
                                 }
                             )
                         }
                     }
                 }
+                // 3. The Sleep Timer Sub-Menu
                 "SLEEP_TIMER" -> {
                     LazyColumn(Modifier.padding(horizontal = 24.dp, vertical = 12.dp)) {
                         item {
@@ -1217,6 +1349,7 @@ private fun PlaybackMenuSheet(
                         }
                     }
                 }
+                // 4. The Audio Delay Tool
                 "AUDIO_DELAY" -> {
                     Column(Modifier.padding(horizontal = 24.dp, vertical = 12.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1238,6 +1371,7 @@ private fun PlaybackMenuSheet(
                         }
                     }
                 }
+                // 5. The Main Settings Screen (This draws first!)
                 else -> {
                     LazyColumn(Modifier.padding(start = 24.dp, end = 24.dp, bottom = 24.dp, top = 8.dp)) {
 
@@ -1248,6 +1382,14 @@ private fun PlaybackMenuSheet(
                                 supportingContent = { Text("${currentSpeed}x") },
                                 leadingContent = { Icon(Icons.Outlined.Speed, null) },
                                 modifier = Modifier.clickable { currentSubMenu = "SPEED" }.height(64.dp)
+                            )
+                        }
+                        item {
+                            ListItem(
+                                headlineContent = { Text("Audio Pitch") },
+                                supportingContent = { Text(if (currentPitch > 0) "+$currentPitch" else "$currentPitch") }, // Displays the active pitch cleanly
+                                leadingContent = { Icon(Icons.Rounded.GraphicEq, null) },
+                                modifier = Modifier.clickable { currentSubMenu = "PITCH" }.height(64.dp)
                             )
                         }
                         item {
@@ -1303,6 +1445,7 @@ private fun PlaybackMenuSheet(
     }
 }
 
+// Tool to format massive millisecond integers into beautiful time strings
 fun formatTime(ms: Long): String {
     val ts = ms / 1000
     val s = ts % 60

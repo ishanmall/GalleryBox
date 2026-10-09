@@ -1,4 +1,3 @@
-@file:Suppress("UnusedImport", "unused")
 package com.gallerybox.ui.screens.music
 
 // =========================================================================================
@@ -95,11 +94,11 @@ fun DigitalRadioScreen(
         Modifier.fillMaxWidth()
     }
 
-    // The outer walls of the screen
+    // The main container that holds everything
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(BgColor),
+            .background(BgColor), // REMOVED systemBarsPadding and imePadding to prevent double-padding gaps
         contentAlignment = Alignment.TopCenter
     ) {
         // The main column holding the search bar, categories, and the list
@@ -238,7 +237,7 @@ fun DigitalRadioScreen(
             } else {
                 // Scenario C: We have stations! Draw the list (The "Conveyor Belt")
                 LazyColumn(
-                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 120.dp),
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 0.dp), // Fixed: Reduced to 0dp
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier
                         .fillMaxWidth()

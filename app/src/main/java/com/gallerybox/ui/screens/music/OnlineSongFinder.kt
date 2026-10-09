@@ -2,7 +2,8 @@ package com.gallerybox.ui.screens.music
 
 // =========================================================================================
 // --- IMPORTS ---
-// Bringing in all the tools, UI pieces, and libraries needed to build our search screen.
+// This is the "toolbox" area. We are fetching all the tools we need to build this file.
+// We are bringing in tools for drawing text boxes, handling clicks, scrolling, and launching web browsers.
 // =========================================================================================
 import android.content.Context
 import android.content.Intent
@@ -12,11 +13,14 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -34,6 +38,7 @@ import java.net.URLEncoder
 
 // ---------------------------------------------------------------------------
 // 🧠 ADAPTIVE LOGIC IMPORTS
+// These give our screen the brain to know if it's on a phone or a giant tablet!
 // ---------------------------------------------------------------------------
 import com.gallerybox.ui.screens.adaptive.AdaptiveState
 import com.gallerybox.ui.screens.adaptive.rememberAdaptiveState
@@ -56,16 +61,18 @@ private val GoogleColor = Color(0xFF4285F4)
 private val SpotifyColor = Color(0xFF1DB954)
 
 /**
- * A simple list of the different websites/apps the user can search on.
+ * A simple "Menu" listing the different websites/apps the user can search on.
  */
 enum class SearchPlatform { YOUTUBE, GOOGLE, SPOTIFY }
 
-// =========================================================================================
-// --- THE MUSIC DETECTIVE (OnlineSongFinderScreen) ---
-// Analogy: Think of this screen as a private detective's office. You hand the detective
-// a sticky note with some lyrics or an artist name, and they run out the door to check
-// YouTube, Google, or Spotify to find exactly what you're looking for.
-// =========================================================================================
+/**
+ * =========================================================================================
+ * 🕵️ THE MUSIC DETECTIVE (OnlineSongFinderScreen)
+ * =========================================================================================
+ * Analogy: Think of this screen as a private detective's office. You hand the detective
+ * a sticky note with some lyrics or an artist name, and they run out the door to check
+ * YouTube, Google, or Spotify to find exactly what you're looking for.
+ */
 @Composable
 fun OnlineSongFinderScreen(onBack: () -> Unit) {
     val context = LocalContext.current
@@ -74,14 +81,15 @@ fun OnlineSongFinderScreen(onBack: () -> Unit) {
     val focusManager = LocalFocusManager.current
 
     // 🧠 THE ADAPTIVE ENGINE
-    // We ask the engine: "What shape is this device right now?"
+    // We ask the engine: "What shape is this device right now? Is it a phone or an iPad?"
     val adaptiveState = rememberAdaptiveState()
 
     // 📝 THE STICKY NOTE (State)
-    // This remembers what the user has typed into the search box so far.
+    // This memory box remembers exactly what the user has typed into the search box so far.
     var searchQuery by remember { mutableStateOf("") }
 
-    // If the user presses the physical/swipe "Back" button on their phone, we run the onBack logic.
+    // If the user presses the physical "Back" button or swipes the edge of their phone,
+    // intercept it and run our own 'onBack' command.
     BackHandler {
         onBack()
     }
@@ -95,28 +103,31 @@ fun OnlineSongFinderScreen(onBack: () -> Unit) {
         Modifier.fillMaxWidth()
     }
 
-    // The outer walls of the room
+    // The main container that holds everything. We center it so it looks good on big tablets.
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(BgColor)
-            .statusBarsPadding(),
+            .background(BgColor), // REMOVED systemBarsPadding and imePadding to prevent double-padding gaps
         contentAlignment = Alignment.TopCenter
     ) {
-        // The inner column that holds our text, search bar, and buttons
+
+        // The inner column that holds our text, search bar, and buttons stacked on top of each other.
         Column(
             modifier = contentWidthModifier
                 .fillMaxHeight()
                 .padding(horizontal = 24.dp)
+                // 🛗 THE ELEVATOR: This fixes the chopped-off Spotify card!
+                // By adding `verticalScroll`, we tell Android: "If these buttons are taller than the screen, let the user scroll down!"
+                .verticalScroll(rememberScrollState())
         ) {
             Spacer(Modifier.height(24.dp))
 
-            // The Title
+            // The Big Title
             Text(
                 text = "Find Songs Online",
                 color = TextPrimary,
                 fontWeight = FontWeight.Bold,
-                fontSize = (28 * adaptiveState.textScaleFactor).sp,
+                fontSize = (28 * adaptiveState.textScaleFactor).sp, // Scale text up if on a big tablet!
                 modifier = Modifier.padding(bottom = 16.dp)
             )
 
@@ -124,7 +135,7 @@ fun OnlineSongFinderScreen(onBack: () -> Unit) {
             // Where the user types their lyrics or song name.
             OutlinedTextField(
                 value = searchQuery,
-                onValueChange = { searchQuery = it },
+                onValueChange = { searchQuery = it }, // Update the sticky note every time they type a letter
                 modifier = Modifier.fillMaxWidth(),
                 placeholder = {
                     Text(
@@ -133,7 +144,9 @@ fun OnlineSongFinderScreen(onBack: () -> Unit) {
                         fontSize = (14 * adaptiveState.textScaleFactor).sp
                     )
                 },
+                // The magnifying glass icon on the left
                 leadingIcon = { Icon(Icons.Rounded.Search, null, tint = TextSecondary) },
+                // The 'X' clear button on the right
                 trailingIcon = {
                     // Only show the "X" clear button if they have actually typed something!
                     if (searchQuery.isNotEmpty()) {
@@ -150,11 +163,11 @@ fun OnlineSongFinderScreen(onBack: () -> Unit) {
                     unfocusedBorderColor = Color.Transparent
                 ),
                 singleLine = true,
-                // Tells the Android keyboard to show a "Search" magnifying glass instead of an "Enter" key
+                // Tells the Android keyboard to show a blue "Search" magnifying glass instead of a standard "Enter" key
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                 keyboardActions = KeyboardActions(
                     onSearch = {
-                        // The user hit Search! Hide the keyboard and check YouTube as the default.
+                        // The user hit Search on their keyboard! Hide the keyboard and check YouTube as the default.
                         focusManager.clearFocus()
                         performSearch(context, searchQuery, SearchPlatform.YOUTUBE)
                     }
@@ -162,6 +175,8 @@ fun OnlineSongFinderScreen(onBack: () -> Unit) {
             )
 
             Spacer(Modifier.height(32.dp))
+
+            // Subtitle
             Text(
                 text = "Search using",
                 color = TextPrimary,
@@ -182,6 +197,8 @@ fun OnlineSongFinderScreen(onBack: () -> Unit) {
                 performSearch(context, searchQuery, SearchPlatform.YOUTUBE)
             }
 
+            Spacer(Modifier.height(16.dp))
+
             SearchPlatformCard(
                 title = "Google",
                 subtitle = "Search the web for lyrics and audio",
@@ -191,6 +208,8 @@ fun OnlineSongFinderScreen(onBack: () -> Unit) {
             ) {
                 performSearch(context, searchQuery, SearchPlatform.GOOGLE)
             }
+
+            Spacer(Modifier.height(16.dp))
 
             SearchPlatformCard(
                 title = "Spotify",
@@ -209,7 +228,7 @@ fun OnlineSongFinderScreen(onBack: () -> Unit) {
  * =========================================================================================
  * 🚪 THE DOORWAY BUILDER (SearchPlatformCard)
  * =========================================================================================
- * A reusable function that draws the beautiful white buttons for YouTube, Google, etc.
+ * A reusable blueprint function that draws the beautiful white buttons for YouTube, Google, etc.
  * We reuse this code 3 times to save space!
  */
 @Composable
@@ -219,12 +238,11 @@ private fun SearchPlatformCard(
     iconColor: Color,
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     adaptiveState: AdaptiveState,
-    onClick: () -> Unit
+    onClick: () -> Unit // The command to run when the user taps this specific button
 ) {
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 8.dp)
             .clip(RoundedCornerShape(20.dp))
             .clickable(onClick = onClick), // Make the whole white box clickable
         color = SurfaceColor,
@@ -237,7 +255,7 @@ private fun SearchPlatformCard(
             // The colored circle behind the icon
             Surface(
                 shape = CircleShape,
-                color = iconColor.copy(alpha = 0.15f),
+                color = iconColor.copy(alpha = 0.15f), // Makes the background color slightly see-through
                 modifier = Modifier.size(56.dp)
             ) {
                 Box(contentAlignment = Alignment.Center) {
@@ -247,6 +265,7 @@ private fun SearchPlatformCard(
 
             Spacer(Modifier.width(16.dp))
 
+            // The Text (Stacked vertically)
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = title,
@@ -261,7 +280,7 @@ private fun SearchPlatformCard(
                 )
             }
 
-            // The little arrow icon on the far right indicating "Opens in a new app"
+            // The little arrow icon on the far right indicating "This opens in a new app"
             Icon(Icons.Rounded.OpenInNew, null, tint = TextSecondary.copy(alpha = 0.5f))
         }
     }
@@ -284,7 +303,9 @@ private fun performSearch(context: Context, query: String, platform: SearchPlatf
     }
 
     try {
-        // "URLEncoder" takes normal words with spaces (like "Hello World")
+        // THE TRANSLATOR ("URLEncoder")
+        // Web browsers explode if you put normal spaces or symbols in a web address.
+        // This translator takes normal words (like "Hello World")
         // and turns them into web-safe text (like "Hello+World") so the browser doesn't break.
         val encodedQuery = URLEncoder.encode(query, "UTF-8")
 
@@ -300,7 +321,7 @@ private fun performSearch(context: Context, query: String, platform: SearchPlatf
             flags = Intent.FLAG_ACTIVITY_NEW_TASK
         }
 
-        // Send the user away!
+        // Send the user away in the taxi!
         context.startActivity(intent)
     } catch (e: Exception) {
         // If the user's phone has absolutely no web browser installed (very rare), catch the crash.
