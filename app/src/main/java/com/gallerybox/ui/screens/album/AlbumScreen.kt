@@ -758,6 +758,7 @@ fun AlbumScreen(
     trashViewModel: TrashViewModel = hiltViewModel(),
     securityViewModel: SecurityViewModel = hiltViewModel(),
     onViewerStateChanged: (Boolean) -> Unit = {},
+    onMainSelectionModeChanged: (Boolean) -> Unit = {},
     actions: AlbumActions
 ) {
     val context = LocalContext.current
@@ -4298,9 +4299,6 @@ fun VideoPreviewPage(
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
 
-        // BACKGROUND THUMBNAIL (Prevents black screen on swipe)
-        // While the video engine takes 0.5 seconds to "boot up" the video file, we instantly
-        // draw a picture of the video so the user isn't staring at a black screen!
         AsyncImage(
             model = remember(item.id, wPx, hPx) {
                 ImageRequest.Builder(ctx)
@@ -4340,9 +4338,6 @@ fun VideoPreviewPage(
                 }
             },
             update = { playerView ->
-                // THIS IS THE MOST IMPORTANT FIX:
-                // Only hand the DVD Player engine to the TV Screen if the user is actually looking at it!
-                // If they swiped away, yank the engine away so it doesn't break the new video.
                 if (isCurrentPage) {
                     if (playerView.player != sharedPlayer) {
                         playerView.player = sharedPlayer

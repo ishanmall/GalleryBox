@@ -257,13 +257,12 @@ sealed class PictureUiDialog {
 // =========================================================================================
 @Composable
 fun SamsungFastScrollbar(
-    gridState: LazyGridState, // Knows how far down the user has scrolled
-    pagedMedia: LazyPagingItems<GalleryGridItem>, // The list of all photos
+    gridState: LazyGridState,
+    pagedMedia: LazyPagingItems<GalleryGridItem>,
     indexOffset: Int = 0,
     deviceTier: DeviceTier = DeviceTier.HIGH,
     modifier: Modifier = Modifier
 ) {
-    // Only show the scrollbar if we have enough items to actually need scrolling
     val canScroll by remember {
         derivedStateOf { gridState.layoutInfo.totalItemsCount > gridState.layoutInfo.visibleItemsInfo.size }
     }
@@ -274,18 +273,17 @@ fun SamsungFastScrollbar(
     val haptic = LocalHapticFeedback.current
     val density = LocalDensity.current
 
-    var isDragging by remember { mutableStateOf(false) } // Is the user's thumb currently on the bubble?
+    var isDragging by remember { mutableStateOf(false) }
     var visible by remember { mutableStateOf(false) }
     var trackHeightPx by remember { mutableFloatStateOf(0f) }
     var thumbOffsetPx by remember { mutableFloatStateOf(0f) }
-    var bubbleLabel by remember { mutableStateOf("") } // The text inside the bubble (e.g. "August 2026")
+    var bubbleLabel by remember { mutableStateOf("") }
 
     val thumbHeightDp = 48.dp
     val thumbHeightPx = with(density) { thumbHeightDp.toPx() }
 
     val scrollChannel = remember { Channel<Int>(Channel.CONFLATED) }
 
-    // When the user drags the bubble, this instantly scrolls the giant grid of photos to match.
     LaunchedEffect(Unit) {
         for (targetIndex in scrollChannel) {
             runCatching {
@@ -296,7 +294,6 @@ fun SamsungFastScrollbar(
         }
     }
 
-    // Hide the scrollbar a second after the user stops scrolling
     LaunchedEffect(gridState.isScrollInProgress, isDragging) {
         if (gridState.isScrollInProgress || isDragging) {
             visible = true
@@ -306,7 +303,6 @@ fun SamsungFastScrollbar(
         }
     }
 
-    // Move the little bubble up and down automatically if the user is scrolling normally with their finger
     LaunchedEffect(gridState) {
         snapshotFlow { gridState.firstVisibleItemIndex }.collect { index ->
             if (!isDragging && trackHeightPx > 0f) {
@@ -321,8 +317,6 @@ fun SamsungFastScrollbar(
 
     var lastDragUpdateMs by remember { mutableLongStateOf(0L) }
 
-    // This looks at the photo next to the thumb bubble, scans up to find the nearest Date Header,
-    // and copies its text (like "August 2026") to show inside the bubble.
     fun labelForIndex(index: Int): String {
         val safeIndex = index.coerceIn(0, (pagedMedia.itemCount - 1).coerceAtLeast(0))
         for (i in safeIndex downTo maxOf(0, safeIndex - 40)) {
@@ -334,12 +328,11 @@ fun SamsungFastScrollbar(
         return ""
     }
 
-    // Math to translate "The user dragged the bubble 50 pixels down" into "Scroll the grid down 300 photos"
     fun jumpTo(offsetY: Float) {
         if (trackHeightPx <= 0f) return
 
         val now = System.currentTimeMillis()
-        if (now - lastDragUpdateMs < 33L) return // Don't stutter by calculating this 1000 times a second
+        if (now - lastDragUpdateMs < 33L) return
         lastDragUpdateMs = now
 
         val maxThumbOffset = (trackHeightPx - thumbHeightPx).coerceAtLeast(0f)
@@ -358,7 +351,7 @@ fun SamsungFastScrollbar(
         visible = visible || isDragging,
         enter = fadeIn(tween(100)),
         exit = fadeOut(tween(180)),
-        modifier = modifier.zIndex(20f) // Keep the scrollbar floating ON TOP of all the photos
+        modifier = modifier.zIndex(20f)
     ) {
         Box(
             modifier = Modifier
@@ -366,12 +359,11 @@ fun SamsungFastScrollbar(
                 .width(52.dp)
                 .onGloballyPositioned { trackHeightPx = it.size.height.toFloat() }
                 .pointerInput(Unit) {
-                    // Detect the user grabbing the bubble
                     detectDragGestures(
                         onDragStart = { offset ->
                             isDragging = true
                             lastDragUpdateMs = 0L
-                            haptic.performHapticFeedback(HapticFeedbackType.LongPress) // Bzzz! Let them know they grabbed it.
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             jumpTo(offset.y)
                         },
                         onDrag = { change, _ ->
@@ -389,7 +381,6 @@ fun SamsungFastScrollbar(
                     )
                 }
         ) {
-            // The tiny visual track line on the edge of the screen
             Box(
                 modifier = Modifier
                     .align(Alignment.CenterEnd)
@@ -402,13 +393,11 @@ fun SamsungFastScrollbar(
                     )
             )
 
-            // The floating bubble that shows the date ("August 2026")
             if (isDragging && bubbleLabel.isNotEmpty()) {
                 Surface(
                     modifier = Modifier
                         .align(Alignment.TopEnd)
                         .offset {
-                            // Push the text bubble to the left so the user's thumb doesn't block it!
                             IntOffset(
                                 x = with(density) { (-100.dp).roundToPx() },
                                 y = (thumbOffsetPx + with(density) { 24.dp.toPx() }).toInt().coerceAtLeast(0)
@@ -429,7 +418,6 @@ fun SamsungFastScrollbar(
                 }
             }
 
-            // The little pill you grab with your thumb
             Box(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
@@ -441,7 +429,7 @@ fun SamsungFastScrollbar(
                         )
                     }
                     .padding(end = 2.dp)
-                    .width(if (isDragging) 12.dp else 8.dp) // Make it slightly fatter when they touch it
+                    .width(if (isDragging) 12.dp else 8.dp)
                     .height(thumbHeightDp)
                     .background(
                         MaterialTheme.colorScheme.primary,
@@ -465,6 +453,7 @@ fun PictureScreen(
     onViewerStateChanged: (Boolean) -> Unit = {},
     onNavigateToCamera: () -> Unit,
     onNavigateToTrash: () -> Unit,
+    onMainSelectionModeChanged: (Boolean) -> Unit = {},
     onNavigateToHidden: () -> Unit,
     onNavigateToDuplicates: () -> Unit,
     onNavigateToWallpaper: (String, Long) -> Unit,
@@ -524,6 +513,11 @@ fun PictureScreen(
     var debouncedSearchQuery by remember { mutableStateOf("") }
     var hasOpenedInitial by rememberSaveable { mutableStateOf(false) }
 
+    // --- FIX 1: Provide continuous state updates of Selection Mode to the parent
+    LaunchedEffect(isSelectionMode) {
+        onMainSelectionModeChanged(isSelectionMode)
+    }
+
     LaunchedEffect(localSearchQuery) {
         delay(50)
         debouncedSearchQuery = localSearchQuery
@@ -576,8 +570,6 @@ fun PictureScreen(
         }
     }
 
-    // THE FIX: Decouple onViewerStateChanged from isSelectionMode
-    // so it doesn't accidentally trigger parent recompositions on selection.
     LaunchedEffect(viewerState) {
         onViewerStateChanged(viewerState is GalleryViewerState.Open)
     }
@@ -910,110 +902,92 @@ fun PictureScreen(
             }
         }
 
-        Box(modifier = Modifier.align(Alignment.BottomCenter)) {
-            AnimatedVisibility(
-                visible = isSelectionMode,
-                enter = if (deviceTier == DeviceTier.LOW) fadeIn(tween(80)) else slideInVertically(initialOffsetY = { it }) + fadeIn(),
-                exit = if (deviceTier == DeviceTier.LOW) fadeOut(tween(80)) else slideOutVertically(targetOffsetY = { it }) + fadeOut()
+        // --- FIX 3: Add Bottom Action Bar precisely positioned on selection
+        if (isSelectionMode) {
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .then(
+                        if (adaptiveState.widthSize == WindowWidthSize.EXPANDED) {
+                            Modifier.width(600.dp)
+                        } else {
+                            Modifier.fillMaxWidth()
+                        }
+                    ),
+                shape = RoundedCornerShape(
+                    topStart = 24.dp,
+                    topEnd = 24.dp
+                ),
+                color = MaterialTheme.colorScheme.surface,
+                shadowElevation = 8.dp
             ) {
-                val controlWidth = if (adaptiveState.widthSize == WindowWidthSize.EXPANDED) Modifier.width(600.dp) else Modifier.fillMaxWidth()
-
-                Surface(
+                Row(
                     modifier = Modifier
-                        .then(controlWidth)
-                        .padding(16.dp)
-                        .navigationBarsPadding(),
-                    shape = RoundedCornerShape(24.dp),
-                    color = MaterialTheme.colorScheme.surface,
-                    shadowElevation = 10.dp
+                        .fillMaxWidth()
+                        .navigationBarsPadding()
+                        .padding(horizontal = 8.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(8.dp),
-                        horizontalArrangement = Arrangement.SpaceEvenly,
-                        verticalAlignment = Alignment.CenterVertically
+                    BottomBarActionItem(
+                        icon = Icons.Outlined.Share,
+                        label = "Share",
+                        enabled = selectedIds.isNotEmpty()
                     ) {
-                        BottomBarActionItem(icon = Icons.AutoMirrored.Outlined.DriveFileMove, label = "Move") {
-                            onNavigateToMoveCopy("MOVE", selectedIds.joinToString(","), null)
-                            isSelectionMode = false
+                        val items = getSelectedItems()
+                        if (items.isNotEmpty()) {
+                            val uris = ArrayList(items.map { it.uri })
+                            val intent = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+                                type = "*/*"
+                                putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            }
+                            context.startActivity(Intent.createChooser(intent, "Share Media"))
                         }
-                        BottomBarActionItem(icon = Icons.Outlined.FileCopy, label = "Copy") {
-                            onNavigateToMoveCopy("COPY", selectedIds.joinToString(","), null)
-                            isSelectionMode = false
+                    }
+                    BottomBarActionItem(
+                        icon = Icons.AutoMirrored.Outlined.DriveFileMove,
+                        label = "Move",
+                        enabled = selectedIds.isNotEmpty()
+                    ) {
+                        onNavigateToMoveCopy("MOVE", selectedIds.joinToString(","), null)
+                    }
+                    BottomBarActionItem(
+                        icon = Icons.Outlined.FileCopy,
+                        label = "Copy",
+                        enabled = selectedIds.isNotEmpty()
+                    ) {
+                        onNavigateToMoveCopy("COPY", selectedIds.joinToString(","), null)
+                    }
+                    BottomBarActionItem(
+                        icon = Icons.Outlined.Delete,
+                        label = "Trash",
+                        isDestructive = true,
+                        enabled = selectedIds.isNotEmpty()
+                    ) {
+                        activeDialog = PictureUiDialog.TrashConfirm(getSelectedItems())
+                    }
+                    var showMore by remember { mutableStateOf(false) }
+                    Box {
+                        BottomBarActionItem(
+                            icon = Icons.Default.MoreVert,
+                            label = "More",
+                            enabled = selectedIds.isNotEmpty()
+                        ) {
+                            showMore = true
                         }
-                        BottomBarActionItem(icon = Icons.Outlined.Share, label = "Share") {
-                            scope.launch(Dispatchers.Default) {
-                                val itemsToShare = getSelectedItems()
-                                if (itemsToShare.isNotEmpty()) {
-                                    val intent = Intent(if (itemsToShare.size > 1) Intent.ACTION_SEND_MULTIPLE else Intent.ACTION_SEND).apply {
-                                        val hasImg = itemsToShare.any { !it.isVideo }
-                                        val hasVid = itemsToShare.any { it.isVideo }
-                                        type = if (hasVid && !hasImg) "video/*" else if (hasImg && !hasVid) "image/*" else "*/*"
-                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                        if (itemsToShare.size > 1) {
-                                            putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(itemsToShare.map { it.uri }))
-                                        } else {
-                                            putExtra(Intent.EXTRA_STREAM, itemsToShare.first().uri)
-                                        }
+                        DropdownMenu(expanded = showMore, onDismissRequest = { showMore = false }) {
+                            DropdownMenuItem(
+                                text = { Text("Details", color = MaterialTheme.colorScheme.onSurface) },
+                                onClick = {
+                                    showMore = false
+                                    val firstItem = getSelectedItems().firstOrNull()
+                                    if (firstItem != null) {
+                                        activeDialog = PictureUiDialog.MetadataInfo(firstItem)
                                     }
-                                    withContext(Dispatchers.Main) {
-                                        context.startActivity(Intent.createChooser(intent, "Share via"))
-                                        isSelectionMode = false
-                                        selectedIds = emptySet()
-                                    }
-                                } else {
-                                    withContext(Dispatchers.Main) {
-                                        isSelectionMode = false
-                                        selectedIds = emptySet()
-                                    }
-                                }
-                            }
-                        }
-                        BottomBarActionItem(icon = Icons.Outlined.Delete, label = "Trash", isDestructive = true) {
-                            scope.launch(Dispatchers.Default) {
-                                val itemsToTrash = getSelectedItems()
-                                withContext(Dispatchers.Main) {
-                                    activeDialog = PictureUiDialog.TrashConfirm(itemsToTrash)
-                                }
-                            }
-                        }
-                        Box {
-                            var showMoreMenu by remember { mutableStateOf(false) }
-                            BottomBarActionItem(icon = Icons.Default.MoreVert, label = "More") {
-                                showMoreMenu = true
-                            }
-                            DropdownMenu(
-                                expanded = showMoreMenu,
-                                onDismissRequest = { showMoreMenu = false }
-                            ) {
-                                if (selectedIds.size == 1) {
-                                    DropdownMenuItem(
-                                        text = { Text("Details") },
-                                        onClick = {
-                                            showMoreMenu = false
-                                            scope.launch(Dispatchers.Default) {
-                                                val items = getSelectedItems()
-                                                if (items.isNotEmpty()) {
-                                                    withContext(Dispatchers.Main) {
-                                                        activeDialog = PictureUiDialog.MetadataInfo(items.first())
-                                                    }
-                                                }
-                                            }
-                                        },
-                                        leadingIcon = { Icon(Icons.Outlined.Info, null) }
-                                    )
-                                }
-                                DropdownMenuItem(
-                                    text = { Text("Deselect All") },
-                                    onClick = {
-                                        showMoreMenu = false
-                                        isSelectionMode = false
-                                        selectedIds = emptySet()
-                                    },
-                                    leadingIcon = { Icon(Icons.Outlined.Deselect, null) }
-                                )
-                            }
+                                },
+                                leadingIcon = { Icon(Icons.Outlined.Info, contentDescription = null) }
+                            )
                         }
                     }
                 }
@@ -1974,8 +1948,6 @@ fun GalleryGridContent(
 
     var isScrollingFast by remember { mutableStateOf(false) }
 
-    // Calculates how fast the user is scrolling. If they are flying down the page at mach 5,
-    // we stop trying to load high-quality pictures and just show blurry grey boxes to save battery.
     LaunchedEffect(gridState) {
         var lastTime = System.currentTimeMillis()
         var lastIndex = gridState.firstVisibleItemIndex
@@ -2002,7 +1974,6 @@ fun GalleryGridContent(
             }
     }
 
-    // Calculates exactly how many pixels wide the photo thumbnail needs to be to look sharp.
     val dynamicThumbSize = remember(columnCount, screenWidthPx, deviceTier) {
         val maxSize = if (deviceTier == DeviceTier.LOW) 260 else 480
         val raw = (screenWidthPx / columnCount).coerceIn(160, maxSize)
@@ -2012,12 +1983,12 @@ fun GalleryGridContent(
     val gridCells = remember(columnCount) { GridCells.Fixed(columnCount) }
 
     // --- DRAG TO SELECT LOGIC ---
-    var autoScrollSpeed by remember { mutableFloatStateOf(0f) } // If they drag to the bottom of the screen, scroll down automatically!
+    var autoScrollSpeed by remember { mutableFloatStateOf(0f) }
     var lastPointerPosition by remember { mutableStateOf<Offset?>(null) }
     var dragAnchorIndex by remember { mutableIntStateOf(-1) }
     var dragLastIndex by remember { mutableIntStateOf(-1) }
     var dragBaseSelection by remember { mutableStateOf<Set<Long>>(emptySet()) }
-    var dragIsAdditive by remember { mutableStateOf(true) } // Are we dragging to Check boxes, or dragging to Un-Check boxes?
+    var dragIsAdditive by remember { mutableStateOf(true) }
     var pendingDownOffset by remember { mutableStateOf(Offset.Zero) }
 
     val currentOnSelectionChange by rememberUpdatedState(onSelectionChange)
@@ -2030,11 +2001,10 @@ fun GalleryGridContent(
     val placeholderColor = MaterialTheme.colorScheme.surfaceContainerHighest
     val placeholderPainter = remember(placeholderColor) { ColorPainter(placeholderColor) }
 
-    // Math: "The user's finger is at pixel (200, 450). Which photo is located there?"
     fun indexAt(offset: Offset): Int {
         val layoutInfo = gridState.layoutInfo
         val itemInfo = layoutInfo.visibleItemsInfo.find {
-            it.index > 0 && // skip the header slot
+            it.index > 0 &&
                     offset.x >= it.offset.x && offset.x <= it.offset.x + it.size.width &&
                     offset.y >= it.offset.y && offset.y <= it.offset.y + it.size.height
         }
@@ -2042,12 +2012,11 @@ fun GalleryGridContent(
     }
 
     fun mediaIdAt(gridIndex: Int): Long? {
-        val pagedIndex = gridIndex - 1 // <-- THE FIX
+        val pagedIndex = gridIndex - 1
         if (pagedIndex < 0 || pagedIndex >= pagedMedia.itemCount) return null
         return (runCatching { pagedMedia.peek(pagedIndex) }.getOrNull() as? GalleryGridItem.Media)?.item?.id
     }
 
-    // Mathematically selects every photo between the one they started touching, and the one they are currently touching.
     fun applyRangeSelection(fromIndex: Int, toIndex: Int) {
         if (fromIndex < 0 || toIndex < 0) return
         val lo = minOf(fromIndex, toIndex)
@@ -2066,6 +2035,7 @@ fun GalleryGridContent(
         currentOnSelectionChange(updated.toSet())
     }
 
+    // --- FIX 2: Correct drag selection selection/deselection logic
     fun beginDrag(offset: Offset) {
         val idx = indexAt(offset)
         val id = mediaIdAt(idx) ?: return
@@ -2074,11 +2044,17 @@ fun GalleryGridContent(
         dragAnchorIndex = idx
         dragLastIndex = idx
         dragBaseSelection = currentSelectedIds
-        dragIsAdditive = !currentIsSelectionMode || !currentSelectedIds.contains(id)
+
+        // Selected item se drag start hua toh range deselect hogi.
+        // Unselected item se drag start hua toh range select hogi.
+        dragIsAdditive = id !in currentSelectedIds
+
         lastPointerPosition = offset
+
         if (!currentIsSelectionMode) {
             currentOnSelectionModeChange(true)
         }
+
         applyRangeSelection(dragAnchorIndex, dragLastIndex)
     }
 
@@ -2096,15 +2072,14 @@ fun GalleryGridContent(
 
         val y = position.y
 
-        // If the user's finger gets really close to the top or bottom edge of the screen, start scrolling!
         autoScrollSpeed = when {
-            y < edge10 -> -70f // Very fast up
+            y < edge10 -> -70f
             y < edge40 -> -25f
-            y < edge80 -> -8f  // Slow up
-            y > boxHeightPx - edge10 -> 70f // Very fast down
+            y < edge80 -> -8f
+            y > boxHeightPx - edge10 -> 70f
             y > boxHeightPx - edge40 -> 25f
             y > boxHeightPx - edge80 -> 8f
-            else -> 0f // Stop scrolling
+            else -> 0f
         }
     }
 
@@ -2113,7 +2088,6 @@ fun GalleryGridContent(
         lastPointerPosition = null
     }
 
-    // A ticking clock that actually moves the screen if autoScrollSpeed is active.
     LaunchedEffect(autoScrollSpeed) {
         if (autoScrollSpeed == 0f) return@LaunchedEffect
         while (isActive) {
@@ -2134,37 +2108,30 @@ fun GalleryGridContent(
             val down = awaitFirstDown(requireUnconsumed = false)
             val longPress = awaitLongPressOrCancellation(down.id)
 
-            /*
-            ---------------------------------------------------------------
-            SHORT TAP
-            ---------------------------------------------------------------
-            No child clickable exists anymore.
-            Therefore this is the ONLY place where a normal tap is handled.
-            */
+            // --- FIX 4: Improve gesture cancellation for short taps
             if (longPress == null) {
-                val index = indexAt(down.position)
-                if (index >= 0) {
-                    val id = mediaIdAt(index)
-                    if (id != null) {
-                        val item = currentMediaMap[id]
-                            ?: (runCatching {
-                                pagedMedia.peek(index - 1)
-                            }.getOrNull() as? GalleryGridItem.Media)?.item
+                // Determine if this is an actual tap (pointer released) and not just a scroll cancellation
+                val upEvent = currentEvent.changes.firstOrNull { it.id == down.id }
+                if (upEvent != null && !upEvent.pressed && !upEvent.isConsumed) {
+                    upEvent.consume() // Consume to prevent further events
+                    val index = indexAt(down.position)
+                    if (index >= 0) {
+                        val id = mediaIdAt(index)
+                        if (id != null) {
+                            val item = currentMediaMap[id]
+                                ?: (runCatching {
+                                    pagedMedia.peek(index - 1)
+                                }.getOrNull() as? GalleryGridItem.Media)?.item
 
-                        if (item != null) {
-                            currentOnItemClick(item)
+                            if (item != null) {
+                                currentOnItemClick(item)
+                            }
                         }
                     }
                 }
                 return@awaitEachGesture
             }
 
-            /*
-            ---------------------------------------------------------------
-            LONG PRESS
-            ---------------------------------------------------------------
-            From this point onward the GRID owns this gesture completely.
-            */
             beginDrag(down.position)
             longPress.consume()
             var lastDragUpdateMs = 0L
@@ -2174,11 +2141,6 @@ fun GalleryGridContent(
                     val event = awaitPointerEvent(PointerEventPass.Initial)
                     val change = event.changes.firstOrNull { it.id == down.id } ?: break
 
-                    /*
-                    Consume movement AND release.
-                    There is no child clickable anymore, so nothing else
-                    can turn this long press into a second click.
-                    */
                     change.consume()
 
                     if (!change.pressed) {
@@ -2201,10 +2163,8 @@ fun GalleryGridContent(
         }
     }
 
-    // Draw the actual Grid!
     Box(modifier = Modifier.fillMaxSize()) {
         val navBarHeight = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-        // If they are selecting photos, make the grid stop higher up so it doesn't get covered by the Bottom Action Menu.
         val bottomPadding = if (isSelectionMode) navBarHeight + 100.dp else navBarHeight + 90.dp
 
         LazyVerticalGrid(
@@ -2230,9 +2190,9 @@ fun GalleryGridContent(
                 count = pagedMedia.itemCount,
                 span = { index ->
                     if (pagedMedia.peek(index) is GalleryGridItem.Header) {
-                        GridItemSpan(columnCount) // Text Headers span all the way across
+                        GridItemSpan(columnCount)
                     } else {
-                        GridItemSpan(1) // Photos take 1 square
+                        GridItemSpan(1)
                     }
                 },
                 key = { index ->
@@ -2251,7 +2211,6 @@ fun GalleryGridContent(
                         ModernDateHeader(
                             title = gridItem.title,
                             onSelectAllForDate = {
-                                // "Select All For Date" magic!
                                 scope.launch(Dispatchers.Default) {
                                     val snapshot = pagedMedia.itemSnapshotList.items.filterIsInstance<GalleryGridItem.Media>().filter { it.item.dateHeader == gridItem.title }
                                     val newIds = (selectedIds + snapshot.map { it.item.id }.toSet()).takeIf { s -> s.size < 5000 } ?: selectedIds
@@ -2279,7 +2238,6 @@ fun GalleryGridContent(
                         )
                     }
                     null -> {
-                        // The blank gray square shown while a photo is still loading
                         Box(
                             modifier = Modifier
                                 .aspectRatio(1f)
@@ -2293,7 +2251,6 @@ fun GalleryGridContent(
     }
 }
 
-// The individual photo square drawn inside the giant grid.
 @Composable
 fun ModernMediaGridTile(
     modifier: Modifier = Modifier,
@@ -2304,7 +2261,6 @@ fun ModernMediaGridTile(
     deviceTier: DeviceTier,
     placeholderPainter: ColorPainter
 ) {
-    // If selected, it becomes a smaller circle. If not, it's a slightly rounded square.
     val animatedRadius = if (isSelected) 16.dp else 12.dp
     val scale = if (isSelected) 0.85f else 1f
 
@@ -2322,17 +2278,16 @@ fun ModernMediaGridTile(
     ) {
         val effectiveSize = remember(thumbSize) { thumbSize.coerceIn(160, 480) }
 
-        // Give instructions to the Coil Image Loader to fetch the picture from the hard drive
         val request = remember(item.id, effectiveSize, deviceTier) {
             ImageRequest.Builder(context)
                 .data(item.uri)
-                .size(effectiveSize) // Don't load the 4K image, just load it at 200x200 pixels so the phone doesn't freeze.
+                .size(effectiveSize)
                 .memoryCacheKey("${item.id}_thumb_$effectiveSize")
                 .diskCacheKey("${item.id}_thumb_$effectiveSize")
                 .bitmapConfig(if (deviceTier == DeviceTier.LOW) Bitmap.Config.RGB_565 else Bitmap.Config.ARGB_8888)
                 .memoryCachePolicy(CachePolicy.ENABLED)
                 .diskCachePolicy(CachePolicy.ENABLED)
-                .networkCachePolicy(CachePolicy.DISABLED) // We are a local gallery, no need to check the internet.
+                .networkCachePolicy(CachePolicy.DISABLED)
                 .precision(Precision.INEXACT)
                 .allowHardware(deviceTier != DeviceTier.LOW)
                 .crossfade(0)
@@ -2343,12 +2298,11 @@ fun ModernMediaGridTile(
             model = request,
             placeholder = placeholderPainter,
             contentDescription = null,
-            contentScale = ContentScale.Crop, // Crop the edges so it perfectly fills the square
-            filterQuality = FilterQuality.Low, // Draw it fast, not perfectly.
+            contentScale = ContentScale.Crop,
+            filterQuality = FilterQuality.Low,
             modifier = Modifier.fillMaxSize()
         )
 
-        // If it's a video, draw a dark shadow at the bottom and put the "Play" icon on it.
         if (item.isVideo) {
             Box(
                 modifier = Modifier
@@ -2389,7 +2343,6 @@ fun ModernMediaGridTile(
             }
         }
 
-        // The checkmark that appears when you select the photo
         SelectionOverlay(
             isSelected = isSelected,
             isSelectionMode = isSelectionMode,
@@ -3161,6 +3114,7 @@ fun FullscreenMediaPager(
         }
     }
 }
+
 @SuppressLint("ClickableViewAccessibility")
 @OptIn(UnstableApi::class)
 @Composable
@@ -3319,6 +3273,7 @@ fun VideoPreviewPage(
         }
     }
 }
+
 @Composable
 fun PremiumViewerAction(
     icon: ImageVector,
