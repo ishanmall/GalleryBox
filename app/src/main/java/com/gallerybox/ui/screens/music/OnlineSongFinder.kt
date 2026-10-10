@@ -10,7 +10,6 @@ import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -80,22 +79,7 @@ fun OnlineSongFinderScreen(onBack: () -> Unit) {
         onBack()
     }
 
-    // A top-level container mapping to standard Material 3 scaffold
     Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("Find Songs Online", fontWeight = FontWeight.SemiBold) },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = Color.Transparent,
-                    scrolledContainerColor = MaterialTheme.colorScheme.surface
-                )
-            )
-        },
         containerColor = MaterialTheme.colorScheme.background
     ) { paddingValues ->
 

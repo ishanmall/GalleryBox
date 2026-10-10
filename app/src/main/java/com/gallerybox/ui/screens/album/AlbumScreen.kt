@@ -149,7 +149,6 @@ import com.gallerybox.ui.screens.adaptive.AdaptiveState
 import com.gallerybox.ui.screens.adaptive.DevicePosture
 import com.gallerybox.ui.screens.adaptive.rememberAdaptiveState
 import com.gallerybox.ui.screens.adaptive.WindowWidthSize
-import com.gallerybox.ui.screens.picture.ScaleButton
 
 const val ID_CAMERA = "virtual_camera"
 const val ID_RECENT = "virtual_recent"
@@ -813,8 +812,13 @@ fun AlbumScreen(
     var isDragging by remember { mutableStateOf(false) }
     var isSelectionMode by remember { mutableStateOf(false) }
     var selectedIds by remember { mutableStateOf<ImmutableSet<String>>(persistentListOf<String>().toImmutableSet()) }
+
+    // SYNCHRONIZE PARENT SELECTION STATE
+    LaunchedEffect(isSelectionMode) {
+        onMainSelectionModeChanged(isSelectionMode)
+    }
+
     var activeDialog by remember { mutableStateOf<AlbumUiDialog>(AlbumUiDialog.None) }
-    var showSelectionMenu by remember { mutableStateOf(false) }
     var optimisticallyRemovedAlbums by remember { mutableStateOf(persistentSetOf<String>()) }
 
     LaunchedEffect(viewerState) {
@@ -859,14 +863,10 @@ fun AlbumScreen(
                 virtualAlbumsMutable.add(updatedFavAlbum)
             }
         }
-        val sortedVirtualAlbums = virtualAlbumsMutable.sortedBy {
-            when (it.id) {
-                ID_RECENT -> 0
-                ID_FAVORITES -> 1
-                ID_DOWNLOADS -> 2
-                else -> 99
-            }
-        }
+
+        // RECENT/FAVORITES FIXED ORDER REMOVED
+        val sortedVirtualAlbums = virtualAlbumsMutable
+
         val userAlbums = vmAlbums.filter { !it.id.startsWith("virtual_") && albumMatchesQuery(it, searchQuery) && !optimisticallyRemovedAlbums.contains(it.id) }
         val sortedUserAlbums = if (sortOption == AlbumSort.Custom) {
             userAlbums
@@ -960,9 +960,10 @@ fun AlbumScreen(
         searchQuery = ""
     }
 
+    // UPDATED BACKHANDLER ORDER
     BackHandler(enabled = isSelectionMode) {
-        isSelectionMode = false
         selectedIds = persistentListOf<String>().toImmutableSet()
+        isSelectionMode = false
     }
 
     BackHandler(enabled = activeDialog != AlbumUiDialog.None) {
@@ -994,8 +995,8 @@ fun AlbumScreen(
                             },
                             navigationIcon = {
                                 IconButton(onClick = {
-                                    isSelectionMode = false
                                     selectedIds = persistentListOf<String>().toImmutableSet()
+                                    isSelectionMode = false
                                 }) {
                                     Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Close Selection")
                                 }
@@ -1051,100 +1052,8 @@ fun AlbumScreen(
                         )
                     }
                 }
-            },
-            bottomBar = {
-                AnimatedVisibility(
-                    visible = isSelectionMode,
-                    enter = if (deviceTier == DeviceTier.LOW) fadeIn(tween(80)) else slideInVertically(initialOffsetY = { it }) + fadeIn(),
-                    exit = if (deviceTier == DeviceTier.LOW) fadeOut(tween(80)) else slideOutVertically(targetOffsetY = { it }) + fadeOut(),
-                    modifier = Modifier.align(Alignment.BottomCenter)
-                ) {
-                    Surface(
-                        modifier = Modifier
-                            .then(controlWidthModifier)
-                            .padding(12.dp)
-                            .navigationBarsPadding(),
-                        shape = RoundedCornerShape(24.dp),
-                        color = MaterialTheme.colorScheme.surface,
-                        shadowElevation = 10.dp
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(6.dp),
-                            horizontalArrangement = Arrangement.SpaceEvenly,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            BottomBarActionItem(icon = Icons.AutoMirrored.Outlined.DriveFileMove, label = "Move") {
-                                activeDialog = AlbumUiDialog.MoveCopy(dynamicList.filter { selectedIds.contains(it.id) }, true)
-                            }
-                            BottomBarActionItem(icon = Icons.Outlined.FileCopy, label = "Copy") {
-                                activeDialog = AlbumUiDialog.MoveCopy(dynamicList.filter { selectedIds.contains(it.id) }, false)
-                            }
-                            BottomBarActionItem(icon = Icons.Outlined.Share, label = "Share") {
-                                shareMediaItems(context, allMedia.filter { selectedIds.contains(it.bucketId) })
-                                isSelectionMode = false
-                                selectedIds = persistentListOf<String>().toImmutableSet()
-                            }
-                            BottomBarActionItem(icon = Icons.Outlined.Delete, label = "Trash", isDestructive = true) {
-                                activeDialog = AlbumUiDialog.Delete(dynamicList.filter { selectedIds.contains(it.id) })
-                            }
-                            Box {
-                                BottomBarActionItem(icon = Icons.Default.MoreVert, label = "More") {
-                                    showSelectionMenu = true
-                                }
-                                DropdownMenu(expanded = showSelectionMenu, onDismissRequest = { showSelectionMenu = false }) {
-                                    val allPinned = dynamicList.filter { selectedIds.contains(it.id) }.all { it.isPinned }
-                                    if (selectedIds.size == 1) {
-                                        DropdownMenuItem(
-                                            text = { Text("Rename") },
-                                            onClick = {
-                                                showSelectionMenu = false
-                                                dynamicList.find { it.id == selectedIds.first() }?.let { activeDialog = AlbumUiDialog.Rename(it) }
-                                            },
-                                            leadingIcon = { Icon(Icons.Outlined.Edit, null) }
-                                        )
-                                    }
-                                    DropdownMenuItem(
-                                        text = { Text(if (allPinned) "Unpin" else "Pin") },
-                                        onClick = {
-                                            showSelectionMenu = false
-                                            dynamicList.filter { selectedIds.contains(it.id) }.forEach { viewModel.toggleAlbumPin(it) }
-                                            isSelectionMode = false
-                                            selectedIds = persistentListOf<String>().toImmutableSet()
-                                        },
-                                        leadingIcon = { Icon(if (allPinned) Icons.Outlined.PushPin else Icons.Filled.PushPin, null) }
-                                    )
-                                    if (selectedIds.size == 1) {
-                                        DropdownMenuItem(
-                                            text = { Text("Info") },
-                                            onClick = {
-                                                showSelectionMenu = false
-                                                dynamicList.find { it.id == selectedIds.first() }?.let { activeDialog = AlbumUiDialog.Info(it) }
-                                            },
-                                            leadingIcon = { Icon(Icons.Outlined.Info, null) }
-                                        )
-                                    }
-                                    DropdownMenuItem(
-                                        text = { Text("Hide Album") },
-                                        onClick = {
-                                            showSelectionMenu = false
-                                            val currentHidden = enginePrefs.getStringSet("hidden_albums", emptySet()) ?: emptySet()
-                                            val newHidden = currentHidden + selectedIds
-                                            enginePrefs.edit().putStringSet("hidden_albums", newHidden).apply()
-                                            selectedIds.forEach { id -> viewModel.toggleHiddenAlbum(id) }
-                                            isSelectionMode = false
-                                            selectedIds = persistentListOf<String>().toImmutableSet()
-                                            Toast.makeText(context, "Albums hidden", Toast.LENGTH_SHORT).show()
-                                        },
-                                        leadingIcon = { Icon(Icons.Outlined.VisibilityOff, null) }
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
             }
+            // BOTTOM BAR REMOVED
         ) { padding ->
             Column(
                 modifier = Modifier
@@ -2271,7 +2180,9 @@ fun StatelessAlbumGrid(
         ) {
             itemsIndexed(items = dynamicList, key = { _, album -> album.id }, contentType = { _, _ -> "album" }) { index, album ->
                 val isBeingDragged = draggedIndex == index
-                val reorderEnabled = sortOption == AlbumSort.Custom && searchQuery.isBlank()
+
+                // DRAG ENABLED INDEPENDENT OF SORT MODE
+                val reorderEnabled = searchQuery.isBlank()
 
                 fun checkAndPerformSwap() {
                     val layoutInfo = gridState.layoutInfo
