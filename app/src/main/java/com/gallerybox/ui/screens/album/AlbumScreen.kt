@@ -1,5 +1,5 @@
 @file:Suppress("UnsafeOptInUsageError", "UnstableApiUsage", "OPT_IN_USAGE", "unused", "DEPRECATION")
-@file:androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+@file:androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class, androidx.compose.material3.ExperimentalMaterial3Api::class)
 
 package com.gallerybox.ui.screens.album
 
@@ -149,6 +149,7 @@ import com.gallerybox.ui.screens.adaptive.AdaptiveState
 import com.gallerybox.ui.screens.adaptive.DevicePosture
 import com.gallerybox.ui.screens.adaptive.rememberAdaptiveState
 import com.gallerybox.ui.screens.adaptive.WindowWidthSize
+import com.gallerybox.ui.screens.picture.ScaleButton
 
 const val ID_CAMERA = "virtual_camera"
 const val ID_RECENT = "virtual_recent"
@@ -763,6 +764,7 @@ fun AlbumScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
 
     val adaptiveState = rememberAdaptiveState()
+    val controlWidthModifier = if (adaptiveState.widthSize == WindowWidthSize.EXPANDED) Modifier.width(600.dp) else Modifier.fillMaxWidth()
 
     val deviceTier = remember { getDeviceTier(context) }
     val snackbarHostState = remember { SnackbarHostState() }
@@ -1053,12 +1055,14 @@ fun AlbumScreen(
                 AnimatedVisibility(
                     visible = isSelectionMode,
                     enter = if (deviceTier == DeviceTier.LOW) fadeIn(tween(80)) else slideInVertically(initialOffsetY = { it }) + fadeIn(),
-                    exit = if (deviceTier == DeviceTier.LOW) fadeOut(tween(80)) else slideOutVertically(targetOffsetY = { it }) + fadeOut()
+                    exit = if (deviceTier == DeviceTier.LOW) fadeOut(tween(80)) else slideOutVertically(targetOffsetY = { it }) + fadeOut(),
+                    modifier = Modifier.align(Alignment.BottomCenter)
                 ) {
                     Surface(
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
+                            .then(controlWidthModifier)
+                            .padding(12.dp)
+                            .navigationBarsPadding(),
                         shape = RoundedCornerShape(24.dp),
                         color = MaterialTheme.colorScheme.surface,
                         shadowElevation = 10.dp
@@ -1066,7 +1070,7 @@ fun AlbumScreen(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(8.dp),
+                                .padding(6.dp),
                             horizontalArrangement = Arrangement.SpaceEvenly,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -1387,6 +1391,7 @@ fun AlbumDetailScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
 
     val adaptiveState = rememberAdaptiveState()
+    val controlWidthModifier = if (adaptiveState.widthSize == WindowWidthSize.EXPANDED) Modifier.width(600.dp) else Modifier.fillMaxWidth()
 
     val haptic = LocalHapticFeedback.current
     val snackbarHostState = remember { SnackbarHostState() }
@@ -1416,8 +1421,8 @@ fun AlbumDetailScreen(
 
     var openedMediaItem by remember { mutableStateOf<MediaItem?>(null) }
 
-    val pagedMediaFlow: kotlinx.coroutines.flow.Flow<androidx.paging.PagingData<GalleryGridItem>> = remember(albumId, mediaFilter, debouncedSearchQuery) {
-        viewModel.getPagedMediaForAlbumStream(albumId, mediaFilter, debouncedSearchQuery)
+    val pagedMediaFlow: kotlinx.coroutines.flow.Flow<androidx.paging.PagingData<GalleryGridItem>> = remember(albumId, mediaFilter, currentPhotoSort, debouncedSearchQuery) {
+        viewModel.getPagedMediaForAlbumStream(albumId, mediaFilter, debouncedSearchQuery, currentPhotoSort)
             .map { pagingData: androidx.paging.PagingData<GalleryGridItem> ->
                 pagingData.filter { item -> item is GalleryGridItem.Media }
             }
@@ -1693,12 +1698,13 @@ fun AlbumDetailScreen(
                 AnimatedVisibility(
                     visible = isSelectionMode,
                     enter = if (deviceTier == DeviceTier.LOW) fadeIn(tween(80)) else slideInVertically(initialOffsetY = { it }) + fadeIn(),
-                    exit = if (deviceTier == DeviceTier.LOW) fadeOut(tween(80)) else slideOutVertically(targetOffsetY = { it }) + fadeOut()
+                    exit = if (deviceTier == DeviceTier.LOW) fadeOut(tween(80)) else slideOutVertically(targetOffsetY = { it }) + fadeOut(),
+                    modifier = Modifier.align(Alignment.BottomCenter)
                 ) {
                     Surface(
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp)
+                            .then(controlWidthModifier)
+                            .padding(12.dp)
                             .navigationBarsPadding(),
                         shape = RoundedCornerShape(24.dp),
                         color = MaterialTheme.colorScheme.surface,
@@ -1707,7 +1713,7 @@ fun AlbumDetailScreen(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(8.dp),
+                                .padding(6.dp),
                             horizontalArrangement = Arrangement.SpaceEvenly,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -2243,7 +2249,6 @@ fun StatelessAlbumGrid(
         (raw / 40) * 40
     }
 
-    // Auto-scroll for manual reordering
     LaunchedEffect(scrollVelocity) {
         if (scrollVelocity != 0f) {
             while (isActive) {
@@ -2306,7 +2311,6 @@ fun StatelessAlbumGrid(
 
                         val longPress = awaitLongPressOrCancellation(down.id) ?: return@awaitEachGesture
 
-                        // Long press owns this entire gesture.
                         suppressNextAlbumClick = true
 
                         longPress.consume()
@@ -2539,8 +2543,6 @@ fun StatelessMediaGrid(
         }
     }
 
-    // Long press = select (handled by the tile). Keep holding + move = extend the range.
-    // Movement before the long press is a plain scroll and is never intercepted.
     val slideModifier = Modifier.pointerInput(Unit) {
         var lastDragUpdateMs = 0L
         awaitEachGesture {
@@ -2554,11 +2556,10 @@ fun StatelessMediaGrid(
                 val event = awaitPointerEvent()
                 val change = event.changes.firstOrNull { it.id == down.id } ?: return@awaitEachGesture
                 if (!change.pressed) return@awaitEachGesture
-                if (change.positionChange().getDistance() > slop) return@awaitEachGesture  // it's a scroll
+                if (change.positionChange().getDistance() > slop) return@awaitEachGesture
                 if (System.currentTimeMillis() - downTimeMs >= timeoutMs) longPressed = true
             }
             longPressHandled = true
-            // the tile's onLongClick already selected the item under the finger
             val anchor = indexAt(down.position)
             dragAnchorIndex = anchor
             dragLastIndex = anchor
@@ -2576,7 +2577,7 @@ fun StatelessMediaGrid(
                     }
                 }
             } finally {
-                endDrag()      // guarantees autoScrollSpeed = 0 -> no more "stuck" grid
+                endDrag()
             }
         }
     }
@@ -2656,7 +2657,7 @@ fun StatelessMediaGrid(
                                 onLongClick = {
                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                     if (!isSelectionMode) onMediaLongClick()
-                                    onSelectRange(listOf(currentItem))   // additive only — never toggles off
+                                    onSelectRange(listOf(currentItem))
                                 },
                                 onToggleFavorite = { onToggleFavorite(currentItem.id) }
                             )
@@ -2697,7 +2698,7 @@ private fun OptimizedAlbumTile(
             indication = null,
             onClick = onClick
         )
-        .then(dragModifier)   // must come AFTER clickable so it sees (and consumes) events first
+        .then(dragModifier)
 
     val tileShape = RoundedCornerShape(20.dp)
 
@@ -2770,6 +2771,14 @@ private fun OptimizedAlbumTile(
                         modifier = Modifier
                             .fillMaxSize()
                             .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha=0.4f))))
+                    )
+                }
+                if (album.isPinned) {
+                    Icon(
+                        imageVector = Icons.Filled.PushPin,
+                        contentDescription = "Pinned",
+                        tint = Color.White,
+                        modifier = Modifier.align(Alignment.TopEnd).padding(8.dp).size(20.dp).shadow(2.dp, CircleShape)
                     )
                 }
                 if (isSelectionMode) {
@@ -3608,7 +3617,8 @@ fun ModernCreateAlbumSheet(onDismiss: () -> Unit, onCreate: (String, Boolean) ->
                     modifier = Modifier
                         .weight(1f)
                         .height(52.dp),
-                    shape = RoundedCornerShape(16.dp)
+                    shape = RoundedCornerShape(16.dp),
+                    enabled = text.isNotBlank()
                 ) {
                     Text("Create Album", fontWeight = FontWeight.Bold)
                 }
@@ -3689,7 +3699,8 @@ fun ModernInputSheet(title: String, initial: String, onDismiss: () -> Unit, onCo
                     modifier = Modifier
                         .weight(1f)
                         .height(52.dp),
-                    shape = RoundedCornerShape(16.dp)
+                    shape = RoundedCornerShape(16.dp),
+                    enabled = text.isNotBlank()
                 ) {
                     Text("Save", fontWeight = FontWeight.Bold)
                 }
@@ -4352,54 +4363,65 @@ fun VideoPreviewPage(
                 modifier = Modifier
                     .fillMaxWidth()
                     .align(Alignment.BottomCenter)
-                    // Push everything high up so it NEVER overlaps with the bottom Action Bar
-                    .padding(bottom = 160.dp)
-                    // Add padding to the left and right so buttons aren't hugging the wall
-                    .padding(horizontal = 24.dp)
+                    .padding(bottom = 140.dp),
+                contentAlignment = Alignment.Center
             ) {
-
-                // 1. The "Play Video" Pill (Dead Center)
-                // Clicking this launches the dedicated, full Video Player Screen!
-                Surface(
-                    modifier = Modifier
-                        .align(Alignment.Center)
-                        .clickable {
-                            sharedPlayer.pause() // Pause the looping preview
-                            onPlay() // Fire the command to launch the real player!
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Surface(
+                        modifier = Modifier.clickable {
+                            sharedPlayer.pause()
+                            onPlay()
                         },
-                    shape = RoundedCornerShape(50.dp),
-                    color = Color.Black.copy(alpha = 0.55f)
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                        shape = RoundedCornerShape(50.dp),
+                        color = Color.Black.copy(alpha = 0.55f)
                     ) {
-                        Icon(imageVector = Icons.Default.PlayArrow, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text(text = "Play video", color = Color.White, fontSize = 14.sp)
-                    }
-                }
+                        Row(
+                            modifier = Modifier.padding(
+                                horizontal = 16.dp,
+                                vertical = 12.dp
+                            ),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.PlayArrow,
+                                contentDescription = "Play video",
+                                tint = Color.White,
+                                modifier = Modifier.size(22.dp)
+                            )
 
-                // 2. The "Mute/Unmute" Button (Pushed to the far Right)
-                ScaleButton(
-                    onClick = {
-                        isMuted = !isMuted // Toggle the audio ON or OFF
-                    },
-                    modifier = Modifier
-                        .align(Alignment.CenterEnd)
-                        .background(
-                            Color.Black.copy(alpha = 0.55f),
-                            CircleShape
+                            Spacer(Modifier.width(6.dp))
+
+                            Text(
+                                text = "Play video",
+                                color = Color.White,
+                                fontSize = 14.sp
+                            )
+                        }
+                    }
+
+                    ScaleButton(
+                        onClick = { isMuted = !isMuted },
+                        modifier = Modifier
+                            .size(48.dp)
+                            .background(
+                                Color.Black.copy(alpha = 0.55f),
+                                CircleShape
+                            )
+                    ) {
+                        Icon(
+                            imageVector = if (isMuted) {
+                                Icons.Rounded.VolumeOff
+                            } else {
+                                Icons.Rounded.VolumeUp
+                            },
+                            contentDescription = if (isMuted) "Unmute" else "Mute",
+                            tint = Color.White,
+                            modifier = Modifier.size(22.dp)
                         )
-                        .size(40.dp) // Make it a perfect circle that lines up nicely with the Play button!
-                ) {
-                    Icon(
-                        // Switch the icon depending on the current volume state
-                        imageVector = if (isMuted) Icons.Rounded.VolumeOff else Icons.Rounded.VolumeUp,
-                        contentDescription = if (isMuted) "Unmute" else "Mute",
-                        tint = Color.White,
-                        modifier = Modifier.size(20.dp)
-                    )
+                    }
                 }
             }
         }

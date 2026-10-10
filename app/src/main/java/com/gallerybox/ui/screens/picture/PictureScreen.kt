@@ -206,7 +206,7 @@ fun getFolderName(path: String): String {
 fun getDeviceTier(context: Context): DeviceTier {
     val m = ActivityManager.MemoryInfo()
     (context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).getMemoryInfo(m)
-    val gb = m.totalMem / (1024.0 * 1024 * 1024)
+    val gb = m.totalMem / (1024.0 * 1024.0 * 1024.0)
     return when {
         gb <= 3.0 -> DeviceTier.LOW
         gb <= 8.0 -> DeviceTier.MID
@@ -2477,6 +2477,7 @@ fun FullscreenMediaPager(
     onWallpaper: (MediaItem) -> Unit
 ) {
     if (mediaList.isEmpty()) return
+
     val context = LocalContext.current
     val view = LocalView.current
 
@@ -2522,7 +2523,8 @@ fun FullscreenMediaPager(
 
     LaunchedEffect(pagerState.currentPage, videoList) {
         showControls = true
-        val current = mediaList.getOrNull(pagerState.currentPage) ?: return@LaunchedEffect
+        val current = mediaList.getOrNull(pagerState.currentPage)
+            ?: return@LaunchedEffect
         val resolvedCurrent = mediaMap[current.id] ?: current
         onPageChanged(resolvedCurrent)
 
@@ -2544,12 +2546,17 @@ fun FullscreenMediaPager(
         if (window != null) {
             val controller = WindowCompat.getInsetsController(window, view)
             controller.hide(WindowInsetsCompat.Type.systemBars())
-            controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            controller.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
+
         onDispose {
             sharedPlayer.pause()
             sharedPlayer.playWhenReady = false
-            window?.let { WindowCompat.getInsetsController(it, view).show(WindowInsetsCompat.Type.systemBars()) }
+            window?.let {
+                WindowCompat.getInsetsController(it, view)
+                    .show(WindowInsetsCompat.Type.systemBars())
+            }
         }
     }
 
@@ -2561,10 +2568,15 @@ fun FullscreenMediaPager(
         onClose()
     }
 
-    val liveCurrentItem = mediaList.getOrNull(pagerState.currentPage)?.let { mediaMap[it.id] ?: it }
+    val liveCurrentItem = mediaList.getOrNull(pagerState.currentPage)
+        ?.let { mediaMap[it.id] ?: it }
 
     if (adaptiveState.posture == DevicePosture.HALF_OPENED) {
-        Column(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+        ) {
             Box(modifier = Modifier.weight(1f)) {
                 HorizontalPager(
                     state = pagerState,
@@ -2573,6 +2585,7 @@ fun FullscreenMediaPager(
                     modifier = Modifier.fillMaxSize()
                 ) { page ->
                     val item = mediaList[page]
+
                     if (item.isVideo) {
                         VideoPreviewPage(
                             item = item,
@@ -2582,7 +2595,10 @@ fun FullscreenMediaPager(
                             onTap = { showControls = !showControls },
                             onPlay = {
                                 sharedPlayer.pause()
-                                onPlayVideo(item.uri.toString(), videoList.map { it.uri.toString() })
+                                onPlayVideo(
+                                    item.uri.toString(),
+                                    videoList.map { it.uri.toString() }
+                                )
                             }
                         )
                     } else {
@@ -2597,7 +2613,12 @@ fun FullscreenMediaPager(
                 }
             }
 
-            Box(modifier = Modifier.weight(1f).fillMaxWidth().background(Color.Black)) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .background(Color.Black)
+            ) {
                 Box(
                     modifier = Modifier
                         .align(Alignment.TopCenter)
@@ -2611,21 +2632,31 @@ fun FullscreenMediaPager(
                     ) {
                         FilledIconButton(
                             onClick = onClose,
-                            colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color.White.copy(alpha = 0.16f))
+                            colors = IconButtonDefaults.filledIconButtonColors(
+                                containerColor = Color.White.copy(alpha = 0.16f)
+                            )
                         ) {
-                            Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Back",
+                                tint = Color.White
+                            )
                         }
+
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             modifier = Modifier.weight(1f)
                         ) {
                             Text(
-                                text = liveCurrentItem?.let { shortDateFormatter.format(Date(it.dateAdded * 1000L)) } ?: "",
+                                text = liveCurrentItem?.let {
+                                    shortDateFormatter.format(Date(it.dateAdded * 1000L))
+                                } ?: "",
                                 color = Color.White,
                                 fontSize = 14.sp,
                                 fontWeight = FontWeight.SemiBold
                             )
                         }
+
                         Spacer(modifier = Modifier.size(48.dp))
                     }
                 }
@@ -2649,72 +2680,178 @@ fun FullscreenMediaPager(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 PremiumViewerAction(
-                                    icon = if (favoriteIds.contains(currentItem.id)) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
-                                    label = if (favoriteIds.contains(currentItem.id)) "Unfavorite" else "Favorite",
-                                    tint = if (favoriteIds.contains(currentItem.id)) Color.Red else Color.White
+                                    icon = if (favoriteIds.contains(currentItem.id)) {
+                                        Icons.Filled.Favorite
+                                    } else {
+                                        Icons.Outlined.FavoriteBorder
+                                    },
+                                    label = if (favoriteIds.contains(currentItem.id)) {
+                                        "Unfavorite"
+                                    } else {
+                                        "Favorite"
+                                    },
+                                    tint = if (favoriteIds.contains(currentItem.id)) {
+                                        Color.Red
+                                    } else {
+                                        Color.White
+                                    }
                                 ) {
                                     onToggleFavorite(currentItem.id)
                                 }
-                                PremiumViewerAction(icon = Icons.Outlined.Edit, label = "Edit") { onEdit(currentItem) }
-                                PremiumViewerAction(icon = Icons.Outlined.Share, label = "Share") {
-                                    context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
-                                        type = if (currentItem.isVideo) "video/*" else "image/*"
-                                        putExtra(Intent.EXTRA_STREAM, currentItem.uri)
-                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                    }, "Share Media"))
+
+                                PremiumViewerAction(
+                                    icon = Icons.Outlined.Edit,
+                                    label = "Edit"
+                                ) {
+                                    onEdit(currentItem)
                                 }
-                                PremiumViewerAction(icon = Icons.Outlined.Delete, label = "Delete", tint = Color.Red) { onDelete(currentItem) }
+
+                                PremiumViewerAction(
+                                    icon = Icons.Outlined.Share,
+                                    label = "Share"
+                                ) {
+                                    context.startActivity(
+                                        Intent.createChooser(
+                                            Intent(Intent.ACTION_SEND).apply {
+                                                type = if (currentItem.isVideo) {
+                                                    "video/*"
+                                                } else {
+                                                    "image/*"
+                                                }
+                                                putExtra(Intent.EXTRA_STREAM, currentItem.uri)
+                                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                            },
+                                            "Share Media"
+                                        )
+                                    )
+                                }
+
+                                PremiumViewerAction(
+                                    icon = Icons.Outlined.Delete,
+                                    label = "Delete",
+                                    tint = Color.Red
+                                ) {
+                                    onDelete(currentItem)
+                                }
+
                                 Box {
-                                    PremiumViewerAction(icon = Icons.Default.MoreVert, label = "More") { showMoreMenu = true }
+                                    PremiumViewerAction(
+                                        icon = Icons.Default.MoreVert,
+                                        label = "More"
+                                    ) {
+                                        showMoreMenu = true
+                                    }
+
                                     DropdownMenu(
                                         expanded = showMoreMenu,
                                         onDismissRequest = { showMoreMenu = false },
                                         modifier = Modifier.clip(RoundedCornerShape(12.dp))
                                     ) {
                                         DropdownMenuItem(
-                                            text = { Text("Details", color = MaterialTheme.colorScheme.onSurface) },
+                                            text = {
+                                                Text(
+                                                    "Details",
+                                                    color = MaterialTheme.colorScheme.onSurface
+                                                )
+                                            },
                                             onClick = {
                                                 showMetadataSheet = true
                                                 showMoreMenu = false
                                             },
-                                            leadingIcon = { Icon(imageVector = Icons.Outlined.Info, contentDescription = null) }
+                                            leadingIcon = {
+                                                Icon(
+                                                    Icons.Outlined.Info,
+                                                    contentDescription = null
+                                                )
+                                            }
                                         )
+
                                         DropdownMenuItem(
-                                            text = { Text("Move to Album", color = MaterialTheme.colorScheme.onSurface) },
+                                            text = {
+                                                Text(
+                                                    "Move to Album",
+                                                    color = MaterialTheme.colorScheme.onSurface
+                                                )
+                                            },
                                             onClick = {
                                                 showMoreMenu = false
                                                 onMove(currentItem)
                                             },
-                                            leadingIcon = { Icon(imageVector = Icons.AutoMirrored.Outlined.DriveFileMove, contentDescription = null) }
+                                            leadingIcon = {
+                                                Icon(
+                                                    Icons.AutoMirrored.Outlined.DriveFileMove,
+                                                    contentDescription = null
+                                                )
+                                            }
                                         )
+
                                         DropdownMenuItem(
-                                            text = { Text("Copy to Album", color = MaterialTheme.colorScheme.onSurface) },
+                                            text = {
+                                                Text(
+                                                    "Copy to Album",
+                                                    color = MaterialTheme.colorScheme.onSurface
+                                                )
+                                            },
                                             onClick = {
                                                 showMoreMenu = false
                                                 onCopy(currentItem)
                                             },
-                                            leadingIcon = { Icon(imageVector = Icons.Outlined.FileCopy, contentDescription = null) }
+                                            leadingIcon = {
+                                                Icon(
+                                                    Icons.Outlined.FileCopy,
+                                                    contentDescription = null
+                                                )
+                                            }
                                         )
+
                                         if (currentItem.isVideo) {
                                             DropdownMenuItem(
-                                                text = { Text("Open In", color = MaterialTheme.colorScheme.onSurface) },
+                                                text = {
+                                                    Text(
+                                                        "Open In",
+                                                        color = MaterialTheme.colorScheme.onSurface
+                                                    )
+                                                },
                                                 onClick = {
                                                     showMoreMenu = false
-                                                    context.startActivity(Intent(Intent.ACTION_VIEW).apply {
-                                                        setDataAndType(currentItem.uri, "video/*")
-                                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                                    })
+                                                    context.startActivity(
+                                                        Intent(Intent.ACTION_VIEW).apply {
+                                                            setDataAndType(
+                                                                currentItem.uri,
+                                                                "video/*"
+                                                            )
+                                                            addFlags(
+                                                                Intent.FLAG_GRANT_READ_URI_PERMISSION
+                                                            )
+                                                        }
+                                                    )
                                                 },
-                                                leadingIcon = { Icon(imageVector = Icons.AutoMirrored.Outlined.OpenInNew, contentDescription = null) }
+                                                leadingIcon = {
+                                                    Icon(
+                                                        Icons.AutoMirrored.Outlined.OpenInNew,
+                                                        contentDescription = null
+                                                    )
+                                                }
                                             )
                                         }
+
                                         DropdownMenuItem(
-                                            text = { Text("Set as Wallpaper", color = MaterialTheme.colorScheme.onSurface) },
+                                            text = {
+                                                Text(
+                                                    "Set as Wallpaper",
+                                                    color = MaterialTheme.colorScheme.onSurface
+                                                )
+                                            },
                                             onClick = {
                                                 showMoreMenu = false
                                                 onWallpaper(currentItem)
                                             },
-                                            leadingIcon = { Icon(imageVector = Icons.Outlined.Wallpaper, contentDescription = null) }
+                                            leadingIcon = {
+                                                Icon(
+                                                    Icons.Outlined.Wallpaper,
+                                                    contentDescription = null
+                                                )
+                                            }
                                         )
                                     }
                                 }
@@ -2725,7 +2862,11 @@ fun FullscreenMediaPager(
             }
         }
     } else {
-        Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+        ) {
             HorizontalPager(
                 state = pagerState,
                 pageSpacing = 18.dp,
@@ -2733,6 +2874,7 @@ fun FullscreenMediaPager(
                 modifier = Modifier.fillMaxSize()
             ) { page ->
                 val item = mediaList[page]
+
                 if (item.isVideo) {
                     VideoPreviewPage(
                         item = item,
@@ -2742,7 +2884,10 @@ fun FullscreenMediaPager(
                         onTap = { showControls = !showControls },
                         onPlay = {
                             sharedPlayer.pause()
-                            onPlayVideo(item.uri.toString(), videoList.map { it.uri.toString() })
+                            onPlayVideo(
+                                item.uri.toString(),
+                                videoList.map { it.uri.toString() }
+                            )
                         }
                     )
                 } else {
@@ -2761,7 +2906,14 @@ fun FullscreenMediaPager(
                     modifier = Modifier
                         .align(Alignment.TopCenter)
                         .fillMaxWidth()
-                        .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.75f), Color.Transparent)))
+                        .background(
+                            Brush.verticalGradient(
+                                listOf(
+                                    Color.Black.copy(alpha = 0.75f),
+                                    Color.Transparent
+                                )
+                            )
+                        )
                         .statusBarsPadding()
                         .padding(18.dp)
                 ) {
@@ -2772,24 +2924,35 @@ fun FullscreenMediaPager(
                     ) {
                         FilledIconButton(
                             onClick = onClose,
-                            colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color.White.copy(alpha = 0.16f))
+                            colors = IconButtonDefaults.filledIconButtonColors(
+                                containerColor = Color.White.copy(alpha = 0.16f)
+                            )
                         ) {
-                            Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Back",
+                                tint = Color.White
+                            )
                         }
+
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             modifier = Modifier.weight(1f)
                         ) {
                             Text(
-                                text = liveCurrentItem?.let { shortDateFormatter.format(Date(it.dateAdded * 1000L)) } ?: "",
+                                text = liveCurrentItem?.let {
+                                    shortDateFormatter.format(Date(it.dateAdded * 1000L))
+                                } ?: "",
                                 color = Color.White,
                                 fontSize = 14.sp,
                                 fontWeight = FontWeight.SemiBold
                             )
                         }
+
                         Spacer(modifier = Modifier.size(48.dp))
                     }
                 }
+
                 liveCurrentItem?.let { currentItem ->
                     Box(
                         modifier = Modifier
@@ -2809,28 +2972,52 @@ fun FullscreenMediaPager(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 PremiumViewerAction(
-                                    icon = if (favoriteIds.contains(currentItem.id)) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
-                                    label = if (favoriteIds.contains(currentItem.id)) "Unfavorite" else "Favorite",
-                                    tint = if (favoriteIds.contains(currentItem.id)) Color.Red else Color.White
+                                    icon = if (favoriteIds.contains(currentItem.id)) {
+                                        Icons.Filled.Favorite
+                                    } else {
+                                        Icons.Outlined.FavoriteBorder
+                                    },
+                                    label = if (favoriteIds.contains(currentItem.id)) {
+                                        "Unfavorite"
+                                    } else {
+                                        "Favorite"
+                                    },
+                                    tint = if (favoriteIds.contains(currentItem.id)) {
+                                        Color.Red
+                                    } else {
+                                        Color.White
+                                    }
                                 ) {
                                     onToggleFavorite(currentItem.id)
                                 }
+
                                 PremiumViewerAction(
                                     icon = Icons.Outlined.Edit,
                                     label = "Edit"
                                 ) {
                                     onEdit(currentItem)
                                 }
+
                                 PremiumViewerAction(
                                     icon = Icons.Outlined.Share,
                                     label = "Share"
                                 ) {
-                                    context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
-                                        type = if (currentItem.isVideo) "video/*" else "image/*"
-                                        putExtra(Intent.EXTRA_STREAM, currentItem.uri)
-                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                    }, "Share Media"))
+                                    context.startActivity(
+                                        Intent.createChooser(
+                                            Intent(Intent.ACTION_SEND).apply {
+                                                type = if (currentItem.isVideo) {
+                                                    "video/*"
+                                                } else {
+                                                    "image/*"
+                                                }
+                                                putExtra(Intent.EXTRA_STREAM, currentItem.uri)
+                                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                            },
+                                            "Share Media"
+                                        )
+                                    )
                                 }
+
                                 PremiumViewerAction(
                                     icon = Icons.Outlined.Delete,
                                     label = "Delete",
@@ -2838,6 +3025,7 @@ fun FullscreenMediaPager(
                                 ) {
                                     onDelete(currentItem)
                                 }
+
                                 Box {
                                     PremiumViewerAction(
                                         icon = Icons.Default.MoreVert,
@@ -2845,55 +3033,117 @@ fun FullscreenMediaPager(
                                     ) {
                                         showMoreMenu = true
                                     }
+
                                     DropdownMenu(
                                         expanded = showMoreMenu,
                                         onDismissRequest = { showMoreMenu = false },
                                         modifier = Modifier.clip(RoundedCornerShape(12.dp))
                                     ) {
                                         DropdownMenuItem(
-                                            text = { Text("Details", color = MaterialTheme.colorScheme.onSurface) },
+                                            text = {
+                                                Text(
+                                                    "Details",
+                                                    color = MaterialTheme.colorScheme.onSurface
+                                                )
+                                            },
                                             onClick = {
                                                 showMetadataSheet = true
                                                 showMoreMenu = false
                                             },
-                                            leadingIcon = { Icon(imageVector = Icons.Outlined.Info, contentDescription = null) }
+                                            leadingIcon = {
+                                                Icon(
+                                                    Icons.Outlined.Info,
+                                                    contentDescription = null
+                                                )
+                                            }
                                         )
+
                                         DropdownMenuItem(
-                                            text = { Text("Move to Album", color = MaterialTheme.colorScheme.onSurface) },
+                                            text = {
+                                                Text(
+                                                    "Move to Album",
+                                                    color = MaterialTheme.colorScheme.onSurface
+                                                )
+                                            },
                                             onClick = {
                                                 showMoreMenu = false
                                                 onMove(currentItem)
                                             },
-                                            leadingIcon = { Icon(imageVector = Icons.AutoMirrored.Outlined.DriveFileMove, contentDescription = null) }
+                                            leadingIcon = {
+                                                Icon(
+                                                    Icons.AutoMirrored.Outlined.DriveFileMove,
+                                                    contentDescription = null
+                                                )
+                                            }
                                         )
+
                                         DropdownMenuItem(
-                                            text = { Text("Copy to Album", color = MaterialTheme.colorScheme.onSurface) },
+                                            text = {
+                                                Text(
+                                                    "Copy to Album",
+                                                    color = MaterialTheme.colorScheme.onSurface
+                                                )
+                                            },
                                             onClick = {
                                                 showMoreMenu = false
                                                 onCopy(currentItem)
                                             },
-                                            leadingIcon = { Icon(imageVector = Icons.Outlined.FileCopy, contentDescription = null) }
+                                            leadingIcon = {
+                                                Icon(
+                                                    Icons.Outlined.FileCopy,
+                                                    contentDescription = null
+                                                )
+                                            }
                                         )
+
                                         if (currentItem.isVideo) {
                                             DropdownMenuItem(
-                                                text = { Text("Open In", color = MaterialTheme.colorScheme.onSurface) },
+                                                text = {
+                                                    Text(
+                                                        "Open In",
+                                                        color = MaterialTheme.colorScheme.onSurface
+                                                    )
+                                                },
                                                 onClick = {
                                                     showMoreMenu = false
-                                                    context.startActivity(Intent(Intent.ACTION_VIEW).apply {
-                                                        setDataAndType(currentItem.uri, "video/*")
-                                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                                    })
+                                                    context.startActivity(
+                                                        Intent(Intent.ACTION_VIEW).apply {
+                                                            setDataAndType(
+                                                                currentItem.uri,
+                                                                "video/*"
+                                                            )
+                                                            addFlags(
+                                                                Intent.FLAG_GRANT_READ_URI_PERMISSION
+                                                            )
+                                                        }
+                                                    )
                                                 },
-                                                leadingIcon = { Icon(imageVector = Icons.AutoMirrored.Outlined.OpenInNew, contentDescription = null) }
+                                                leadingIcon = {
+                                                    Icon(
+                                                        Icons.AutoMirrored.Outlined.OpenInNew,
+                                                        contentDescription = null
+                                                    )
+                                                }
                                             )
                                         }
+
                                         DropdownMenuItem(
-                                            text = { Text("Set as Wallpaper", color = MaterialTheme.colorScheme.onSurface) },
+                                            text = {
+                                                Text(
+                                                    "Set as Wallpaper",
+                                                    color = MaterialTheme.colorScheme.onSurface
+                                                )
+                                            },
                                             onClick = {
                                                 showMoreMenu = false
                                                 onWallpaper(currentItem)
                                             },
-                                            leadingIcon = { Icon(imageVector = Icons.Outlined.Wallpaper, contentDescription = null) }
+                                            leadingIcon = {
+                                                Icon(
+                                                    Icons.Outlined.Wallpaper,
+                                                    contentDescription = null
+                                                )
+                                            }
                                         )
                                     }
                                 }
@@ -2906,10 +3156,11 @@ fun FullscreenMediaPager(
     }
 
     if (showMetadataSheet && liveCurrentItem != null) {
-        MediaMetadataSheet(item = liveCurrentItem) { showMetadataSheet = false }
+        MediaMetadataSheet(item = liveCurrentItem) {
+            showMetadataSheet = false
+        }
     }
 }
-
 @SuppressLint("ClickableViewAccessibility")
 @OptIn(UnstableApi::class)
 @Composable
@@ -2922,13 +3173,16 @@ fun VideoPreviewPage(
     onPlay: () -> Unit
 ) {
     val ctx = LocalContext.current
-
     var isMuted by rememberSaveable(item.id) { mutableStateOf(false) }
 
-    val d = LocalDensity.current
-    val conf = LocalConfiguration.current
-    val wPx = with(d) { conf.screenWidthDp.dp.roundToPx() }
-    val hPx = with(d) { conf.screenHeightDp.dp.roundToPx() }
+    val density = LocalDensity.current
+    val configuration = LocalConfiguration.current
+    val widthPx = with(density) {
+        configuration.screenWidthDp.dp.roundToPx()
+    }
+    val heightPx = with(density) {
+        configuration.screenHeightDp.dp.roundToPx()
+    }
 
     LaunchedEffect(isMuted, isCurrentPage) {
         if (isCurrentPage) {
@@ -2936,13 +3190,17 @@ fun VideoPreviewPage(
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
-
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black),
+        contentAlignment = Alignment.Center
+    ) {
         AsyncImage(
-            model = remember(item.id, wPx, hPx) {
+            model = remember(item.id, widthPx, heightPx) {
                 ImageRequest.Builder(ctx)
                     .data(item.uri)
-                    .size(Size(wPx, hPx))
+                    .size(Size(widthPx, heightPx))
                     .precision(Precision.INEXACT)
                     .memoryCacheKey("full_${item.id}")
                     .crossfade(true)
@@ -2959,7 +3217,10 @@ fun VideoPreviewPage(
                 PlayerView(ctx).apply {
                     useController = false
                     setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
-                    layoutParams = android.view.ViewGroup.LayoutParams(-1, -1)
+                    layoutParams = android.view.ViewGroup.LayoutParams(
+                        -1,
+                        -1
+                    )
                     setBackgroundColor(android.graphics.Color.TRANSPARENT)
                     setShutterBackgroundColor(android.graphics.Color.TRANSPARENT)
 
@@ -2982,7 +3243,11 @@ fun VideoPreviewPage(
                     }
                 }
             },
-            modifier = Modifier.fillMaxSize().pointerInput(Unit) { detectTapGestures(onTap = { onTap() }) }
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) {
+                    detectTapGestures(onTap = { onTap() })
+                }
         )
 
         if (showControls) {
@@ -2990,63 +3255,70 @@ fun VideoPreviewPage(
                 modifier = Modifier
                     .fillMaxWidth()
                     .align(Alignment.BottomCenter)
-                    .padding(bottom = 160.dp)
-                    .padding(horizontal = 24.dp)
+                    .padding(bottom = 140.dp),
+                contentAlignment = Alignment.Center
             ) {
-
-                Surface(
-                    modifier = Modifier
-                        .align(Alignment.Center)
-                        .clickable {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Surface(
+                        modifier = Modifier.clickable {
                             sharedPlayer.pause()
                             onPlay()
                         },
-                    shape = RoundedCornerShape(50.dp),
-                    color = Color.Black.copy(alpha = 0.55f)
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                        shape = RoundedCornerShape(50.dp),
+                        color = Color.Black.copy(alpha = 0.55f)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(
+                                horizontal = 16.dp,
+                                vertical = 12.dp
+                            ),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.PlayArrow,
+                                contentDescription = "Play video",
+                                tint = Color.White,
+                                modifier = Modifier.size(22.dp)
+                            )
+
+                            Spacer(Modifier.width(6.dp))
+
+                            Text(
+                                text = "Play video",
+                                color = Color.White,
+                                fontSize = 14.sp
+                            )
+                        }
+                    }
+
+                    ScaleButton(
+                        onClick = { isMuted = !isMuted },
+                        modifier = Modifier
+                            .size(48.dp)
+                            .background(
+                                Color.Black.copy(alpha = 0.55f),
+                                CircleShape
+                            )
                     ) {
                         Icon(
-                            imageVector = Icons.Default.PlayArrow,
-                            contentDescription = null,
+                            imageVector = if (isMuted) {
+                                Icons.Rounded.VolumeOff
+                            } else {
+                                Icons.Rounded.VolumeUp
+                            },
+                            contentDescription = if (isMuted) "Unmute" else "Mute",
                             tint = Color.White,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Text(
-                            text = "Play video",
-                            color = Color.White,
-                            fontSize = 14.sp
+                            modifier = Modifier.size(22.dp)
                         )
                     }
-                }
-
-                ScaleButton(
-                    onClick = {
-                        isMuted = !isMuted
-                    },
-                    modifier = Modifier
-                        .align(Alignment.CenterEnd)
-                        .background(
-                            Color.Black.copy(alpha = 0.55f),
-                            CircleShape
-                        )
-                        .size(40.dp)
-                ) {
-                    Icon(
-                        imageVector = if (isMuted) Icons.Rounded.VolumeOff else Icons.Rounded.VolumeUp,
-                        contentDescription = if (isMuted) "Unmute" else "Mute",
-                        tint = Color.White,
-                        modifier = Modifier.size(20.dp)
-                    )
                 }
             }
         }
     }
 }
-
 @Composable
 fun PremiumViewerAction(
     icon: ImageVector,

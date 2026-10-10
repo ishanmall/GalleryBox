@@ -571,6 +571,8 @@ fun MoveCopyScreen(
     val fileOpState by viewModel.fileOperationState.collectAsState()
     var opRequested by remember { mutableStateOf(false) }
     var opStarted by remember { mutableStateOf(false) }
+    var opSucceeded by remember { mutableStateOf(false) }
+
     val isWaitingForPermission = fileOpState is FileOperationState.WaitingForPermission
     val isProcessing = opRequested || fileOpState !is FileOperationState.Idle
     val currentProgress = (fileOpState as? FileOperationState.Processing)?.progressPercentage ?: 0f
@@ -583,8 +585,17 @@ fun MoveCopyScreen(
 
     LaunchedEffect(fileOpState) {
         if (fileOpState is FileOperationState.Idle) {
-            if (opStarted) { opStarted = false; opRequested = false; onOperationComplete() }
-        } else opStarted = true
+            if (opStarted) {
+                opStarted = false
+                opRequested = false
+                if (opSucceeded) {
+                    onOperationComplete()
+                }
+                opSucceeded = false
+            }
+        } else {
+            opStarted = true
+        }
     }
 
     LaunchedEffect(opRequested) {
@@ -603,8 +614,16 @@ fun MoveCopyScreen(
         }
     }
 
-    val safTreeLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        viewModel.onSafTreeGranted(result.data?.data)
+    val safTreeLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val uri = result.data?.data
+
+        if (result.resultCode == Activity.RESULT_OK && uri != null) {
+            viewModel.saveSafTreeUri(uri)
+        } else {
+            viewModel.onSafTreeGranted(null)
+        }
     }
 
     val intentSenderLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
@@ -624,7 +643,9 @@ fun MoveCopyScreen(
                     is GalleryEvent.RequestPermission ->
                         intentSenderLauncher.launch(IntentSenderRequest.Builder(event.intentSender).build())
                     is GalleryEvent.LaunchIntent -> safTreeLauncher.launch(event.intent)
-                    is GalleryEvent.OperationSuccess -> { }
+                    is GalleryEvent.OperationSuccess -> {
+                        opSucceeded = true
+                    }
                     is GalleryEvent.ShowToast -> Toast.makeText(context, event.message, Toast.LENGTH_SHORT).show()
                 }
             }
@@ -706,7 +727,15 @@ fun MoveCopyScreen(
                                 CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
                             }
                             Spacer(Modifier.height(24.dp))
-                            TextButton(onClick = { viewModel.cancelCurrentOperation(); opRequested = false; opStarted = false }, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) {
+                            TextButton(
+                                onClick = {
+                                    opSucceeded = false
+                                    viewModel.cancelCurrentOperation()
+                                    opRequested = false
+                                    opStarted = false
+                                },
+                                colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                            ) {
                                 Text("Cancel", fontWeight = FontWeight.Bold)
                             }
                         }
@@ -726,6 +755,7 @@ fun MoveCopyScreen(
             confirmButton = {
                 Button(onClick = {
                     targetAlbumForConfirmation = null
+                    opSucceeded = false
                     opRequested = true
                     if (operationMode == OperationMode.MOVE) viewModel.moveData(selectedMediaIds, album.id)
                     else viewModel.copyData(selectedMediaIds, album.id)
@@ -743,11 +773,13 @@ fun MoveCopyScreen(
             text = { OutlinedTextField(value = newName, onValueChange = { newName = it }, label = { Text("Album name") }, singleLine = true) },
             confirmButton = {
                 Button(onClick = {
-                    if (newName.isNotBlank()) {
+                    val albumName = newName.trim()
+                    if (albumName.isNotEmpty()) {
                         showCreateDialog = false
+                        opSucceeded = false
                         opRequested = true
-                        if (operationMode == OperationMode.MOVE) viewModel.createAndMove(selectedMediaIds, newName)
-                        else viewModel.createAndCopy(selectedMediaIds, newName)
+                        if (operationMode == OperationMode.MOVE) viewModel.createAndMove(selectedMediaIds, albumName)
+                        else viewModel.createAndCopy(selectedMediaIds, albumName)
                     }
                 }) { Text("Create") }
             },

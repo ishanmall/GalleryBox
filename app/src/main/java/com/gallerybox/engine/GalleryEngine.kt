@@ -495,11 +495,23 @@ class MediaOperationEngine @Inject constructor(@ApplicationContext private val c
     }
 
     fun saveSafTreeUri(uri: Uri) {
-        context.contentResolver.takePersistableUriPermission(
-            uri,
-            Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-        )
-        prefs.edit().putString("saf_tree_uri", uri.toString()).apply()
+        val resolver = context.contentResolver
+
+        val persistedPermission = resolver.persistedUriPermissions.any {
+            it.uri == uri && it.isReadPermission && it.isWritePermission
+        }
+
+        if (!persistedPermission) {
+            resolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                        Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            )
+        }
+
+        prefs.edit {
+            putString("saf_tree_uri", uri.toString())
+        }
     }
 
     private fun getSafTreeUri(): Uri? {
@@ -528,6 +540,17 @@ class MediaOperationEngine @Inject constructor(@ApplicationContext private val c
             currentDoc = nextDoc
         }
         return currentDoc
+    }
+
+    private fun fetchSafDirectoryNames(
+        relativePath: String
+    ): Set<String> {
+        val directory = getOrCreateSafDirectory(relativePath)
+            ?: return emptySet()
+
+        return directory.listFiles()
+            .mapNotNull { it.name }
+            .toSet()
     }
 
     private fun getSafDocumentFile(file: File): DocumentFile? {
@@ -599,60 +622,113 @@ class MediaOperationEngine @Inject constructor(@ApplicationContext private val c
 
                 var destUri: Uri? = null
 
-                try {
-                    val volumeName = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                        targetAlbum.volumeName?.takeIf {
-                            it.isNotBlank() && it in MediaStore.getExternalVolumeNames(context)
-                        } ?: MediaStore.VOLUME_EXTERNAL_PRIMARY
-                    } else null
+                val isSdTarget = targetAlbum.isSdCard ||
+                        isSdCardAlbum(targetAlbum.bucketId, targetAlbum.volumeName)
 
-                    val destCollection = if (item.isVideo) {
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) MediaStore.Video.Media.getContentUri(volumeName!!)
-                        else MediaStore.Video.Media.EXTERNAL_CONTENT_URI
-                    } else {
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) MediaStore.Images.Media.getContentUri(volumeName!!)
-                        else MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+                if (isSdTarget) {
+                    val safTreeUri = getSafTreeUri()
+
+                    if (safTreeUri == null) {
+                        return@withContext MediaOpResult.SafPermissionRequired(
+                            createSafIntent(),
+                            newUris
+                        )
                     }
 
-                    val contentValues = ContentValues().apply {
-                        put(MediaStore.MediaColumns.DISPLAY_NAME, uniqueName)
-                        put(MediaStore.MediaColumns.MIME_TYPE, item.mimeType)
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                            put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath)
-                            put(MediaStore.MediaColumns.IS_PENDING, 1)
-                        } else {
-                            val root = Environment.getExternalStorageDirectory()
-                            val destDir = File(root, relativePath)
-                            if (!destDir.exists()) destDir.mkdirs()
-                            put(MediaStore.Files.FileColumns.DATA, File(destDir, uniqueName).absolutePath)
-                        }
-                    }
-                    destUri = resolver.insert(destCollection, contentValues)
-                } catch (e: Exception) {
-                    Log.e("MediaOp", "MediaStore insert failed for $uniqueName", e)
-                }
-
-                if (destUri == null) {
                     val safDir = getOrCreateSafDirectory(relativePath)
-                    if (safDir != null) {
-                        val baseName = uniqueName.substringBeforeLast(".", uniqueName)
-                        destUri = safDir.createFile(item.mimeType, baseName)?.uri
-                    } else if (targetAlbum.isSdCard && getSafTreeUri() == null) {
-                        return@withContext MediaOpResult.SafPermissionRequired(createSafIntent(), newUris)
+
+                    if (safDir == null) {
+                        rollback(newUris)
+                        return@withContext MediaOpResult.Failed(
+                            "Cannot access SD-card folder: ${targetAlbum.name}"
+                        )
+                    }
+
+                    destUri = safDir.createFile(
+                        item.mimeType.ifBlank { "application/octet-stream" },
+                        uniqueName
+                    )?.uri
+                } else {
+                    try {
+                        val volumeName = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                            targetAlbum.volumeName
+                                ?.takeIf {
+                                    it.isNotBlank() &&
+                                            it in MediaStore.getExternalVolumeNames(context)
+                                }
+                                ?: MediaStore.VOLUME_EXTERNAL_PRIMARY
+                        } else {
+                            null
+                        }
+
+                        val destCollection = if (item.isVideo) {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                                MediaStore.Video.Media.getContentUri(volumeName!!)
+                            } else {
+                                MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+                            }
+                        } else {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                                MediaStore.Images.Media.getContentUri(volumeName!!)
+                            } else {
+                                MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+                            }
+                        }
+
+                        val contentValues = ContentValues().apply {
+                            put(MediaStore.MediaColumns.DISPLAY_NAME, uniqueName)
+                            put(
+                                MediaStore.MediaColumns.MIME_TYPE,
+                                item.mimeType.ifBlank { "application/octet-stream" }
+                            )
+
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                                put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath)
+                                put(MediaStore.MediaColumns.IS_PENDING, 1)
+                            } else {
+                                val root = Environment.getExternalStorageDirectory()
+                                val destDir = File(root, relativePath)
+
+                                if (!destDir.exists() && !destDir.mkdirs()) {
+                                    throw IOException(
+                                        "Could not create destination directory"
+                                    )
+                                }
+
+                                put(
+                                    MediaStore.MediaColumns.DATA,
+                                    File(destDir, uniqueName).absolutePath
+                                )
+                            }
+                        }
+
+                        destUri = resolver.insert(destCollection, contentValues)
+                    } catch (e: Exception) {
+                        Log.e("MediaOp", "MediaStore insert failed for $uniqueName", e)
                     }
                 }
 
                 if (destUri == null) {
                     rollback(newUris)
-                    return@withContext MediaOpResult.Failed("Couldn't create \"$uniqueName\" in ${targetAlbum.name}")
+                    return@withContext MediaOpResult.Failed(
+                        "Couldn't create \"$uniqueName\" in ${targetAlbum.name}"
+                    )
                 }
+
                 newUris.add(destUri)
 
-                resolver.openInputStream(item.uri)?.use { input ->
-                    resolver.openOutputStream(destUri)?.use { output ->
+                val inputStream = resolver.openInputStream(item.uri)
+                    ?: throw IOException("Cannot read source: ${item.name}")
+
+                val outputStream = resolver.openOutputStream(destUri, "w")
+                    ?: throw IOException("Cannot write destination: $uniqueName")
+
+                inputStream.use { input ->
+                    outputStream.use { output ->
                         input.copyTo(output, 1024 * 1024)
+                        output.flush()
                     }
-                } ?: throw IOException("Failed to open streams for copying $uniqueName")
+                }
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && destUri.scheme == "content" && destUri.authority == MediaStore.AUTHORITY) {
                     val updateValues = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }
@@ -661,17 +737,40 @@ class MediaOperationEngine @Inject constructor(@ApplicationContext private val c
             }
 
             for ((index, destUri) in newUris.withIndex()) {
-                if (!isActive) throw CancellationException("Operation cancelled by user")
+                if (!isActive) {
+                    throw CancellationException("Operation cancelled by user")
+                }
+
                 onProgress("Verifying", index + 1, newUris.size)
 
                 val originalItem = items[index]
+                var copiedSize = 0L
 
-                resolver.openFileDescriptor(destUri, "r")?.use { pfd ->
-                    val copiedSize = pfd.statSize
-                    if (copiedSize == 0L || (originalItem.size > 0 && copiedSize != originalItem.size)) {
-                        throw IOException("Copied file size mismatch or unreadable: expected ${originalItem.size}, got $copiedSize")
+                resolver.openInputStream(destUri)?.use { input ->
+                    val buffer = ByteArray(64 * 1024)
+
+                    while (true) {
+                        if (!isActive) {
+                            throw CancellationException("Operation cancelled by user")
+                        }
+
+                        val bytesRead = input.read(buffer)
+                        if (bytesRead < 0) break
+
+                        copiedSize += bytesRead
                     }
-                } ?: throw IOException("Failed to open file descriptor for newly copied file verification")
+                } ?: throw IOException(
+                    "Cannot read copied file for verification: ${originalItem.name}"
+                )
+
+                if (copiedSize == 0L ||
+                    (originalItem.size > 0L && copiedSize != originalItem.size)
+                ) {
+                    throw IOException(
+                        "Copied file size mismatch for ${originalItem.name}: " +
+                                "expected ${originalItem.size}, got $copiedSize"
+                    )
+                }
             }
 
         } catch (e: CancellationException) {
@@ -811,6 +910,23 @@ class MediaOperationEngine @Inject constructor(@ApplicationContext private val c
     }
 
     private suspend fun fetchExistingItemNames(targetAlbum: TargetAlbum): List<String> = withContext(Dispatchers.IO) {
+        if (targetAlbum.isSdCard ||
+            isSdCardAlbum(targetAlbum.bucketId, targetAlbum.volumeName)
+        ) {
+            val existingNames = mutableSetOf<String>()
+
+            existingNames += fetchSafDirectoryNames(
+                getResolvedRelativePath(targetAlbum, false)
+            )
+
+            val videoPath = getResolvedRelativePath(targetAlbum, true)
+            if (videoPath != getResolvedRelativePath(targetAlbum, false)) {
+                existingNames += fetchSafDirectoryNames(videoPath)
+            }
+
+            return@withContext existingNames.toList()
+        }
+
         val existingNames = mutableListOf<String>()
         val picPath = getResolvedRelativePath(targetAlbum, false)
         val movPath = getResolvedRelativePath(targetAlbum, true)
