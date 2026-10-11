@@ -679,11 +679,6 @@ class GalleryViewModel @Inject constructor(
         sharedPlayer?.playbackParameters = PlaybackParameters(savedSpeed, _playbackPitch.value)
     }
 
-    fun setPlaybackPitch(pitch: Float) {
-        _playbackPitch.value = pitch
-        sharedPlayer?.playbackParameters = PlaybackParameters(_playbackSpeed.value, pitch)
-        prefs.edit().putFloat("pitch", pitch).apply()
-    }
 
     fun setAutoPlayNext(enabled: Boolean) {
         _autoPlayNext.value = enabled
@@ -799,6 +794,7 @@ class GalleryViewModel @Inject constructor(
         val pageSize = currentPageSize
         val prefetch = maxOf(20, (pageSize * 0.25 * getThermalFactor()).toInt())
 
+
         activePagingSources.removeAll { it.invalid }
 
         Pager(PagingConfig(pageSize = pageSize, prefetchDistance = prefetch, enablePlaceholders = false, initialLoadSize = pageSize, maxSize = pageSize * 4)) {
@@ -835,6 +831,7 @@ class GalleryViewModel @Inject constructor(
         }.distinctUntilChanged().flatMapLatest { state ->
             val pageSize = currentPageSize
             val prefetch = maxOf(20, (pageSize * 0.25 * getThermalFactor()).toInt())
+
 
             activePagingSources.removeAll { it.invalid }
 
@@ -987,6 +984,7 @@ class GalleryViewModel @Inject constructor(
 
         val memoryPressure = 1.0 - getMemoryFactor()
 
+
         if (!forceRefresh && (_thermalState.value >= PowerManager.THERMAL_STATUS_SEVERE || memoryPressure > 0.85)) return
 
         lastSyncTime = now
@@ -1025,6 +1023,7 @@ class GalleryViewModel @Inject constructor(
 
     fun scanForDuplicates() = viewModelScope.launch(Dispatchers.Default) {
         val memoryPressure = 1.0 - getMemoryFactor()
+
 
         if (_thermalState.value >= PowerManager.THERMAL_STATUS_MODERATE || memoryPressure > 0.85) {
             _events.emit(GalleryEvent.ShowToast("System busy or warm. Scan paused."))
@@ -1353,13 +1352,12 @@ class GalleryViewModel @Inject constructor(
 
         val allAlbums = when (sortOption) {
             AlbumSort.Custom -> {
-                allCombined.sortedBy { album ->
-                    metaMap[album.id]?.albumOrder ?: when (album.id) {
-                        ID_RECENT -> -2
-                        ID_FAVORITES -> -1
-                        else -> Int.MAX_VALUE
-                    }
-                }
+                allCombined.withIndex()
+                    .sortedWith(
+                        compareBy<IndexedValue<Album>> {
+                            metaMap[it.value.id]?.albumOrder ?: Int.MAX_VALUE
+                        }.thenBy { it.index }
+                    ).map { it.value }
             }
             AlbumSort.NameAsc -> allCombined.sortedBy { it.name.lowercase() }
             AlbumSort.NameDesc -> allCombined.sortedByDescending { it.name.lowercase() }
@@ -1510,30 +1508,39 @@ class GalleryViewModel @Inject constructor(
             null
         }
 
+    // Completely rewritten to correctly resolve existing albums without duplicating targets,
+    // handling SD card presence checking seamlessly.
     private suspend fun buildTargetAlbum(targetAlbumId: String, fallbackName: String? = null): TargetAlbum? {
-        val name = allAlbumsState.value.firstOrNull { it.id == targetAlbumId }?.name
-            ?: fallbackName ?: return null
+        // Try resolving by an exact known album ID first to get real folder metadata
         val sample = _rawMedia.value.firstOrNull { it.bucketId == targetAlbumId }
-        var bucketId = targetAlbumId
-        var relPath = sample?.relativePath?.takeIf { it.isNotBlank() }
-        if (relPath == null) {
+        val name = allAlbumsState.value.firstOrNull { it.id == targetAlbumId }?.name
+            ?: fallbackName
+            ?: sample?.bucketName
+            ?: return null
+
+        var resolvedBucketId = targetAlbumId
+        var resolvedRelPath = sample?.relativePath?.takeIf { it.isNotBlank() }
+
+        // If we don't have a definitive path, look it up in the Android MediaStore by Name
+        if (resolvedRelPath == null) {
             resolveRealAlbumByName(name)?.let { (realBucket, realPath) ->
-                bucketId = realBucket
-                relPath = realPath
+                resolvedBucketId = realBucket
+                resolvedRelPath = realPath
             }
         }
-        if (relPath == null) relPath = "Pictures/$name/"
 
-        val volumeName = sample?.volumeName?.takeIf { it.isNotBlank() }
-            ?: resolveAlbumVolumeName(bucketId)
+        // Final fallback structure if entirely new
+        if (resolvedRelPath == null) resolvedRelPath = "Pictures/$name/"
 
-        val isSd = mediaOpEngine.isSdCardAlbum(bucketId, volumeName)
+        // Use precise SD card identification lookup
+        val volumeName = sample?.volumeName?.takeIf { it.isNotBlank() } ?: resolveAlbumVolumeName(resolvedBucketId)
+        val isSd = mediaOpEngine.isSdCardAlbum(resolvedBucketId, volumeName)
 
         return TargetAlbum(
-            id = targetAlbumId,
+            id = targetAlbumId, // Keep original ID mapping for ViewModel correlation
             name = name,
-            relativePath = relPath,
-            bucketId = bucketId,
+            relativePath = resolvedRelPath,
+            bucketId = resolvedBucketId, // Use resolved bucket for MediaStore operations
             volumeName = if (isSd) null else volumeName,
             isSdCard = isSd
         )
@@ -1723,6 +1730,7 @@ class GalleryViewModel @Inject constructor(
         createAlbumAndRun(ids, newAlbumName, isMove = false)
     }
 
+    // Rewritten to prevent duplicative album structures and ensure absolute target safety
     private fun createAlbumAndRun(
         ids: List<Long>,
         newAlbumName: String,
@@ -1741,86 +1749,71 @@ class GalleryViewModel @Inject constructor(
         }
 
         if (!tryBeginFileOperation()) {
-            _events.tryEmit(
-                GalleryEvent.ShowToast("An operation is already in progress")
-            )
+            _events.tryEmit(GalleryEvent.ShowToast("An operation is already in progress"))
             return
         }
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                // Reuse an existing album with the same name if found.
-                val existing = resolveRealAlbumByName(name)
+                // First verify if an album inherently exists via MediaStore or the current tracked state
+                val mappedExisting = _albumsState.value.firstOrNull { it.name.equals(name, ignoreCase = true) }
+                val target: TargetAlbum
 
-                val target = if (existing != null) {
-                    val (bucket, relativePath) = existing
-                    val volume = resolveAlbumVolumeName(bucket)
-                    val isSd = mediaOpEngine.isSdCardAlbum(bucket, volume)
-
-                    TargetAlbum(
-                        id = bucket,
-                        name = name,
-                        relativePath = relativePath,
-                        bucketId = bucket,
-                        volumeName = if (isSd) null else volume,
-                        isSdCard = isSd
-                    )
+                if (mappedExisting != null) {
+                    // Fully re-use mapped existing folder structure
+                    target = buildTargetAlbum(mappedExisting.id) ?: throw Exception("Failed to resolve existing target structure")
                 } else {
-                    val root = Environment.getExternalStoragePublicDirectory(
-                        Environment.DIRECTORY_PICTURES
-                    )
-                    val albumDir = File(root, name)
+                    // Check directly via OS resolve
+                    val osExisting = resolveRealAlbumByName(name)
+                    if (osExisting != null) {
+                        val (bucket, relativePath) = osExisting
+                        val volume = resolveAlbumVolumeName(bucket)
+                        val isSd = mediaOpEngine.isSdCardAlbum(bucket, volume)
 
-                    // Legacy filesystem creation only; modern Android writes
-                    // the actual media through MediaStore in the operation engine.
-                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-                        if (!albumDir.exists() && !albumDir.mkdirs()) {
-                            throw IOException("Could not create album folder")
+                        target = TargetAlbum(
+                            id = bucket,
+                            name = name,
+                            relativePath = relativePath,
+                            bucketId = bucket,
+                            volumeName = if (isSd) null else volume,
+                            isSdCard = isSd
+                        )
+                    } else {
+                        // Completely uncreated folder space
+                        val root = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
+                        val albumDir = File(root, name)
+
+                        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+                            if (!albumDir.exists() && !albumDir.mkdirs()) {
+                                throw IOException("Could not create album folder")
+                            }
                         }
+
+                        val bucketId = albumDir.absolutePath.lowercase(Locale.ROOT).hashCode().toString()
+
+                        target = TargetAlbum(
+                            id = bucketId,
+                            name = name,
+                            relativePath = "Pictures/$name/",
+                            bucketId = bucketId,
+                            volumeName = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) MediaStore.VOLUME_EXTERNAL_PRIMARY else null,
+                            isSdCard = false
+                        )
+
+                        // Register as a temporary manual placeholder until OS indexes the new contents
+                        dao.insertManualAlbum(ManualAlbumEntity(id = target.id, name = name, hasBeenUsed = true))
                     }
-
-                    val bucketId = albumDir.absolutePath
-                        .lowercase(Locale.ROOT)
-                        .hashCode()
-                        .toString()
-
-                    TargetAlbum(
-                        id = bucketId,
-                        name = name,
-                        relativePath = "Pictures/$name/",
-                        bucketId = bucketId,
-                        volumeName = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                            MediaStore.VOLUME_EXTERNAL_PRIMARY
-                        } else {
-                            null
-                        },
-                        isSdCard = false
-                    )
                 }
 
                 dao.updateAlbumUsed(target.id, true)
-
-                if (existing == null) {
-                    dao.insertManualAlbum(
-                        ManualAlbumEntity(
-                            id = target.id,
-                            name = name,
-                            hasBeenUsed = true
-                        )
-                    )
-                }
-
                 performMediaOperation(ids, target, isMove)
+
             } catch (e: Exception) {
                 Log.e(TAG, "Create-and-operate failed", e)
                 _fileOperationState.value = FileOperationState.Idle
                 _isBusy.value = false
                 endFileOperation()
-                _events.emit(
-                    GalleryEvent.ShowToast(
-                        "Could not prepare album: ${e.localizedMessage ?: "Unknown error"}"
-                    )
-                )
+                _events.emit(GalleryEvent.ShowToast("Could not prepare album: ${e.localizedMessage ?: "Unknown error"}"))
             }
         }
     }

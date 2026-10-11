@@ -146,7 +146,6 @@ import com.gallerybox.viewmodel.TrashViewModel
 // 📱 ADAPTIVE LOGIC IMPORTS
 // ---------------------------------------------------------------------------
 import com.gallerybox.ui.screens.adaptive.AdaptiveState
-import com.gallerybox.ui.screens.adaptive.DevicePosture
 import com.gallerybox.ui.screens.adaptive.rememberAdaptiveState
 import com.gallerybox.ui.screens.adaptive.WindowWidthSize
 
@@ -235,7 +234,7 @@ sealed class AlbumUiDialog {
     data object CreateAlbum : AlbumUiDialog()
     data class Rename(val album: Album) : AlbumUiDialog()
     data class Delete(val albums: List<Album>) : AlbumUiDialog()
-    data class Info(val album: Album) : AlbumUiDialog()
+    data class Info(val albums: List<Album>) : AlbumUiDialog()
     data class MoveCopy(val albums: List<Album>, val isMove: Boolean) : AlbumUiDialog()
     data class CreateAndMoveCopy(val albums: List<Album>, val isMove: Boolean) : AlbumUiDialog()
 }
@@ -289,7 +288,7 @@ fun getFolderName(path: String): String {
 fun getDeviceTier(context: Context): DeviceTier {
     val m = ActivityManager.MemoryInfo()
     (context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).getMemoryInfo(m)
-    val gb = m.totalMem / (1024.0 * 1024 * 1024)
+    val gb = m.totalMem / (1024.0 * 1024.0 * 1024.0)
     return when {
         gb <= 3.0 -> DeviceTier.LOW
         gb <= 8.0 -> DeviceTier.MID
@@ -749,7 +748,6 @@ fun SamsungFastScrollbar(
  * =========================================================================================
  * This screen shows the grid of all your albums (folders).
  */
-@RequiresApi(Build.VERSION_CODES.HONEYCOMB_MR2)
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AlbumScreen(
@@ -868,10 +866,14 @@ fun AlbumScreen(
         val sortedVirtualAlbums = virtualAlbumsMutable
 
         val userAlbums = vmAlbums.filter { !it.id.startsWith("virtual_") && albumMatchesQuery(it, searchQuery) && !optimisticallyRemovedAlbums.contains(it.id) }
-        val sortedUserAlbums = if (sortOption == AlbumSort.Custom) {
-            userAlbums
+
+        // Combined without forcing virtual albums to the absolute top if Custom sorting is active
+        val combined = virtualAlbumsMutable + userAlbums
+
+        if (sortOption == AlbumSort.Custom) {
+            combined.toImmutableList()
         } else {
-            userAlbums.sortedWith(Comparator { a, b ->
+            combined.sortedWith(Comparator { a, b ->
                 if (a.isPinned != b.isPinned) {
                     b.isPinned.compareTo(a.isPinned)
                 } else {
@@ -883,9 +885,8 @@ fun AlbumScreen(
                         else -> 0
                     }
                 }
-            })
+            }).toImmutableList()
         }
-        (sortedVirtualAlbums + sortedUserAlbums).toImmutableList()
     }
 
     val sdCardAlbums = remember(allMedia.size) {
@@ -960,7 +961,6 @@ fun AlbumScreen(
         searchQuery = ""
     }
 
-    // UPDATED BACKHANDLER ORDER
     BackHandler(enabled = isSelectionMode) {
         selectedIds = persistentListOf<String>().toImmutableSet()
         isSelectionMode = false
@@ -1052,8 +1052,62 @@ fun AlbumScreen(
                         )
                     }
                 }
+            },
+            bottomBar = {
+                AnimatedVisibility(
+                    visible = isSelectionMode,
+                    enter = fadeIn(tween(80)),
+                    exit = fadeOut(tween(80)),
+                    modifier = Modifier.align(Alignment.BottomCenter)
+                ) {
+                    Surface(
+                        modifier = Modifier
+                            .then(controlWidthModifier)
+                            .padding(12.dp)
+                            .navigationBarsPadding(),
+                        shape = RoundedCornerShape(24.dp),
+                        color = MaterialTheme.colorScheme.surface,
+                        shadowElevation = 10.dp
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(6.dp),
+                            horizontalArrangement = Arrangement.SpaceEvenly,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            BottomBarActionItem(icon = Icons.Outlined.Share, label = "Share") {
+                                shareMediaItems(context, allMedia.filter { selectedIds.contains(it.bucketId) })
+                                isSelectionMode = false
+                                selectedIds = persistentListOf<String>().toImmutableSet()
+                            }
+                            BottomBarActionItem(icon = Icons.Outlined.Info, label = "Info") {
+                                val selectedAlbums = dynamicList.filter { selectedIds.contains(it.id) }
+                                if(selectedAlbums.isNotEmpty()) {
+                                    activeDialog = AlbumUiDialog.Info(selectedAlbums)
+                                }
+                            }
+                            BottomBarActionItem(icon = Icons.Outlined.VisibilityOff, label = "Hide") {
+                                val currentHidden = enginePrefs.getStringSet("hidden_albums", emptySet()) ?: emptySet()
+                                val newHidden = currentHidden + selectedIds
+                                enginePrefs.edit().putStringSet("hidden_albums", newHidden).apply()
+                                selectedIds.forEach { id -> viewModel.toggleHiddenAlbum(id) }
+                                isSelectionMode = false
+                                selectedIds = persistentListOf<String>().toImmutableSet()
+                                Toast.makeText(context, "Albums hidden", Toast.LENGTH_SHORT).show()
+                            }
+                            BottomBarActionItem(icon = Icons.Outlined.Delete, label = "Trash", isDestructive = true) {
+                                activeDialog = AlbumUiDialog.Delete(dynamicList.filter { selectedIds.contains(it.id) })
+                            }
+                            if (selectedIds.size == 1) {
+                                BottomBarActionItem(icon = Icons.Outlined.Edit, label = "Rename") {
+                                    dynamicList.find { it.id == selectedIds.first() }?.let { activeDialog = AlbumUiDialog.Rename(it) }
+                                }
+                            }
+                        }
+                    }
+                }
             }
-            // BOTTOM BAR REMOVED
         ) { padding ->
             Column(
                 modifier = Modifier
@@ -1121,20 +1175,31 @@ fun AlbumScreen(
                 dragHandle = { BottomSheetDefaults.DragHandle(width = 48.dp, height = 4.dp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)) }
             ) {
                 Column(Modifier.padding(24.dp).padding(bottom = 24.dp)) {
-                    val albumItems = allMedia.filter { it.bucketId == dialog.album.id }
-                    val oldestItem = albumItems.minByOrNull { it.dateAdded }
-                    val dateStr = oldestItem?.let {
-                        SimpleDateFormat("MMMM dd, yyyy 'at' hh:mm a", Locale.getDefault()).format(Date(it.dateAdded * 1000))
-                    } ?: "Unknown"
-                    val albumPath = oldestItem?.path?.let { File(it).parent } ?: "Unknown"
+                    if (dialog.albums.size == 1) {
+                        val album = dialog.albums.first()
+                        val albumItems = allMedia.filter { it.bucketId == album.id }
+                        val oldestItem = albumItems.minByOrNull { it.dateAdded }
+                        val dateStr = oldestItem?.let {
+                            SimpleDateFormat("MMMM dd, yyyy 'at' hh:mm a", Locale.getDefault()).format(Date(it.dateAdded * 1000))
+                        } ?: "Unknown"
+                        val albumPath = oldestItem?.path?.let { File(it).parent } ?: "Unknown"
 
-                    Text("Album Details", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.height(24.dp))
-                    MetadataRow(icon = Icons.Outlined.Title, label = "Name", value = dialog.album.name)
-                    MetadataRow(icon = Icons.Outlined.Storage, label = "Size", value = Formatter.formatFileSize(context, dialog.album.sizeBytes))
-                    MetadataRow(icon = Icons.Outlined.PhotoLibrary, label = "Items", value = dialog.album.mediaCount.toString())
-                    MetadataRow(icon = Icons.Outlined.Folder, label = "Path", value = albumPath)
-                    MetadataRow(icon = Icons.Outlined.CalendarToday, label = "Created On", value = dateStr)
+                        Text("Album Details", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(24.dp))
+                        MetadataRow(icon = Icons.Outlined.Title, label = "Name", value = album.name)
+                        MetadataRow(icon = Icons.Outlined.Storage, label = "Size", value = Formatter.formatFileSize(context, album.sizeBytes))
+                        MetadataRow(icon = Icons.Outlined.PhotoLibrary, label = "Items", value = album.mediaCount.toString())
+                        MetadataRow(icon = Icons.Outlined.Folder, label = "Path", value = albumPath)
+                        MetadataRow(icon = Icons.Outlined.CalendarToday, label = "Created On", value = dateStr)
+                    } else {
+                        val totalMediaCount = dialog.albums.sumOf { it.mediaCount }
+                        val totalSizeBytes = dialog.albums.sumOf { it.sizeBytes }
+
+                        Text("${dialog.albums.size} Albums Selected", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(24.dp))
+                        MetadataRow(icon = Icons.Outlined.PhotoLibrary, label = "Total Items", value = totalMediaCount.toString())
+                        MetadataRow(icon = Icons.Outlined.Storage, label = "Total Size", value = Formatter.formatFileSize(context, totalSizeBytes))
+                    }
                 }
             }
         }
@@ -2181,8 +2246,8 @@ fun StatelessAlbumGrid(
             itemsIndexed(items = dynamicList, key = { _, album -> album.id }, contentType = { _, _ -> "album" }) { index, album ->
                 val isBeingDragged = draggedIndex == index
 
-                // DRAG ENABLED INDEPENDENT OF SORT MODE
-                val reorderEnabled = searchQuery.isBlank()
+                // DRAG ENABLED INDEPENDENT OF SORT MODE, ONLY IF <= 1 SELECTED
+                val reorderEnabled = searchQuery.isBlank() && selectedIds.size <= 1
 
                 fun checkAndPerformSwap() {
                     val layoutInfo = gridState.layoutInfo
@@ -2227,6 +2292,24 @@ fun StatelessAlbumGrid(
 
                         longPress.consume()
 
+                        // SELECTION ON LONG PRESS
+                        if (!currentSelectionMode) {
+                            currentOnSelectionModeChange(true)
+                            currentOnSelectionChange(setOf(album.id).toImmutableSet())
+                        } else if (!currentSelectedIds.contains(album.id)) {
+                            currentOnSelectionChange((currentSelectedIds + album.id).toImmutableSet())
+                        }
+
+                        // ABORT DRAG IF MULTIPLE ITEMS ARE SELECTED
+                        val expectedSelectionSize = if (!currentSelectionMode) 1 else {
+                            if (currentSelectedIds.contains(album.id)) currentSelectedIds.size else currentSelectedIds.size + 1
+                        }
+
+                        if (expectedSelectionSize > 1) {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            return@awaitEachGesture
+                        }
+
                         var accumulated = Offset.Zero
                         var started = false
                         var lastSwapCheckMs = 0L
@@ -2265,17 +2348,6 @@ fun StatelessAlbumGrid(
                         } finally {
                             if (!started) {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-
-                                if (!currentSelectionMode) {
-                                    currentOnSelectionModeChange(true)
-                                    currentOnSelectionChange(
-                                        setOf(album.id).toImmutableSet()
-                                    )
-                                } else if (!currentSelectedIds.contains(album.id)) {
-                                    currentOnSelectionChange(
-                                        (currentSelectedIds + album.id).toImmutableSet()
-                                    )
-                                }
                             } else {
                                 draggedIndex = -1
                                 dragOffset = Offset.Zero
