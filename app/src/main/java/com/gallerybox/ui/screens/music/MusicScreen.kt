@@ -120,7 +120,7 @@ fun MusicScreen(
     val currentRoute = navController.currentBackStackEntryAsState().value?.destination?.route
     val context = LocalContext.current
 
-    // 🧠 1. THE ADAPTIVE ENGINE
+    // 1. 🧠THE ADAPTIVE ENGINE
     // We ask the engine: "Are we on a phone, or a giant tablet?"
     val adaptiveState = rememberAdaptiveState()
 

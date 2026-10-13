@@ -7,6 +7,10 @@ package com.gallerybox.viewmodel
 import android.annotation.SuppressLint
 import android.app.ActivityManager
 import android.app.Application
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.RecoverableSecurityException
 import android.content.*
 import android.database.ContentObserver
 import android.database.Cursor
@@ -24,6 +28,8 @@ import android.provider.MediaStore
 import android.util.Log
 import android.util.LruCache
 import androidx.annotation.RequiresApi
+import androidx.core.app.NotificationCompat
+import androidx.core.content.edit
 import androidx.core.net.toUri
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.AndroidViewModel
@@ -35,8 +41,13 @@ import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.Tracks
 import androidx.media3.common.AudioAttributes
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.DefaultLoadControl
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.SeekParameters
+import androidx.media3.session.MediaSession
+import androidx.media3.session.MediaSessionService
 import androidx.paging.*
 import androidx.work.*
 import com.gallerybox.data.*
@@ -44,7 +55,10 @@ import com.gallerybox.engine.*
 import com.gallerybox.ui.screens.picture.GalleryGridItem
 import com.gallerybox.ui.screens.trash.TrashCleanupWorker
 import com.gallerybox.ui.screens.videoplayer.PremiumRepeatMode
+import com.google.common.util.concurrent.Futures
+import com.google.common.util.concurrent.ListenableFuture
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
@@ -58,8 +72,10 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
+import javax.inject.Singleton
 import kotlin.math.exp
 import kotlin.math.log2
+import kotlin.random.Random
 
 const val ID_CAMERA = "virtual_camera"
 const val ID_RECENT = "virtual_recent"
@@ -679,7 +695,6 @@ class GalleryViewModel @Inject constructor(
         sharedPlayer?.playbackParameters = PlaybackParameters(savedSpeed, _playbackPitch.value)
     }
 
-
     fun setAutoPlayNext(enabled: Boolean) {
         _autoPlayNext.value = enabled
         prefs.edit().putBoolean("autoPlayNext", enabled).apply()
@@ -739,6 +754,7 @@ class GalleryViewModel @Inject constructor(
 
     private fun getMemoryFactor(): Double { val actManager = getApplication<Application>().getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager; val memInfo = ActivityManager.MemoryInfo(); actManager.getMemoryInfo(memInfo); return memInfo.availMem.toDouble() / memInfo.totalMem.toDouble() }
 
+
     private fun recalculateDynamicScaling() { val actManager = getApplication<Application>().getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager; val memInfo = ActivityManager.MemoryInfo(); actManager.getMemoryInfo(memInfo); val ramMB = (memInfo.totalMem / (1024 * 1024)).toDouble(); val thermal = getThermalFactor(); val memory = memInfo.availMem.toDouble() / memInfo.totalMem.toDouble(); currentCacheSizeMB = minOf((ramMB * thermal * memory).toInt(), 512); currentPageSize = 64; if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) { searchCache.resize((currentCacheSizeMB / 2).coerceIn(50, 500)); sortedCache.resize(currentCacheSizeMB.coerceIn(20, 250)) } }
 
     val processedMedia: StateFlow<List<MediaItem>> = combine(_mediaIndexes, _searchQuery.debounce(300), _activeFilter, _activeSort) { indexes, query, filter, sort ->
@@ -762,9 +778,11 @@ class GalleryViewModel @Inject constructor(
                 if (item.bucketName.lowercase().contains(q)) score += 3.0
                 if (item.isFavorite) score += 2.0
 
+
                 val ageDays = maxOf(0L, (System.currentTimeMillis() / 1000L - item.dateAdded)) / 86400.0
                 val recencyScore = exp(-ageDays / 30.0)
                 score += (2.0 * recencyScore)
+
 
                 val usageData = usageStats[item.id]
                 if (usageData != null) {
@@ -981,6 +999,7 @@ class GalleryViewModel @Inject constructor(
         }
 
         if (now - lastSyncTime < 150 && !forceRefresh) return
+
 
         val memoryPressure = 1.0 - getMemoryFactor()
 
@@ -1826,24 +1845,16 @@ class GalleryViewModel @Inject constructor(
             viewModelScope.launch(Dispatchers.IO) {
                 try {
                     val newAlbumId = "manual_${System.currentTimeMillis()}"
-                    var physicallyCreated = false
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                        val resolver = getApplication<Application>().contentResolver
-                        val collection = MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-                        val values = ContentValues().apply {
-                            put(MediaStore.MediaColumns.DISPLAY_NAME, ".nomedia")
-                            put(MediaStore.MediaColumns.RELATIVE_PATH, "Pictures/$trimmed/")
-                            put(MediaStore.MediaColumns.MIME_TYPE, "application/octet-stream")
-                        }
-                        resolver.insert(collection, values)?.let { uri ->
-                            resolver.openOutputStream(uri)?.use { it.write(ByteArray(0)) }
-                            physicallyCreated = true
-                        }
-                    } else {
+                    var physicallyCreated = true
+                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
                         val root = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
-                        physicallyCreated = File(root, trimmed).mkdirs()
+                        val dir = File(root, trimmed)
+                        physicallyCreated = dir.exists() || dir.mkdirs()
                     }
+
+                    // We DO NOT write .nomedia on Q+. MediaStore will lazily create the folder when media is added.
                     dao.insertManualAlbum(ManualAlbumEntity(id = newAlbumId, name = trimmed, hasBeenUsed = false))
+
                     _events.tryEmit(
                         if (physicallyCreated) GalleryEvent.ShowToast("Album '$trimmed' created!")
                         else GalleryEvent.ShowToast("Album added, but folder creation failed on disk")
@@ -1900,38 +1911,15 @@ class GalleryViewModel @Inject constructor(
                     val isPrimary = !isSd
 
                     if (isPrimary) {
-                        var renamed = false
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                            val resolver = getApplication<Application>().contentResolver
-                            val collection = MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-
-                            try {
-                                resolver.query(collection, arrayOf(MediaStore.MediaColumns._ID),
-                                    "${MediaStore.MediaColumns.RELATIVE_PATH} = ? AND ${MediaStore.MediaColumns.DISPLAY_NAME} = ?",
-                                    arrayOf("Pictures/${album.name}/", ".nomedia"), null)?.use { c ->
-                                    if (c.moveToFirst()) {
-                                        val uri = ContentUris.withAppendedId(collection, c.getLong(0))
-                                        resolver.delete(uri, null, null)
-                                    }
-                                }
-                            } catch (e: Exception) {}
-
-                            val values = ContentValues().apply {
-                                put(MediaStore.MediaColumns.DISPLAY_NAME, ".nomedia")
-                                put(MediaStore.MediaColumns.RELATIVE_PATH, "Pictures/$trimmed/")
-                                put(MediaStore.MediaColumns.MIME_TYPE, "application/octet-stream")
-                            }
-                            resolver.insert(collection, values)?.let { uri ->
-                                resolver.openOutputStream(uri)?.use { it.write(ByteArray(0)) }
-                                renamed = true
-                            }
-                        } else {
+                        var renamed = true
+                        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
                             val root = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
                             val oldDir = File(root, album.name)
                             val newDir = File(root, trimmed)
                             renamed = if (oldDir.exists()) oldDir.renameTo(newDir) else newDir.mkdirs()
                         }
 
+                        // On Q+, we just rename it in our local DB. The folder will be created with the new name when media is added.
                         try { dao.deleteManualAlbum(album.id) } catch (e: Exception) {}
                         val newManualId = "manual_${System.currentTimeMillis()}"
                         dao.insertManualAlbum(ManualAlbumEntity(id = newManualId, name = trimmed, hasBeenUsed = false))
@@ -2549,5 +2537,573 @@ class MediaPagingSource(
                 isHidden = false
             ))
         }
+    }
+}
+
+class VideoPlaybackService : MediaSessionService() {
+    private var mediaSession: MediaSession? = null
+    private var player: ExoPlayer? = null
+
+    @OptIn(UnstableApi::class)
+    override fun onCreate() {
+        super.onCreate()
+
+        val rFactory = DefaultRenderersFactory(this).apply {
+            setEnableDecoderFallback(true)
+            setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
+        }
+
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(2000, 5000, 500, 1000)
+            .build()
+
+        player = ExoPlayer.Builder(this)
+            .setRenderersFactory(rFactory)
+            .setLoadControl(loadControl)
+            .setSeekBackIncrementMs(10000)
+            .setSeekForwardIncrementMs(10000)
+            .build()
+            .apply {
+                setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(C.USAGE_MEDIA)
+                        .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+                        .build(),
+                    true
+                )
+                setHandleAudioBecomingNoisy(true)
+            }
+
+        val callback = object : MediaSession.Callback {
+            override fun onAddMediaItems(
+                mediaSession: MediaSession,
+                controller: MediaSession.ControllerInfo,
+                mediaItems: MutableList<Media3Item>
+            ): ListenableFuture<MutableList<Media3Item>> {
+                return Futures.immediateFuture(
+                    mediaItems.map {
+                        if (it.localConfiguration != null) it else Media3Item.fromUri(it.mediaId)
+                    }.toMutableList()
+                )
+            }
+        }
+
+        mediaSession = MediaSession.Builder(this, player!!)
+            .setId("GalleryBox_Video")
+            .setCallback(callback)
+            .build()
+    }
+
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
+
+    override fun onDestroy() {
+        mediaSession?.run {
+            player.release()
+            release()
+        }
+        mediaSession = null
+        player = null
+        super.onDestroy()
+    }
+}
+
+sealed class MediaOpResult {
+    data class Success(
+        val uris: List<Uri> = emptyList(),
+        val copiedCount: Int = 0,
+        val skippedCount: Int = 0,
+        val deletedCount: Int = 0
+    ) : MediaOpResult()
+
+    data class Failed(val reason: String) : MediaOpResult()
+
+    data class PermissionRequired(
+        val intentSender: IntentSender,
+        val pendingRollbackUris: List<Uri> = emptyList(),
+        val autoDeleteHandledByOs: Boolean = false,
+        val isWriteRequest: Boolean = false
+    ) : MediaOpResult()
+
+    data class SafPermissionRequired(
+        val intent: Intent,
+        val pendingRollbackUris: List<Uri> = emptyList()
+    ) : MediaOpResult()
+
+    data class AlreadyExists(val message: String) : MediaOpResult()
+    data object Cancelled : MediaOpResult()
+}
+
+data class TargetAlbum(
+    val id: String = "",
+    val name: String,
+    val relativePath: String?,
+    val mediaType: Int? = null,
+    val bucketId: String = "",
+    val coverUri: Uri = Uri.EMPTY,
+    val volumeName: String? = null,
+    val isSdCard: Boolean = false
+)
+
+@Singleton
+class MediaOperationEngine @Inject constructor(@ApplicationContext private val context: Context) {
+
+    private val prefs = context.getSharedPreferences("saf_prefs", Context.MODE_PRIVATE)
+
+    fun markAlbumAsSdCard(bucketId: String) {
+        if (bucketId.isBlank()) return
+        val current = prefs.getStringSet("sd_card_album_ids", emptySet()) ?: emptySet()
+        prefs.edit { putStringSet("sd_card_album_ids", current + bucketId) }
+    }
+
+    fun isSdCardAlbum(bucketId: String): Boolean =
+        (prefs.getStringSet("sd_card_album_ids", emptySet()) ?: emptySet()).contains(bucketId)
+
+    fun isSdCardAlbum(bucketId: String, sampleVolumeName: String?): Boolean {
+        if (isSdCardAlbum(bucketId)) return true
+        if (sampleVolumeName.isNullOrBlank()) return false
+        return sampleVolumeName != MediaStore.VOLUME_EXTERNAL_PRIMARY && sampleVolumeName != "external"
+    }
+
+    fun saveSafTreeUri(uri: Uri) {
+        val resolver = context.contentResolver
+
+        val persistedPermission = resolver.persistedUriPermissions.any {
+            it.uri == uri && it.isReadPermission && it.isWritePermission
+        }
+
+        if (!persistedPermission) {
+            resolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                        Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            )
+        }
+
+        prefs.edit {
+            putString("saf_tree_uri", uri.toString())
+        }
+    }
+
+    private fun getSafTreeUri(): Uri? {
+        val uriStr = prefs.getString("saf_tree_uri", null) ?: return null
+        return Uri.parse(uriStr)
+    }
+
+    private fun createSafIntent(): Intent {
+        return Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+        }
+    }
+
+    private fun getOrCreateSafDirectory(relativePath: String): DocumentFile? {
+        val treeUri = getSafTreeUri() ?: return null
+        var currentDoc = DocumentFile.fromTreeUri(context, treeUri) ?: return null
+
+        val parts = relativePath.split("/").filter { it.isNotEmpty() }
+        for (part in parts) {
+            val existing = currentDoc.listFiles().firstOrNull { doc ->
+                doc.isDirectory && doc.name?.trim()?.equals(part.trim(), ignoreCase = true) == true
+            }
+
+            val nextDoc = existing ?: currentDoc.createDirectory(part)
+            if (nextDoc == null) return null
+            currentDoc = nextDoc
+        }
+        return currentDoc
+    }
+
+    private fun fetchSafDirectoryNames(
+        relativePath: String
+    ): Set<String> {
+        val directory = getOrCreateSafDirectory(relativePath)
+            ?: return emptySet()
+
+        return directory.listFiles()
+            .mapNotNull { it.name }
+            .toSet()
+    }
+
+    private fun getSafDocumentFile(file: File): DocumentFile? {
+        val treeUri = getSafTreeUri() ?: return null
+        val rootDoc = DocumentFile.fromTreeUri(context, treeUri) ?: return null
+        val treeDocId = android.provider.DocumentsContract.getTreeDocumentId(treeUri)
+        val treeRel = treeDocId.substringAfter(':', "")
+
+        var rel = file.absolutePath.removePrefix("/storage/").substringAfter('/', "")
+        if (treeRel.isNotEmpty()) rel = rel.removePrefix("$treeRel/")
+        if (rel.isBlank()) return null
+
+        var cur: DocumentFile? = rootDoc
+        for (part in rel.split("/").filter { it.isNotEmpty() }) {
+            cur = cur?.listFiles()?.firstOrNull { it.name?.equals(part, true) == true } ?: return null
+        }
+        return if (cur?.isFile == true) cur else null
+    }
+
+    private fun getResolvedRelativePath(targetAlbum: TargetAlbum, isVideo: Boolean): String {
+        val path = targetAlbum.relativePath
+        if (!path.isNullOrBlank()) return path.trim().trimEnd('/') + "/"
+        return "Pictures/${targetAlbum.name}/"
+    }
+
+    suspend fun createAlbum(targetAlbum: TargetAlbum): MediaOpResult = withContext(Dispatchers.IO) {
+        val safePath = getResolvedRelativePath(targetAlbum, false)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            return@withContext MediaOpResult.Success()
+        }
+
+        val root = Environment.getExternalStorageDirectory()
+        val albumDir = File(root, safePath)
+
+        if (!albumDir.exists() && !albumDir.mkdirs()) {
+            val safDir = getOrCreateSafDirectory(safePath)
+            if (safDir == null) {
+                val safUri = getSafTreeUri()
+                if (safUri == null) {
+                    return@withContext MediaOpResult.SafPermissionRequired(createSafIntent())
+                }
+                return@withContext MediaOpResult.Failed("Could not create physical directory on external storage.")
+            }
+        }
+        MediaOpResult.Success()
+    }
+
+    suspend fun copyMedia(
+        items: List<MediaItem>,
+        targetAlbum: TargetAlbum,
+        onProgress: (phase: String, current: Int, total: Int) -> Unit = { _, _, _ -> }
+    ): MediaOpResult = withContext(Dispatchers.IO) {
+        if (items.isEmpty()) return@withContext MediaOpResult.Success()
+
+        val resolver = context.contentResolver
+        val newUris = mutableListOf<Uri>()
+        val existingNames = fetchExistingItemNames(targetAlbum).toMutableSet()
+        val skipped = 0
+
+        try {
+            for ((index, item) in items.withIndex()) {
+                if (!isActive) throw CancellationException("Operation cancelled by user")
+                onProgress("Copying", index + 1, items.size)
+
+                val uniqueName = getUniqueName(item.name, existingNames)
+                existingNames.add(uniqueName)
+                val relativePath = getResolvedRelativePath(targetAlbum, item.isVideo)
+
+                var destUri: Uri? = null
+
+                val isSdTarget = targetAlbum.isSdCard ||
+                        isSdCardAlbum(targetAlbum.bucketId, targetAlbum.volumeName)
+
+                // Protect against an empty/invalid MIME type defaulting to "application/octet-stream", which crashes Android Q+ inside Pictures/
+                val safeMimeType = item.mimeType.takeIf { it.isNotBlank() } ?: if (item.isVideo) "video/mp4" else "image/jpeg"
+
+                if (isSdTarget) {
+                    val safTreeUri = getSafTreeUri()
+
+                    if (safTreeUri == null) {
+                        return@withContext MediaOpResult.SafPermissionRequired(
+                            createSafIntent(),
+                            newUris
+                        )
+                    }
+
+                    val safDir = getOrCreateSafDirectory(relativePath)
+
+                    if (safDir == null) {
+                        rollback(newUris)
+                        return@withContext MediaOpResult.Failed(
+                            "Cannot access SD-card folder: ${targetAlbum.name}"
+                        )
+                    }
+
+                    destUri = safDir.createFile(
+                        safeMimeType,
+                        uniqueName
+                    )?.uri
+                } else {
+                    try {
+                        val volumeName = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                            targetAlbum.volumeName
+                                ?.takeIf {
+                                    it.isNotBlank() &&
+                                            it in MediaStore.getExternalVolumeNames(context)
+                                }
+                                ?: MediaStore.VOLUME_EXTERNAL_PRIMARY
+                        } else {
+                            null
+                        }
+
+                        val destCollection = if (item.isVideo) {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                                MediaStore.Video.Media.getContentUri(volumeName!!)
+                            } else {
+                                MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+                            }
+                        } else {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                                MediaStore.Images.Media.getContentUri(volumeName!!)
+                            } else {
+                                MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+                            }
+                        }
+
+                        val contentValues = ContentValues().apply {
+                            put(MediaStore.MediaColumns.DISPLAY_NAME, uniqueName)
+                            put(MediaStore.MediaColumns.MIME_TYPE, safeMimeType)
+
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                                put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath)
+                                put(MediaStore.MediaColumns.IS_PENDING, 1)
+                            } else {
+                                val root = Environment.getExternalStorageDirectory()
+                                val destDir = File(root, relativePath)
+
+                                if (!destDir.exists() && !destDir.mkdirs()) {
+                                    throw IOException(
+                                        "Could not create destination directory"
+                                    )
+                                }
+
+                                put(
+                                    MediaStore.MediaColumns.DATA,
+                                    File(destDir, uniqueName).absolutePath
+                                )
+                            }
+                        }
+
+                        destUri = resolver.insert(destCollection, contentValues)
+                    } catch (e: Exception) {
+                        Log.e("MediaOp", "MediaStore insert failed for $uniqueName", e)
+                    }
+                }
+
+                if (destUri == null) {
+                    rollback(newUris)
+                    return@withContext MediaOpResult.Failed(
+                        "Couldn't create \"$uniqueName\" in ${targetAlbum.name}"
+                    )
+                }
+
+                newUris.add(destUri)
+
+                val inputStream = resolver.openInputStream(item.uri)
+                    ?: throw IOException("Cannot read source: ${item.name}")
+
+                val outputStream = resolver.openOutputStream(destUri)
+                    ?: throw IOException("Cannot write destination: $uniqueName")
+
+                inputStream.use { input ->
+                    outputStream.use { output ->
+                        input.copyTo(output) // Completely rely on copyTo stream to finish writing across buffers
+                        output.flush()
+                    }
+                }
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && destUri.scheme == "content" && destUri.authority == MediaStore.AUTHORITY) {
+                    val updateValues = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }
+                    resolver.update(destUri, updateValues, null, null)
+                }
+            }
+
+        } catch (e: CancellationException) {
+            rollback(newUris)
+            return@withContext MediaOpResult.Cancelled
+        } catch (e: Exception) {
+            rollback(newUris)
+            return@withContext MediaOpResult.Failed(e.localizedMessage ?: "Unknown error during copy")
+        }
+
+        MediaOpResult.Success(newUris, newUris.size, skipped, 0)
+    }
+
+    suspend fun moveMedia(
+        items: List<MediaItem>,
+        targetAlbum: TargetAlbum,
+        onProgress: (phase: String, current: Int, total: Int) -> Unit = { _, _, _ -> }
+    ): MediaOpResult = withContext(Dispatchers.IO) {
+        val itemsToMove = items.filter { item ->
+            val isSameBucket = targetAlbum.bucketId.isNotBlank() && item.bucketId == targetAlbum.bucketId
+            !isSameBucket
+        }
+        val skippedSameAlbumCount = items.size - itemsToMove.size
+
+        if (itemsToMove.isEmpty()) {
+            return@withContext MediaOpResult.AlreadyExists("All selected items are already in this album.")
+        }
+
+        val copyResult = copyMedia(itemsToMove, targetAlbum, onProgress)
+        if (copyResult !is MediaOpResult.Success) return@withContext copyResult
+
+        val copiedUris = copyResult.uris
+        val originalUris = itemsToMove.map { it.uri }
+        val resolver = context.contentResolver
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val pendingIntent = MediaStore.createDeleteRequest(resolver, originalUris)
+            return@withContext MediaOpResult.PermissionRequired(pendingIntent.intentSender, copiedUris, autoDeleteHandledByOs = true)
+        } else {
+            var failureCount = 0
+            for ((index, item) in itemsToMove.withIndex()) {
+                onProgress("Deleting", index + 1, itemsToMove.size)
+                var deleted = false
+
+                try {
+                    val rows = resolver.delete(item.uri, null, null)
+                    if (rows > 0) deleted = true
+                } catch (e: RecoverableSecurityException) {
+                    if (Build.VERSION.SDK_INT == Build.VERSION_CODES.Q) {
+                        return@withContext MediaOpResult.PermissionRequired(e.userAction.actionIntent.intentSender, copiedUris)
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+
+                if (!deleted && item.path.isNotEmpty()) {
+                    val file = File(item.path)
+                    if (file.exists() && file.delete()) deleted = true
+
+                    if (!deleted) {
+                        val safDoc = getSafDocumentFile(file)
+                        if (safDoc != null && safDoc.delete()) {
+                            deleted = true
+                        } else if (getSafTreeUri() == null) {
+                            return@withContext MediaOpResult.SafPermissionRequired(createSafIntent(), copiedUris)
+                        }
+                    }
+                }
+
+                if (!deleted) failureCount++
+            }
+
+            if (failureCount > 0) {
+                rollback(copiedUris)
+                return@withContext MediaOpResult.Failed("Failed to delete $failureCount original items. Move reverted.")
+            }
+
+            return@withContext MediaOpResult.Success(copiedUris, copiedUris.size, skippedSameAlbumCount, originalUris.size)
+        }
+    }
+
+    suspend fun resumeDelete(uris: List<Uri>): MediaOpResult = withContext(Dispatchers.IO) {
+        val resolver = context.contentResolver
+        var failureCount = 0
+        for (uri in uris) {
+            var deleted = false
+            try {
+                if (resolver.delete(uri, null, null) > 0) deleted = true
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+
+            if (!deleted) {
+                var path = ""
+                try {
+                    resolver.query(uri, arrayOf(MediaStore.MediaColumns.DATA), null, null, null)?.use { c ->
+                        if (c.moveToFirst()) path = c.getString(0) ?: ""
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+
+                if (path.isNotEmpty()) {
+                    val file = File(path)
+                    if (file.exists() && file.delete()) deleted = true
+
+                    if (!deleted) {
+                        val safDoc = getSafDocumentFile(file)
+                        if (safDoc != null && safDoc.delete()) {
+                            deleted = true
+                        }
+                    }
+                }
+            }
+
+            if (!deleted) failureCount++
+        }
+
+        if (failureCount > 0) return@withContext MediaOpResult.Failed("Failed to delete $failureCount items.")
+        MediaOpResult.Success(uris, 0, 0, uris.size)
+    }
+
+    suspend fun rollback(uris: List<Uri>) = withContext(Dispatchers.IO) {
+        if (uris.isEmpty()) return@withContext
+        val resolver = context.contentResolver
+
+        for (uri in uris) {
+            try {
+                if (resolver.delete(uri, null, null) == 0) {
+                    val docFile = DocumentFile.fromSingleUri(context, uri)
+                    docFile?.delete()
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    private suspend fun fetchExistingItemNames(targetAlbum: TargetAlbum): List<String> = withContext(Dispatchers.IO) {
+        if (targetAlbum.isSdCard ||
+            isSdCardAlbum(targetAlbum.bucketId, targetAlbum.volumeName)
+        ) {
+            val existingNames = mutableSetOf<String>()
+
+            existingNames += fetchSafDirectoryNames(
+                getResolvedRelativePath(targetAlbum, false)
+            )
+
+            val videoPath = getResolvedRelativePath(targetAlbum, true)
+            if (videoPath != getResolvedRelativePath(targetAlbum, false)) {
+                existingNames += fetchSafDirectoryNames(videoPath)
+            }
+
+            return@withContext existingNames.toList()
+        }
+
+        val existingNames = mutableListOf<String>()
+        val picPath = getResolvedRelativePath(targetAlbum, false)
+        val movPath = getResolvedRelativePath(targetAlbum, true)
+
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            try {
+                val root = Environment.getExternalStorageDirectory()
+                File(root, picPath).listFiles()?.forEach { file -> existingNames.add(file.name) }
+                if (picPath != movPath) {
+                    File(root, movPath).listFiles()?.forEach { file -> existingNames.add(file.name) }
+                }
+            } catch (e: Exception) { e.printStackTrace() }
+            return@withContext existingNames
+        }
+
+        val resolver = context.contentResolver
+        val uri = MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL)
+        val proj = arrayOf(MediaStore.MediaColumns.DISPLAY_NAME)
+        val sel = "(${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ? OR ${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ?) AND ${MediaStore.MediaColumns.IS_PENDING} = 0"
+        val args = arrayOf("$picPath%", "$movPath%")
+
+        try {
+            resolver.query(uri, proj, sel, args, null)?.use { c ->
+                val nameC = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
+                while (c.moveToNext()) c.getString(nameC)?.let { existingNames.add(it) }
+            }
+        } catch (e: Exception) { e.printStackTrace() }
+
+        return@withContext existingNames
+    }
+
+    private fun getUniqueName(originalName: String, existingNames: Set<String>): String {
+        if (!existingNames.contains(originalName)) return originalName
+
+        val nameWithoutExt = originalName.substringBeforeLast(".")
+        val ext = originalName.substringAfterLast(".", "")
+        val dotExt = if (ext.isNotEmpty()) ".$ext" else ""
+
+        var counter = 1
+        var newName = "$nameWithoutExt ($counter)$dotExt"
+        while (existingNames.contains(newName)) {
+            counter++
+            newName = "$nameWithoutExt ($counter)$dotExt"
+        }
+        return newName
     }
 }
