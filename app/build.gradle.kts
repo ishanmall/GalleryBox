@@ -49,7 +49,7 @@ android {
         targetSdk = 36
 
         // Internal tracker: Every time you update the app on the Play Store, this number MUST go up by 1.
-        versionCode = 97
+        versionCode = 98
 
         // The version number the user actually sees (e.g., "Version 95.0").
         versionName = "1.0"

@@ -5,9 +5,15 @@ package com.gallerybox.ui.screens.editor
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.ColorMatrixColorFilter as AndroidColorMatrixFilter
+import android.graphics.Paint as AndroidPaint
 import android.graphics.RectF
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.view.TextureView
+import android.view.View
+import android.view.ViewGroup
+import android.widget.FrameLayout
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
@@ -128,6 +134,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -147,26 +154,21 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.media3.common.Effect
 import androidx.media3.common.MediaItem as ExoMediaItem
 import androidx.media3.common.Player
-import androidx.media3.effect.RgbMatrix
-import androidx.media3.effect.ScaleAndRotateTransformation
+import androidx.media3.common.VideoSize
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.SeekParameters
-import androidx.media3.ui.PlayerView
-import coil.ImageLoader
-import coil.compose.AsyncImage
-import coil.decode.SvgDecoder
-import coil.request.ImageRequest
 import com.gallerybox.data.EditState
 import com.gallerybox.data.MediaItem
 import com.gallerybox.data.StickerLayer
 import com.gallerybox.data.TextLayer
+import com.gallerybox.engine.ColorMatrixBuilder
 import com.gallerybox.ui.screens.adaptive.DevicePosture
 import com.gallerybox.ui.screens.adaptive.WindowWidthSize
 import com.gallerybox.ui.screens.adaptive.rememberAdaptiveState
@@ -175,6 +177,10 @@ import com.gallerybox.viewmodel.FileOperationState
 import com.gallerybox.viewmodel.GalleryEvent
 import com.gallerybox.viewmodel.GalleryViewModel
 import com.gallerybox.viewmodel.SaveMode
+import coil.ImageLoader
+import coil.compose.AsyncImage
+import coil.decode.SvgDecoder
+import coil.request.ImageRequest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -185,19 +191,12 @@ import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
-/**
- * THE EDITOR MENUS
- */
 enum class EditorTab { ADJUST, CROP, LUT, TEXT, STICKER, TRIM }
 enum class EditorMode { HOME, TOOL }
 
-/**
- * Data holder for adjustment sliders (Brightness, Contrast, Volume, etc.).
- */
 @Immutable
 data class AdjustTool(
     val name: String,
@@ -207,11 +206,6 @@ data class AdjustTool(
     val onValueChange: (Float) -> Unit
 )
 
-/**
- * =========================================================================================
- * THE MAIN EDITOR SCREEN
- * =========================================================================================
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun EditorScreen(
@@ -222,7 +216,6 @@ fun EditorScreen(
 ) {
     val ctx = LocalContext.current
 
-    // 1. Resolve the photo or video from GalleryViewModel or EditorViewModel fallback
     val mediaMap by galleryViewModel.mediaMap.collectAsState()
     val rawMedia by galleryViewModel.rawMedia.collectAsState()
     val loadedEditorItem by editorViewModel.currentMediaItem.collectAsState()
@@ -233,7 +226,6 @@ fun EditorScreen(
             ?: loadedEditorItem?.takeIf { it.id == mediaId }
     }
 
-    // 2. Listen to all editor states
     val editState by editorViewModel.currentEditState.collectAsState()
     val previewBitmap by editorViewModel.previewBitmap.collectAsState()
     val fileOpState by editorViewModel.fileOperationState.collectAsState()
@@ -244,7 +236,6 @@ fun EditorScreen(
     val isPreviewUpdating by editorViewModel.isPreviewUpdating.collectAsState()
     val isComparing by editorViewModel.isComparing.collectAsState()
 
-    // 3. UI Mode & Active Tab
     var editorMode by rememberSaveable { mutableStateOf(EditorMode.HOME) }
     var activeTab by rememberSaveable {
         mutableStateOf(if (mediaItem?.isVideo == true) EditorTab.TRIM else EditorTab.ADJUST)
@@ -253,6 +244,8 @@ fun EditorScreen(
     var selectedLayerId by rememberSaveable { mutableStateOf<String?>(null) }
     var currentPlayerPos by remember { mutableLongStateOf(0L) }
     var videoDuration by remember { mutableLongStateOf(1L) }
+    var detectedVideoWidth by remember { mutableIntStateOf(0) }
+    var detectedVideoHeight by remember { mutableIntStateOf(0) }
     var gridType by remember { mutableIntStateOf(0) }
     var showExportDialog by remember { mutableStateOf(false) }
     var seekRequest by remember { mutableStateOf<Long?>(null) }
@@ -261,7 +254,6 @@ fun EditorScreen(
     val lutCategories = remember(lutItems) { lutItems.map { it.category }.distinct() }
     var selectedLutCategory by remember { mutableStateOf<String?>(null) }
 
-    // --- ADAPTIVE CHECK ---
     val adaptiveState = rememberAdaptiveState()
     val isWideScreen = adaptiveState.widthSize != WindowWidthSize.COMPACT ||
             adaptiveState.isLandscape ||
@@ -273,7 +265,6 @@ fun EditorScreen(
         }
     }
 
-    // Link EditorViewModel with GalleryViewModel on entry
     LaunchedEffect(mediaId, mediaItem?.id) {
         if (mediaItem != null) {
             galleryViewModel.openEditor(mediaItem, editorViewModel)
@@ -285,7 +276,6 @@ fun EditorScreen(
         }
     }
 
-    // Listen to one-time events (Toasts & Export completion) from EditorViewModel
     LaunchedEffect(editorViewModel) {
         editorViewModel.events.collect { event ->
             when (event) {
@@ -334,14 +324,28 @@ fun EditorScreen(
         return
     }
 
-    if (showExportDialog) {
-        val defaultWidth = mediaItem.width.takeIf { it > 0 } ?: previewBitmap?.width ?: 1920
-        val defaultHeight = mediaItem.height.takeIf { it > 0 } ?: previewBitmap?.height ?: 1080
+    val resolvedMediaWidth = remember(mediaItem, previewBitmap, detectedVideoWidth) {
+        when {
+            mediaItem.isVideo && detectedVideoWidth > 0 -> detectedVideoWidth
+            !mediaItem.isVideo && previewBitmap != null -> previewBitmap!!.width
+            mediaItem.width > 0 -> mediaItem.width
+            else -> 1080
+        }
+    }
+    val resolvedMediaHeight = remember(mediaItem, previewBitmap, detectedVideoHeight) {
+        when {
+            mediaItem.isVideo && detectedVideoHeight > 0 -> detectedVideoHeight
+            !mediaItem.isVideo && previewBitmap != null -> previewBitmap!!.height
+            mediaItem.height > 0 -> mediaItem.height
+            else -> 1920
+        }
+    }
 
+    if (showExportDialog) {
         ExportSettingsDialog(
             isVideo = mediaItem.isVideo,
-            srcWidth = defaultWidth,
-            srcHeight = defaultHeight,
+            srcWidth = resolvedMediaWidth,
+            srcHeight = resolvedMediaHeight,
             onDismiss = { showExportDialog = false }
         ) { res, fps, saveMode ->
             val pixels = res.first * res.second
@@ -364,11 +368,7 @@ fun EditorScreen(
         }
     }
 
-    // =========================================================================================
-    // UI BUILDING BLOCKS
-    // =========================================================================================
-
-    // 1. THE TOP ACTION BAR (Undo, Redo, Reset, Save)
+    // 1. TOP ACTION BAR
     val topBarBlock: @Composable () -> Unit = {
         ModernEditorTopBar(
             onBack = handleBack,
@@ -382,7 +382,7 @@ fun EditorScreen(
         )
     }
 
-    // 2. THE TOOLBOX (Sliders, Stickers, Text tools, and Bottom Menu Tabs)
+    // 2. CONTROLS BLOCK
     val controlsBlock: @Composable () -> Unit = {
         if (!isExporting) {
             Column(
@@ -391,7 +391,6 @@ fun EditorScreen(
                     .background(MaterialTheme.colorScheme.surface)
                     .navigationBarsPadding()
             ) {
-                // Toolbar when a sticker or text layer is selected
                 AnimatedVisibility(selectedLayerId != null) {
                     LayerControlToolbar(
                         onDelete = {
@@ -508,6 +507,8 @@ fun EditorScreen(
 
                                     EditorTab.CROP -> CropToolPanel(
                                         vm = editorViewModel,
+                                        mediaWidth = resolvedMediaWidth.toFloat(),
+                                        mediaHeight = resolvedMediaHeight.toFloat(),
                                         grid = gridType
                                     ) { gridType = it }
 
@@ -538,41 +539,35 @@ fun EditorScreen(
         }
     }
 
-    // 3. THE LIVE PREVIEW CANVAS
+    // 3. LIVE PREVIEW CANVAS (Non-stretching Crop & Live Adjustments for Photo and Video)
     val previewBlock: @Composable (Modifier) -> Unit = { modifier ->
-        Box(modifier.background(MaterialTheme.colorScheme.background), contentAlignment = Alignment.Center) {
-
+        Box(
+            modifier
+                .background(MaterialTheme.colorScheme.background)
+                .padding(12.dp),
+            contentAlignment = Alignment.Center
+        ) {
             var sc by remember { mutableFloatStateOf(1f) }
             var ox by remember { mutableFloatStateOf(0f) }
             var oy by remember { mutableFloatStateOf(0f) }
 
-            var decodedAspect by remember(mediaId) { mutableStateOf<Float?>(null) }
-            LaunchedEffect(mediaItem.uri) {
-                if (mediaItem.width <= 0 && mediaItem.height <= 0) {
-                    withContext(Dispatchers.IO) {
-                        try {
-                            val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                            ctx.contentResolver.openInputStream(mediaItem.uri)?.use {
-                                BitmapFactory.decodeStream(it, null, opts)
-                            }
-                            if (opts.outWidth > 0 && opts.outHeight > 0) {
-                                decodedAspect = opts.outWidth.toFloat() / opts.outHeight.toFloat()
-                            }
-                        } catch (_: Exception) {
-                        }
-                    }
-                }
-            }
-
-            val imgWidth = previewBitmap?.width?.toFloat()
-                ?: mediaItem.width.toFloat().takeIf { it > 0f }
-                ?: decodedAspect
-                ?: 1f
-            val imgHeight = previewBitmap?.height?.toFloat()
-                ?: mediaItem.height.toFloat().takeIf { it > 0f }
-                ?: 1f
             val isCropping = activeTab == EditorTab.CROP && editorMode == EditorMode.TOOL
             val isOverlaySelected = selectedLayerId != null
+
+            val cropRect = editState.cropRect ?: RectF(0f, 0f, 1f, 1f)
+            val hasActiveCrop = !isCropping && !isComparing &&
+                    (cropRect.left > 0.001f || cropRect.top > 0.001f || cropRect.right < 0.999f || cropRect.bottom < 0.999f)
+
+            val rawW = resolvedMediaWidth.toFloat().coerceAtLeast(1f)
+            val rawH = resolvedMediaHeight.toFloat().coerceAtLeast(1f)
+
+            // When not in the Crop tab, the outer viewport adopts the cropped aspect ratio so nothing ever stretches!
+            val effectiveAspect = if (hasActiveCrop) {
+                ((rawW * cropRect.width().coerceAtLeast(0.05f)) / (rawH * cropRect.height().coerceAtLeast(0.05f)))
+                    .takeIf { it > 0f && !it.isNaN() } ?: (rawW / rawH)
+            } else {
+                (rawW / rawH).takeIf { it > 0f && !it.isNaN() } ?: 1f
+            }
 
             BoxWithConstraints(
                 Modifier
@@ -604,15 +599,14 @@ fun EditorScreen(
                 val maxWPx = constraints.maxWidth.toFloat().coerceAtLeast(1f)
                 val maxHPx = constraints.maxHeight.toFloat().coerceAtLeast(1f)
 
-                val baseAspect = (imgWidth / imgHeight).takeIf { it > 0f && !it.isNaN() } ?: 1f
                 var fitW = maxWPx
-                var fitH = maxWPx / baseAspect
+                var fitH = maxWPx / effectiveAspect
                 if (fitH > maxHPx) {
                     fitH = maxHPx
-                    fitW = maxHPx * baseAspect
+                    fitW = maxHPx * effectiveAspect
                 }
 
-                val totalRotation = if (!isComparing && !mediaItem.isVideo) {
+                val totalRotation = if (!isComparing) {
                     editState.rotationDegrees + editState.straightenDegrees
                 } else {
                     0f
@@ -625,18 +619,21 @@ fun EditorScreen(
                 val rotatedH = (fitW * sinA + fitH * cosA).coerceAtLeast(1f)
                 val fitScale = min(maxWPx / rotatedW, maxHPx / rotatedH).coerceAtMost(1f)
 
+                val density = LocalDensity.current
+
                 Box(
                     Modifier
-                        .width(with(LocalDensity.current) { fitW.toDp() })
-                        .height(with(LocalDensity.current) { fitH.toDp() })
+                        .width(with(density) { fitW.toDp() })
+                        .height(with(density) { fitH.toDp() })
                         .graphicsLayer(
-                            scaleX = sc * fitScale * (if (!isComparing && !mediaItem.isVideo && editState.flipHorizontal) -1f else 1f),
-                            scaleY = sc * fitScale * (if (!isComparing && !mediaItem.isVideo && editState.flipVertical) -1f else 1f),
+                            scaleX = sc * fitScale * (if (!isComparing && editState.flipHorizontal) -1f else 1f),
+                            scaleY = sc * fitScale * (if (!isComparing && editState.flipVertical) -1f else 1f),
                             rotationZ = totalRotation,
                             translationX = ox,
                             translationY = oy,
-                            clip = false
+                            clip = hasActiveCrop
                         )
+                        .clipToBounds()
                 ) {
                     if (mediaItem.isVideo) {
                         EditorVideoPreview(
@@ -644,20 +641,48 @@ fun EditorScreen(
                             state = editState,
                             isComp = isComparing,
                             isCropping = isCropping,
+                            viewportWidthPx = fitW,
+                            viewportHeightPx = fitH,
                             seekRequest = seekRequest,
+                            onVideoSizeDetected = { vw, vh ->
+                                if (vw > 0 && vh > 0) {
+                                    detectedVideoWidth = vw
+                                    detectedVideoHeight = vh
+                                }
+                            },
                             onDurationReady = { dur ->
                                 videoDuration = dur.coerceAtLeast(1L)
                             },
                             onPos = { currentPlayerPos = it }
                         )
                     } else {
-                        if (previewBitmap != null) {
-                            Image(
-                                bitmap = previewBitmap!!.asImageBitmap(),
-                                contentDescription = "Preview",
-                                modifier = Modifier.fillMaxSize(),
-                                contentScale = ContentScale.Fit
-                            )
+                        val displayBitmap = previewBitmap
+                        if (displayBitmap != null) {
+                            Canvas(Modifier.fillMaxSize()) {
+                                val bmpW = displayBitmap.width
+                                val bmpH = displayBitmap.height
+                                if (hasActiveCrop) {
+                                    val srcLeft = (cropRect.left * bmpW).roundToInt().coerceIn(0, bmpW - 1)
+                                    val srcTop = (cropRect.top * bmpH).roundToInt().coerceIn(0, bmpH - 1)
+                                    val srcW = (cropRect.width() * bmpW).roundToInt().coerceIn(1, bmpW - srcLeft)
+                                    val srcH = (cropRect.height() * bmpH).roundToInt().coerceIn(1, bmpH - srcTop)
+                                    drawImage(
+                                        image = displayBitmap.asImageBitmap(),
+                                        srcOffset = IntOffset(srcLeft, srcTop),
+                                        srcSize = IntSize(srcW, srcH),
+                                        dstOffset = IntOffset.Zero,
+                                        dstSize = IntSize(size.width.roundToInt(), size.height.roundToInt())
+                                    )
+                                } else {
+                                    drawImage(
+                                        image = displayBitmap.asImageBitmap(),
+                                        srcOffset = IntOffset.Zero,
+                                        srcSize = IntSize(bmpW, bmpH),
+                                        dstOffset = IntOffset.Zero,
+                                        dstSize = IntSize(size.width.roundToInt(), size.height.roundToInt())
+                                    )
+                                }
+                            }
                         } else {
                             AsyncImage(
                                 model = ImageRequest.Builder(LocalContext.current).data(mediaItem.uri).build(),
@@ -668,7 +693,7 @@ fun EditorScreen(
                         }
                     }
 
-                    // Interactive Text and Sticker Layers (supported for both Photos and Videos)
+                    // Interactive Text and Sticker Overlays
                     if (!isComparing) {
                         BoxWithConstraints(Modifier.fillMaxSize()) {
                             val w = constraints.maxWidth.toFloat().coerceAtLeast(1f)
@@ -762,9 +787,7 @@ fun EditorScreen(
         }
     }
 
-    // =========================================================================================
     // FINAL ASSEMBLY
-    // =========================================================================================
     if (isWideScreen) {
         Row(
             Modifier
@@ -823,9 +846,6 @@ fun EditorScreen(
     }
 }
 
-/**
- * Toolbar for selected Text or Sticker layer actions.
- */
 @Composable
 fun LayerControlToolbar(
     onDelete: () -> Unit,
@@ -864,9 +884,6 @@ fun LayerControlToolbar(
     }
 }
 
-/**
- * Top Action Bar (Back, Undo, Redo, Reset, Save).
- */
 @Composable
 fun ModernEditorTopBar(
     onBack: () -> Unit,
@@ -931,7 +948,10 @@ fun ModernEditorTopBar(
 }
 
 /**
- * Live Video Preview powered by Media3 ExoPlayer with trim looping, audio volume, color matrix, and geometry.
+ * Uses a TextureView + Hardware Layer ColorMatrix filter so live video preview supports:
+ * - Real-time Brightness, Contrast, Saturation, Exposure, Temp, and Tint at 60fps
+ * - Non-stretching proportional crop preview (because the parent viewport matches the cropped aspect ratio)
+ * - Instant Volume & Mute changes
  */
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 @Composable
@@ -940,7 +960,10 @@ fun EditorVideoPreview(
     state: EditState,
     isComp: Boolean,
     isCropping: Boolean,
+    viewportWidthPx: Float,
+    viewportHeightPx: Float,
     seekRequest: Long?,
+    onVideoSizeDetected: (Int, Int) -> Unit,
     onDurationReady: (Long) -> Unit,
     onPos: (Long) -> Unit
 ) {
@@ -972,55 +995,14 @@ fun EditorVideoPreview(
         }
     }
 
-    LaunchedEffect(isComp, state) {
+    // Live Audio Volume & Mute update
+    LaunchedEffect(state.videoVolume, state.isMuted, isComp) {
         val normalizedVol = if (state.videoVolume > 2f) {
             (state.videoVolume / 100f).coerceIn(0f, 1f)
         } else {
             state.videoVolume.coerceIn(0f, 1f)
         }
         exo.volume = if (state.isMuted) 0f else normalizedVol
-
-        if (isComp) {
-            exo.setVideoEffects(emptyList())
-        } else {
-            val ef = mutableListOf<Effect>()
-
-            if (
-                state.brightness != 0f ||
-                state.exposure != 0f ||
-                state.contrast != 1f ||
-                state.temperature != 0f ||
-                state.tint != 0f
-            ) {
-                val gain = (1f + state.brightness) * (2.0f.pow(state.exposure)) * state.contrast
-                val rScale = (gain * (1f + state.temperature * 0.1f)).coerceIn(0f, 4f)
-                val gScale = (gain * (1f + state.tint * 0.1f)).coerceIn(0f, 4f)
-                val bScale = (gain * (1f - state.temperature * 0.1f)).coerceIn(0f, 4f)
-                ef.add(
-                    RgbMatrix { _, _ ->
-                        floatArrayOf(
-                            rScale, 0f, 0f, 0f,
-                            0f, gScale, 0f, 0f,
-                            0f, 0f, bScale, 0f,
-                            0f, 0f, 0f, 1f
-                        )
-                    }
-                )
-            }
-
-            if (state.rotationDegrees != 0f || state.straightenDegrees != 0f || state.flipHorizontal || state.flipVertical) {
-                ef.add(
-                    ScaleAndRotateTransformation.Builder()
-                        .setRotationDegrees(state.rotationDegrees + state.straightenDegrees)
-                        .setScale(
-                            if (state.flipHorizontal) -1f else 1f,
-                            if (state.flipVertical) -1f else 1f
-                        )
-                        .build()
-                )
-            }
-            exo.setVideoEffects(ef)
-        }
     }
 
     // Trim loop & playhead position tracker
@@ -1034,7 +1016,7 @@ fun EditorVideoPreview(
                 }
                 onPos(pos)
 
-                if (state.trimEndMs > 0 && pos >= state.trimEndMs - 50L) {
+                if (state.trimEndMs > 0L && pos >= state.trimEndMs - 50L) {
                     try {
                         exo.seekTo(state.trimStartMs)
                     } catch (_: IllegalStateException) {
@@ -1065,6 +1047,12 @@ fun EditorVideoPreview(
                 if (p) ctrlVis = false
             }
 
+            override fun onVideoSizeChanged(videoSize: VideoSize) {
+                if (videoSize.width > 0 && videoSize.height > 0) {
+                    onVideoSizeDetected(videoSize.width, videoSize.height)
+                }
+            }
+
             override fun onPlaybackStateChanged(s: Int) {
                 if (s == Player.STATE_READY && exo.duration > 0) {
                     onDurationReady(exo.duration)
@@ -1089,43 +1077,64 @@ fun EditorVideoPreview(
         }
     }
 
-    var viewWidth by remember { mutableFloatStateOf(0f) }
-    var viewHeight by remember { mutableFloatStateOf(0f) }
+    val cropRect = state.cropRect ?: RectF(0f, 0f, 1f, 1f)
+    val cw = cropRect.width().coerceIn(0.05f, 1f)
+    val ch = cropRect.height().coerceIn(0.05f, 1f)
 
     Box(
         Modifier
             .fillMaxSize()
-            .pointerInput(Unit) { detectTapGestures(onTap = { ctrlVis = !ctrlVis }) }
-            .onGloballyPositioned {
-                viewWidth = it.size.width.toFloat()
-                viewHeight = it.size.height.toFloat()
-            },
+            .clipToBounds()
+            .pointerInput(Unit) { detectTapGestures(onTap = { ctrlVis = !ctrlVis }) },
         contentAlignment = Alignment.Center
     ) {
         AndroidView(
-            factory = {
-                PlayerView(ctx).apply {
-                    player = exo
-                    useController = false
-                    setShutterBackgroundColor(android.graphics.Color.TRANSPARENT)
+            factory = { context ->
+                FrameLayout(context).apply {
+                    val textureView = TextureView(context).apply {
+                        layoutParams = FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT
+                        )
+                    }
+                    addView(textureView)
+                    exo.setVideoTextureView(textureView)
+                    tag = textureView
                 }
             },
-            update = { view ->
-                view.player = exo
-            },
-            modifier = Modifier
-                .fillMaxSize()
-                .graphicsLayer {
-                    if (!isCropping && !isComp) {
-                        val rect = state.cropRect ?: RectF(0f, 0f, 1f, 1f)
-                        val cw = rect.width().coerceAtLeast(0.01f)
-                        val ch = rect.height().coerceAtLeast(0.01f)
-                        scaleX = 1f / cw
-                        scaleY = 1f / ch
-                        translationX = (0.5f - rect.centerX()) * viewWidth * scaleX
-                        translationY = (0.5f - rect.centerY()) * viewHeight * scaleY
+            update = { container ->
+                val textureView = container.tag as? TextureView
+                if (textureView != null) {
+                    // Apply real-time hardware ColorMatrix filter for Brightness, Contrast, Saturation, Exposure, Temp, Tint
+                    if (isComp) {
+                        container.setLayerType(View.LAYER_TYPE_HARDWARE, null)
+                    } else {
+                        val cm = ColorMatrixBuilder.buildAndroidColorMatrix(state)
+                        val layerPaint = AndroidPaint().apply {
+                            colorFilter = AndroidColorMatrixFilter(cm)
+                        }
+                        container.setLayerType(View.LAYER_TYPE_HARDWARE, layerPaint)
+                    }
+
+                    // Non-stretching Crop positioning:
+                    // Because the outer container already has the cropped aspect ratio (fitW x fitH),
+                    // the full video inside is sized to (fitW / cw) x (fitH / ch), preserving 100% original aspect ratio!
+                    if (!isCropping && !isComp && (cw < 0.999f || ch < 0.999f)) {
+                        val fullW = viewportWidthPx / cw
+                        val fullH = viewportHeightPx / ch
+                        textureView.scaleX = 1f / cw
+                        textureView.scaleY = 1f / ch
+                        textureView.translationX = (0.5f - cropRect.centerX()) * fullW
+                        textureView.translationY = (0.5f - cropRect.centerY()) * fullH
+                    } else {
+                        textureView.scaleX = 1f
+                        textureView.scaleY = 1f
+                        textureView.translationX = 0f
+                        textureView.translationY = 0f
                     }
                 }
+            },
+            modifier = Modifier.fillMaxSize()
         )
 
         AnimatedVisibility(ctrlVis || !isPlay, enter = fadeIn(), exit = fadeOut()) {
@@ -1164,9 +1173,6 @@ fun EditorVideoPreview(
     }
 }
 
-/**
- * Reusable Tab button for the Editor Home Menu.
- */
 @Composable
 fun TabItem(lbl: String, ic: ImageVector, sel: Boolean, onClk: () -> Unit) {
     val c = if (sel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
@@ -1187,9 +1193,6 @@ fun TabItem(lbl: String, ic: ImageVector, sel: Boolean, onClk: () -> Unit) {
     }
 }
 
-/**
- * Full-screen progress overlay shown while exporting edited media.
- */
 @Composable
 fun SavingOverlay(prg: Float, onCancel: () -> Unit = {}) {
     Box(
@@ -1221,7 +1224,8 @@ fun SavingOverlay(prg: Float, onCancel: () -> Unit = {}) {
 }
 
 /**
- * Interactive Crop Overlay with corner/edge handles, aspect ratio lock, and composition grids.
+ * Interactive Crop Overlay — automatically snaps to selected aspect ratio (`1:1`, `4:3`, `3:4`, `16:9`, `9:16`)
+ * and enforces the ratio while dragging handles.
  */
 @Composable
 fun InteractiveCropOverlay(
@@ -1230,8 +1234,8 @@ fun InteractiveCropOverlay(
     grid: Int,
     onCrop: (RectF) -> Unit
 ) {
-    var crop by remember(cCrop) {
-        mutableStateOf(cCrop?.let { RectF(it) } ?: RectF(0.1f, 0.1f, 0.9f, 0.9f))
+    var crop by remember(cCrop, cAsp) {
+        mutableStateOf(cCrop?.let { RectF(it) } ?: RectF(0.06f, 0.06f, 0.94f, 0.94f))
     }
 
     val d = LocalDensity.current
@@ -1241,7 +1245,7 @@ fun InteractiveCropOverlay(
     val hi = with(d) { 10.dp.toPx() }
     val eh = with(d) { 8.dp.toPx() }
     val gw = with(d) { 1.5.dp.toPx() }
-    val sl = with(d) { 24.dp.toPx() }
+    val sl = with(d) { 28.dp.toPx() }
 
     var ah by remember { mutableIntStateOf(-1) }
 
@@ -1249,7 +1253,7 @@ fun InteractiveCropOverlay(
         Canvas(
             Modifier
                 .fillMaxSize()
-                .pointerInput(cAsp) {
+                .pointerInput(cAsp, cCrop) {
                     detectDragGestures(
                         onDragStart = { off ->
                             val nx = off.x / size.width
@@ -1288,84 +1292,62 @@ fun InteractiveCropOverlay(
 
                         if (cAsp != null && ah in 0..7) {
                             val rel = cAsp / (size.width / size.height)
-                            if (ah in 0..3) {
-                                val dd = max(abs(dx), abs(dy * rel))
-                                val sx = if (ah == 0 || ah == 2) -1 else 1
-                                val sy = if (ah <= 1) -1 else 1
-                                val rx = dd * sx
-                                val ry = (dd / rel) * sy
-                                if (
-                                    !((nr.left + rx < 0f && sx < 0) || (nr.right + rx > 1f && sx > 0)) &&
-                                    !((nr.top + ry < 0f && sy < 0) || (nr.bottom + ry > 1f && sy > 0))
-                                ) {
-                                    when (ah) {
-                                        0 -> {
-                                            nr.left = (nr.left + rx).coerceIn(0f, nr.right - 0.05f)
-                                            nr.top = (nr.top + ry).coerceIn(0f, nr.bottom - 0.05f)
-                                        }
-                                        1 -> {
-                                            nr.right = (nr.right + rx).coerceIn(nr.left + 0.05f, 1f)
-                                            nr.top = (nr.top + ry).coerceIn(0f, nr.bottom - 0.05f)
-                                        }
-                                        2 -> {
-                                            nr.left = (nr.left + rx).coerceIn(0f, nr.right - 0.05f)
-                                            nr.bottom = (nr.bottom + ry).coerceIn(nr.top + 0.05f, 1f)
-                                        }
-                                        3 -> {
-                                            nr.right = (nr.right + rx).coerceIn(nr.left + 0.05f, 1f)
-                                            nr.bottom = (nr.bottom + ry).coerceIn(nr.top + 0.05f, 1f)
-                                        }
-                                    }
-                                }
-                            } else {
-                                val cx = (crop.left + crop.right) / 2f
-                                val cy = (crop.top + crop.bottom) / 2f
-                                var nw = crop.width()
-                                var nh = crop.height()
-                                when (ah) {
-                                    4, 6 -> {
-                                        nw = if (ah == 4) {
-                                            crop.right - (crop.left + dx).coerceIn(0f, crop.right - 0.05f)
-                                        } else {
-                                            (crop.right + dx).coerceIn(crop.left + 0.05f, 1f) - crop.left
-                                        }
-                                        nh = nw / rel
-                                    }
-                                    5, 7 -> {
-                                        nh = if (ah == 5) {
-                                            crop.bottom - (crop.top + dy).coerceIn(0f, crop.bottom - 0.05f)
-                                        } else {
-                                            (crop.bottom + dy).coerceIn(crop.top + 0.05f, 1f) - crop.top
-                                        }
-                                        nw = nh * rel
-                                    }
-                                }
-                                if (cx - nw / 2f >= 0f && cx + nw / 2f <= 1f && cy - nh / 2f >= 0f && cy + nh / 2f <= 1f) {
-                                    nr.set(cx - nw / 2f, cy - nh / 2f, cx + nw / 2f, cy + nh / 2f)
-                                }
+                            val cx = (nr.left + nr.right) / 2f
+                            val cy = (nr.top + nr.bottom) / 2f
+
+                            val deltaScale = when (ah) {
+                                0 -> (-dx - dy) / 2f
+                                1 -> (dx - dy) / 2f
+                                2 -> (-dx + dy) / 2f
+                                3 -> (dx + dy) / 2f
+                                4 -> -dx
+                                6 -> dx
+                                5 -> -dy * rel
+                                7 -> dy * rel
+                                else -> 0f
                             }
+
+                            var newW = (nr.width() + deltaScale).coerceIn(0.1f, 1f)
+                            var newH = newW / rel
+                            if (newH > 1f) {
+                                newH = 1f
+                                newW = newH * rel
+                            }
+                            if (newH < 0.1f) {
+                                newH = 0.1f
+                                newW = newH * rel
+                            }
+
+                            val clampedCx = cx.coerceIn(newW / 2f, 1f - newW / 2f)
+                            val clampedCy = cy.coerceIn(newH / 2f, 1f - newH / 2f)
+                            nr.set(
+                                clampedCx - newW / 2f,
+                                clampedCy - newH / 2f,
+                                clampedCx + newW / 2f,
+                                clampedCy + newH / 2f
+                            )
                         } else {
                             when (ah) {
                                 0 -> {
-                                    nr.left = (nr.left + dx).coerceIn(0f, nr.right - 0.05f)
-                                    nr.top = (nr.top + dy).coerceIn(0f, nr.bottom - 0.05f)
+                                    nr.left = (nr.left + dx).coerceIn(0f, nr.right - 0.08f)
+                                    nr.top = (nr.top + dy).coerceIn(0f, nr.bottom - 0.08f)
                                 }
                                 1 -> {
-                                    nr.right = (nr.right + dx).coerceIn(nr.left + 0.05f, 1f)
-                                    nr.top = (nr.top + dy).coerceIn(0f, nr.bottom - 0.05f)
+                                    nr.right = (nr.right + dx).coerceIn(nr.left + 0.08f, 1f)
+                                    nr.top = (nr.top + dy).coerceIn(0f, nr.bottom - 0.08f)
                                 }
                                 2 -> {
-                                    nr.left = (nr.left + dx).coerceIn(0f, nr.right - 0.05f)
-                                    nr.bottom = (nr.bottom + dy).coerceIn(nr.top + 0.05f, 1f)
+                                    nr.left = (nr.left + dx).coerceIn(0f, nr.right - 0.08f)
+                                    nr.bottom = (nr.bottom + dy).coerceIn(nr.top + 0.08f, 1f)
                                 }
                                 3 -> {
-                                    nr.right = (nr.right + dx).coerceIn(nr.left + 0.05f, 1f)
-                                    nr.bottom = (nr.bottom + dy).coerceIn(nr.top + 0.05f, 1f)
+                                    nr.right = (nr.right + dx).coerceIn(nr.left + 0.08f, 1f)
+                                    nr.bottom = (nr.bottom + dy).coerceIn(nr.top + 0.08f, 1f)
                                 }
-                                4 -> nr.left = (nr.left + dx).coerceIn(0f, nr.right - 0.05f)
-                                5 -> nr.top = (nr.top + dy).coerceIn(0f, nr.bottom - 0.05f)
-                                6 -> nr.right = (nr.right + dx).coerceIn(nr.left + 0.05f, 1f)
-                                7 -> nr.bottom = (nr.bottom + dy).coerceIn(nr.top + 0.05f, 1f)
+                                4 -> nr.left = (nr.left + dx).coerceIn(0f, nr.right - 0.08f)
+                                5 -> nr.top = (nr.top + dy).coerceIn(0f, nr.bottom - 0.08f)
+                                6 -> nr.right = (nr.right + dx).coerceIn(nr.left + 0.08f, 1f)
+                                7 -> nr.bottom = (nr.bottom + dy).coerceIn(nr.top + 0.08f, 1f)
                                 8 -> {
                                     val w = nr.width()
                                     val h = nr.height()
@@ -1384,7 +1366,7 @@ fun InteractiveCropOverlay(
             val rh = size.height * crop.height()
             val l = size.width * crop.left
             val t = size.height * crop.top
-            val dim = Color.Black.copy(alpha = 0.75f)
+            val dim = Color.Black.copy(alpha = 0.72f)
             val gc = Color.White.copy(alpha = 0.6f)
 
             drawRect(dim, Offset.Zero, Size(size.width, t))
@@ -1423,10 +1405,7 @@ fun InteractiveCropOverlay(
                 }
             }
 
-            drawRect(Color.White, Offset(l, t), Size(rw, rh), style = Stroke(3.dp.toPx()))
-
-            drawLine(Color.White.copy(alpha = 0.6f), Offset(l + rw / 2f - 16f, t + rh / 2f), Offset(l + rw / 2f + 16f, t + rh / 2f), gw)
-            drawLine(Color.White.copy(alpha = 0.6f), Offset(l + rw / 2f, t + rh / 2f - 16f), Offset(l + rw / 2f, t + rh / 2f + 16f), gw)
+            drawRect(Color.White, Offset(l, t), Size(rw, rh), style = Stroke(2.5.dp.toPx()))
 
             listOf(
                 Offset(l, t + rh / 2f),
@@ -1453,7 +1432,7 @@ fun InteractiveCropOverlay(
             Box(
                 Modifier
                     .fillMaxSize()
-                    .padding(16.dp),
+                    .padding(12.dp),
                 contentAlignment = Alignment.TopCenter
             ) {
                 Text(
@@ -1468,7 +1447,7 @@ fun InteractiveCropOverlay(
                     color = Color.White,
                     fontSize = 12.sp,
                     modifier = Modifier
-                        .background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(4.dp))
+                        .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(6.dp))
                         .padding(horizontal = 8.dp, vertical = 4.dp)
                 )
             }
@@ -1477,7 +1456,7 @@ fun InteractiveCropOverlay(
 }
 
 /**
- * THE ADJUSTMENTS MENU (Brightness, Contrast, Exposure, Volume, etc.)
+ * THE ADJUSTMENTS MENU (Full support for both Photo and Video)
  */
 @Composable
 fun AdjustToolPanel(
@@ -1496,7 +1475,7 @@ fun AdjustToolPanel(
         s.videoVolume.coerceIn(0f, 1f)
     }
 
-    val colorTools = listOf(
+    val photoTools = listOf(
         AdjustTool("Brightness", Icons.Rounded.BrightnessMedium, s.brightness, -1f..1f) { v -> up { it.copy(brightness = v) } },
         AdjustTool("Contrast", Icons.Rounded.Contrast, s.contrast, 0f..2f) { v -> up { it.copy(contrast = v) } },
         AdjustTool("Saturation", Icons.Rounded.ColorLens, s.saturation, 0f..2f) { v -> up { it.copy(saturation = v) } },
@@ -1507,20 +1486,24 @@ fun AdjustToolPanel(
         AdjustTool("Tint", Icons.Rounded.Palette, s.tint, -1f..1f) { v -> up { it.copy(tint = v) } }
     )
 
-    val tools = if (isVideo) {
-        listOf(
-            AdjustTool(
-                name = "Volume",
-                icon = if (s.isMuted) Icons.AutoMirrored.Rounded.VolumeOff else Icons.AutoMirrored.Rounded.VolumeUp,
-                value = if (s.isMuted) 0f else normalizedVideoVol,
-                range = 0f..1f
-            ) { v ->
-                up { it.copy(videoVolume = v.coerceIn(0f, 1f), isMuted = v == 0f) }
-            }
-        ) + colorTools.take(4)
-    } else {
-        colorTools
-    }
+    val videoTools = listOf(
+        AdjustTool(
+            name = "Volume",
+            icon = if (s.isMuted) Icons.AutoMirrored.Rounded.VolumeOff else Icons.AutoMirrored.Rounded.VolumeUp,
+            value = if (s.isMuted) 0f else normalizedVideoVol,
+            range = 0f..1f
+        ) { v ->
+            up { it.copy(videoVolume = v.coerceIn(0f, 1f), isMuted = v == 0f) }
+        },
+        AdjustTool("Brightness", Icons.Rounded.BrightnessMedium, s.brightness, -1f..1f) { v -> up { it.copy(brightness = v) } },
+        AdjustTool("Contrast", Icons.Rounded.Contrast, s.contrast, 0f..2f) { v -> up { it.copy(contrast = v) } },
+        AdjustTool("Saturation", Icons.Rounded.ColorLens, s.saturation, 0f..2f) { v -> up { it.copy(saturation = v) } },
+        AdjustTool("Exposure", Icons.Rounded.Exposure, s.exposure, -2f..2f) { v -> up { it.copy(exposure = v) } },
+        AdjustTool("Temp", Icons.Rounded.Thermostat, s.temperature, -1f..1f) { v -> up { it.copy(temperature = v) } },
+        AdjustTool("Tint", Icons.Rounded.Palette, s.tint, -1f..1f) { v -> up { it.copy(tint = v) } }
+    )
+
+    val tools = if (isVideo) videoTools else photoTools
 
     var sel by rememberSaveable { mutableIntStateOf(0) }
     val a = tools[sel.coerceIn(0, tools.lastIndex)]
@@ -1643,9 +1626,6 @@ fun AdjustToolPanel(
     }
 }
 
-/**
- * THE LUT (Filter) MENU
- */
 @Composable
 fun FilterToolPanel(
     vm: EditorViewModel,
@@ -1783,10 +1763,16 @@ fun FilterToolPanel(
 }
 
 /**
- * THE CROP & ROTATE SETTINGS MENU
+ * THE CROP & ROTATE SETTINGS MENU (Passes mediaWidth & mediaHeight so Aspect Ratio Chips snap immediately!)
  */
 @Composable
-fun CropToolPanel(vm: EditorViewModel, grid: Int, onGrid: (Int) -> Unit) {
+fun CropToolPanel(
+    vm: EditorViewModel,
+    mediaWidth: Float,
+    mediaHeight: Float,
+    grid: Int,
+    onGrid: (Int) -> Unit
+) {
     val asp by vm.aspectRatio.collectAsState()
     val s by vm.currentEditState.collectAsState()
     val rs: List<Pair<String, Float?>> = listOf(
@@ -1837,7 +1823,6 @@ fun CropToolPanel(vm: EditorViewModel, grid: Int, onGrid: (Int) -> Unit) {
 
         Spacer(Modifier.height(12.dp))
 
-        // Straighten Slider (-45 to 45)
         Row(
             Modifier
                 .fillMaxWidth()
@@ -1878,7 +1863,6 @@ fun CropToolPanel(vm: EditorViewModel, grid: Int, onGrid: (Int) -> Unit) {
 
         Spacer(Modifier.height(4.dp))
 
-        // Rotation Slider (0 to 360)
         Row(
             Modifier
                 .fillMaxWidth()
@@ -1925,9 +1909,10 @@ fun CropToolPanel(vm: EditorViewModel, grid: Int, onGrid: (Int) -> Unit) {
             contentPadding = PaddingValues(horizontal = 24.dp)
         ) {
             items(rs) { (l, r) ->
+                val isSelected = if (r == null) asp == null else (asp != null && abs(asp!! - r) < 0.01f)
                 FilterChip(
-                    selected = asp == r,
-                    onClick = { vm.setAspectRatio(r) },
+                    selected = isSelected,
+                    onClick = { vm.setAspectRatio(r, mediaWidth, mediaHeight) },
                     label = { Text(l) },
                     shape = RoundedCornerShape(16.dp)
                 )
@@ -1936,9 +1921,6 @@ fun CropToolPanel(vm: EditorViewModel, grid: Int, onGrid: (Int) -> Unit) {
     }
 }
 
-/**
- * THE TEXT ADDING MENU
- */
 @Composable
 fun TextToolPanel(vm: EditorViewModel) {
     var t by remember { mutableStateOf("") }
@@ -2006,9 +1988,6 @@ fun TextToolPanel(vm: EditorViewModel) {
     }
 }
 
-/**
- * THE STICKER GALLERY MENU
- */
 @Composable
 fun StickerToolPanel(vm: EditorViewModel) {
     val sts by vm.stickerItems.collectAsState()
@@ -2107,9 +2086,6 @@ fun StickerToolPanel(vm: EditorViewModel) {
     }
 }
 
-/**
- * Extracts 8 evenly-spaced thumbnail frames from a video for the trim timeline.
- */
 @Composable
 fun VideoThumbnailRow(uri: String, durationMs: Long, modifier: Modifier) {
     var frames by remember(uri) { mutableStateOf<List<Bitmap>>(emptyList()) }
@@ -2169,9 +2145,6 @@ fun formatMs(ms: Long): String {
     return String.format(Locale.US, "%02d:%02d", m, s)
 }
 
-/**
- * THE VIDEO TRIMMER MENU
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TrimToolPanel(
@@ -2312,9 +2285,6 @@ fun TrimToolPanel(
     }
 }
 
-/**
- * THE EXPORT POPUP (Supports Save as Copy vs Replace Original + Video Resolution/FPS)
- */
 @Composable
 fun ExportSettingsDialog(
     isVideo: Boolean,
@@ -2457,9 +2427,6 @@ fun ExportSettingsDialog(
     )
 }
 
-/**
- * THE STICKER CANVAS LOGIC
- */
 @Composable
 fun StickerOverlay(
     state: EditState,
@@ -2586,9 +2553,6 @@ fun StickerOverlay(
     }
 }
 
-/**
- * THE TEXT CANVAS LOGIC
- */
 @Composable
 fun TextOverlay(
     state: EditState,

@@ -79,6 +79,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
@@ -87,8 +88,97 @@ import kotlin.math.roundToInt
 import kotlin.math.sin
 
 /**
+ * Shared color-matrix builder used by both PhotoEditorEngine, Live Video Preview, and Media3 Video Export.
+ */
+object ColorMatrixBuilder {
+
+    fun buildAndroidColorMatrix(state: EditState): ColorMatrix {
+        val cm = ColorMatrix()
+
+        // 1. Brightness & Exposure
+        val sc = (1f + state.brightness) * (2.0f.pow(state.exposure))
+        val scaleMatrix = ColorMatrix().apply {
+            setScale(sc, sc, sc, 1f)
+        }
+        cm.postConcat(scaleMatrix)
+
+        // 2. Contrast
+        val c = state.contrast
+        val t = (-0.5f * c + 0.5f) * 255f
+        val contrastMatrix = ColorMatrix(
+            floatArrayOf(
+                c, 0f, 0f, 0f, t,
+                0f, c, 0f, 0f, t,
+                0f, 0f, c, 0f, t,
+                0f, 0f, 0f, 1f, 0f
+            )
+        )
+        cm.postConcat(contrastMatrix)
+
+        // 3. Saturation
+        val saturationMatrix = ColorMatrix().apply {
+            setSaturation(state.saturation)
+        }
+        cm.postConcat(saturationMatrix)
+
+        // 4. Temperature (Warm/Cool on R & B) & Tint (Green/Magenta on G)
+        val tempTintMatrix = ColorMatrix(
+            floatArrayOf(
+                1f + state.temperature * 0.15f, 0f, 0f, 0f, 0f,
+                0f, 1f + state.tint * 0.15f, 0f, 0f, 0f,
+                0f, 0f, 1f - state.temperature * 0.15f, 0f, 0f,
+                0f, 0f, 0f, 1f, 0f
+            )
+        )
+        cm.postConcat(tempTintMatrix)
+
+        return cm
+    }
+
+    /**
+     * Builds a column-major 4x4 OpenGL matrix for Media3 RgbMatrix effect including Saturation,
+     * Brightness, Exposure, Contrast, Temperature, and Tint.
+     */
+    fun buildGlRgbMatrix(state: EditState): FloatArray {
+        val gain = (1f + state.brightness) * (2.0f.pow(state.exposure)) * state.contrast
+        val sat = state.saturation.coerceIn(0f, 2f)
+
+        val lumR = 0.2126f
+        val lumG = 0.7152f
+        val lumB = 0.0722f
+
+        val sr = (1f - sat) * lumR
+        val sg = (1f - sat) * lumG
+        val sb = (1f - sat) * lumB
+
+        val tempR = (1f + state.temperature * 0.15f).coerceIn(0.2f, 2f)
+        val tintG = (1f + state.tint * 0.15f).coerceIn(0.2f, 2f)
+        val tempB = (1f - state.temperature * 0.15f).coerceIn(0.2f, 2f)
+
+        val r00 = (sr + sat) * gain * tempR
+        val r01 = sg * gain * tempR
+        val r02 = sb * gain * tempR
+
+        val g10 = sr * gain * tintG
+        val g11 = (sg + sat) * gain * tintG
+        val g12 = sb * gain * tintG
+
+        val b20 = sr * gain * tempB
+        val b21 = sg * gain * tempB
+        val b22 = (sb + sat) * gain * tempB
+
+        // Column-major 4x4 matrix for OpenGL
+        return floatArrayOf(
+            r00, g10, b20, 0f,
+            r01, g11, b21, 0f,
+            r02, g12, b22, 0f,
+            0f,  0f,  0f,  1f
+        )
+    }
+}
+
+/**
  * --- THE TIME MACHINE (EditStateManager) ---
- * Maintains Undo/Redo history stacks and hit-testing geometry for interactive layers.
  */
 @Singleton
 class EditStateManager @Inject constructor() {
@@ -118,18 +208,14 @@ class EditStateManager @Inject constructor() {
     }
 
     fun undo(): EditState? {
-        if (undoStack.isEmpty()) {
-            return null
-        }
+        if (undoStack.isEmpty()) return null
         redoStack.addLast(currentState)
         currentState = undoStack.removeLast()
         return currentState
     }
 
     fun redo(): EditState? {
-        if (redoStack.isEmpty()) {
-            return null
-        }
+        if (redoStack.isEmpty()) return null
         undoStack.addLast(currentState)
         currentState = redoStack.removeLast()
         return currentState
@@ -138,9 +224,6 @@ class EditStateManager @Inject constructor() {
     fun canUndo(): Boolean = undoStack.isNotEmpty()
     fun canRedo(): Boolean = redoStack.isNotEmpty()
 
-    /**
-     * Checks whether a touch point (x, y) lands inside a rotated and scaled layer bounding box.
-     */
     fun isPointInLayer(
         x: Float,
         y: Float,
@@ -164,7 +247,6 @@ class EditStateManager @Inject constructor() {
 
 /**
  * --- THE DIGITAL DARKROOM (EditingEngine) ---
- * Master coordinator delegating preview generation, LUT parsing, frame extraction, and final export.
  */
 @UnstableApi
 @Singleton
@@ -227,7 +309,6 @@ class EditingEngine @Inject constructor(
 
 /**
  * --- THE COLOR CHEMIST (LutEngine) ---
- * Parses `.cube` 3D LUT files and applies trilinear interpolation across bitmap pixels.
  */
 @Singleton
 class LutEngine @Inject constructor(@ApplicationContext private val context: Context) {
@@ -365,7 +446,6 @@ class LutEngine @Inject constructor(@ApplicationContext private val context: Con
 
 /**
  * --- THE STICKER FACTORY (StickerEngine) ---
- * Renders `.svg` vector assets into cached ARGB_8888 Bitmaps with memory and disk caching.
  */
 @Singleton
 class StickerEngine @Inject constructor(@ApplicationContext private val context: Context) {
@@ -438,7 +518,6 @@ class StickerEngine @Inject constructor(@ApplicationContext private val context:
 
 /**
  * --- THE TYPOGRAPHER (TextEngine) ---
- * Renders styled multi-line text and emoji layers into transparent Bitmaps.
  */
 @Singleton
 class TextEngine @Inject constructor() {
@@ -502,7 +581,6 @@ class TextEngine @Inject constructor() {
 
 /**
  * --- THE MASTER PAINTER (PhotoEditorEngine) ---
- * Applies cropping, ColorMatrix adjustments, pixel-level highlights/shadows, 3D LUTs, overlays, and geometry.
  */
 @Singleton
 class PhotoEditorEngine @Inject constructor(
@@ -519,63 +597,30 @@ class PhotoEditorEngine @Inject constructor(
         return withContext(Dispatchers.Default) {
             var res = bitmap.copy(Bitmap.Config.ARGB_8888, true) ?: return@withContext bitmap
 
-            // --- STEP 1: CROPPING ---
-            val cropRect = state.cropRect
-            if (cropRect != null) {
-                if (cropRect.left > 0f || cropRect.top > 0f || cropRect.right < 1f || cropRect.bottom < 1f) {
-                    val x = (cropRect.left * res.width).roundToInt().coerceIn(0, res.width - 1)
-                    val y = (cropRect.top * res.height).roundToInt().coerceIn(0, res.height - 1)
-                    val w = (cropRect.width() * res.width).roundToInt().coerceIn(1, res.width - x)
-                    val h = (cropRect.height() * res.height).roundToInt().coerceIn(1, res.height - y)
-                    if (w > 0 && h > 0) {
-                        val newBmp = Bitmap.createBitmap(res, x, y, w, h)
-                        if (newBmp !== res) {
-                            if (res !== bitmap) res.recycle()
-                            res = newBmp
+            // --- STEP 1: PHYSICAL CROPPING (Only when exporting `applyGeometry == true`) ---
+            // During live interactive editing, the UI handles non-destructive crop preview so the user
+            // can freely re-open the Crop tab and expand/adjust the crop box without losing outer pixels.
+            if (applyGeometry) {
+                val cropRect = state.cropRect
+                if (cropRect != null) {
+                    if (cropRect.left > 0f || cropRect.top > 0f || cropRect.right < 1f || cropRect.bottom < 1f) {
+                        val x = (cropRect.left * res.width).roundToInt().coerceIn(0, res.width - 1)
+                        val y = (cropRect.top * res.height).roundToInt().coerceIn(0, res.height - 1)
+                        val w = (cropRect.width() * res.width).roundToInt().coerceIn(1, res.width - x)
+                        val h = (cropRect.height() * res.height).roundToInt().coerceIn(1, res.height - y)
+                        if (w > 0 && h > 0) {
+                            val newBmp = Bitmap.createBitmap(res, x, y, w, h)
+                            if (newBmp !== res) {
+                                if (res !== bitmap) res.recycle()
+                                res = newBmp
+                            }
                         }
                     }
                 }
             }
 
-            // --- STEP 2: COLOR ADJUSTMENTS (BRIGHTNESS, EXPOSURE, CONTRAST, SATURATION, TEMP/TINT) ---
-            val cm = ColorMatrix()
-
-            // Brightness & Exposure: sc = (1 + brightness) * (2 ^ exposure)
-            val sc = (1f + state.brightness) * (2.0f.pow(state.exposure))
-            val scaleMatrix = ColorMatrix().apply {
-                setScale(sc, sc, sc, 1f)
-            }
-            cm.postConcat(scaleMatrix)
-
-            // Contrast
-            val c = state.contrast
-            val t = (-0.5f * c + 0.5f) * 255f
-            val contrastMatrix = ColorMatrix(
-                floatArrayOf(
-                    c, 0f, 0f, 0f, t,
-                    0f, c, 0f, 0f, t,
-                    0f, 0f, c, 0f, t,
-                    0f, 0f, 0f, 1f, 0f
-                )
-            )
-            cm.postConcat(contrastMatrix)
-
-            // Saturation
-            val saturationMatrix = ColorMatrix().apply {
-                setSaturation(state.saturation)
-            }
-            cm.postConcat(saturationMatrix)
-
-            // Temperature (Warm/Cool on R & B diagonals) & Tint (Green/Magenta on G diagonal)
-            val tempTintMatrix = ColorMatrix(
-                floatArrayOf(
-                    1f + state.temperature * 0.1f, 0f, 0f, 0f, 0f,
-                    0f, 1f + state.tint * 0.1f, 0f, 0f, 0f,
-                    0f, 0f, 1f - state.temperature * 0.1f, 0f, 0f,
-                    0f, 0f, 0f, 1f, 0f
-                )
-            )
-            cm.postConcat(tempTintMatrix)
+            // --- STEP 2: COLOR ADJUSTMENTS ---
+            val cm = ColorMatrixBuilder.buildAndroidColorMatrix(state)
 
             var out = Bitmap.createBitmap(res.width, res.height, Bitmap.Config.ARGB_8888)
             val paint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG).apply {
@@ -713,7 +758,6 @@ class PhotoEditorEngine @Inject constructor(
 
 /**
  * --- THE FILM SPLICER (VideoEditorEngine) ---
- * Extracts high-quality still frames from videos.
  */
 @UnstableApi
 @Singleton
@@ -733,7 +777,6 @@ class VideoEditorEngine @Inject constructor(@ApplicationContext private val cont
                 val f = File(galleryDir, "Frame_${System.currentTimeMillis()}.jpg")
                 retriever.setDataSource(context, uri)
 
-                // MediaMetadataRetriever expects microseconds (posMs * 1000L)
                 val frameBitmap = retriever.getFrameAtTime(
                     posMs.coerceAtLeast(0L) * 1000L,
                     MediaMetadataRetriever.OPTION_CLOSEST_SYNC
@@ -766,7 +809,6 @@ class VideoEditorEngine @Inject constructor(@ApplicationContext private val cont
 
 /**
  * --- THE PRINTING PRESS (ExportEngine) ---
- * Exports final edited images and videos to `Pictures/GalleryBox`.
  */
 @UnstableApi
 @Singleton
@@ -898,25 +940,24 @@ class ExportEngine @Inject constructor(
                 val auds = mutableListOf<AudioProcessor>()
 
                 // 2. Audio Volume
-                if (state.videoVolume != 1f && !state.isMuted) {
-                    auds.add(VolumeAudioProcessor(state.videoVolume))
+                val normalizedVol = if (state.videoVolume > 2f) {
+                    (state.videoVolume / 100f).coerceIn(0f, 1f)
+                } else {
+                    state.videoVolume.coerceIn(0f, 2f)
+                }
+                if (normalizedVol != 1f && !state.isMuted) {
+                    auds.add(VolumeAudioProcessor(normalizedVol))
                 }
 
-                // 3. Resolution
-                val safeTargetW = if (targetWidth > 0) targetWidth else 1920
-                val safeTargetH = if (targetHeight > 0) targetHeight else 1080
-                effs.add(
-                    Presentation.createForWidthAndHeight(
-                        safeTargetW,
-                        safeTargetH,
-                        Presentation.LAYOUT_SCALE_TO_FIT
-                    )
-                )
-
-                // 4. Cropping (Normalized [0..1] converted to OpenGL NDC [-1..1])
+                // 3. Cropping FIRST (Normalized [0..1] converted to OpenGL NDC [-1..1])
+                // Applying Crop BEFORE Presentation prevents stretching!
                 val cropRect = state.cropRect
+                var cropRatioW = 1f
+                var cropRatioH = 1f
                 if (cropRect != null) {
                     if (cropRect.left > 0f || cropRect.top > 0f || cropRect.right < 1f || cropRect.bottom < 1f) {
+                        cropRatioW = cropRect.width().coerceIn(0.05f, 1f)
+                        cropRatioH = cropRect.height().coerceIn(0.05f, 1f)
                         val leftNdc = (cropRect.left * 2f - 1f).coerceIn(-1f, 1f)
                         val rightNdc = (cropRect.right * 2f - 1f).coerceIn(-1f, 1f)
                         val bottomNdc = (1f - cropRect.bottom * 2f).coerceIn(-1f, 1f)
@@ -927,31 +968,20 @@ class ExportEngine @Inject constructor(
                     }
                 }
 
-                // 5. Video Color Adjustments (Brightness, Exposure, Contrast, Temperature, Tint)
+                // 4. Video Color Adjustments (Brightness, Exposure, Contrast, Saturation, Temp, Tint)
                 if (
                     state.brightness != 0f ||
                     state.exposure != 0f ||
                     state.contrast != 1f ||
+                    state.saturation != 1f ||
                     state.temperature != 0f ||
                     state.tint != 0f
                 ) {
-                    val gain = (1f + state.brightness) * (2.0f.pow(state.exposure)) * state.contrast
-                    val rScale = (gain * (1f + state.temperature * 0.1f)).coerceIn(0f, 4f)
-                    val gScale = (gain * (1f + state.tint * 0.1f)).coerceIn(0f, 4f)
-                    val bScale = (gain * (1f - state.temperature * 0.1f)).coerceIn(0f, 4f)
-                    effs.add(
-                        RgbMatrix { _, _ ->
-                            floatArrayOf(
-                                rScale, 0f, 0f, 0f,
-                                0f, gScale, 0f, 0f,
-                                0f, 0f, bScale, 0f,
-                                0f, 0f, 0f, 1f
-                            )
-                        }
-                    )
+                    val glMatrix = ColorMatrixBuilder.buildGlRgbMatrix(state)
+                    effs.add(RgbMatrix { _, _ -> glMatrix })
                 }
 
-                // 6. Flipping and Rotation
+                // 5. Flipping and Rotation
                 val sx = if (state.flipHorizontal) -1f else 1f
                 val sy = if (state.flipVertical) -1f else 1f
                 val totalRotation = state.rotationDegrees + state.straightenDegrees
@@ -963,9 +993,23 @@ class ExportEngine @Inject constructor(
                     effs.add(transformBuilder.build())
                 }
 
+                // 6. Proportional Output Resolution (aligned to multiples of 2 for hardware encoders)
+                val baseW = if (targetWidth > 0) targetWidth else 1920
+                val baseH = if (targetHeight > 0) targetHeight else 1080
+                val croppedW = ((baseW * cropRatioW).roundToInt() / 2 * 2).coerceAtLeast(160)
+                val croppedH = ((baseH * cropRatioH).roundToInt() / 2 * 2).coerceAtLeast(160)
+
+                effs.add(
+                    Presentation.createForWidthAndHeight(
+                        croppedW,
+                        croppedH,
+                        Presentation.LAYOUT_SCALE_TO_FIT
+                    )
+                )
+
                 // 7. Stickers and Text Overlays on Video
                 if (state.stickers.any { it.isVisible } || state.textLayers.any { it.isVisible }) {
-                    val overlayBmp = Bitmap.createBitmap(safeTargetW, safeTargetH, Bitmap.Config.ARGB_8888)
+                    val overlayBmp = Bitmap.createBitmap(croppedW, croppedH, Bitmap.Config.ARGB_8888)
                     val canvas = Canvas(overlayBmp)
                     val matrix = Matrix()
                     val overlayPaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG or Paint.DITHER_FLAG)
@@ -985,23 +1029,23 @@ class ExportEngine @Inject constructor(
                                 isVisible = s.isVisible,
                                 zIndex = s.zIndex
                             )
-                            val bmp = textEngine.getTextBitmap(textLayerEquiv, safeTargetW)
+                            val bmp = textEngine.getTextBitmap(textLayerEquiv, croppedW)
                             if (bmp != null) {
                                 matrix.reset()
                                 matrix.postTranslate(-bmp.width / 2f, -bmp.height / 2f)
                                 matrix.postRotate(s.rotation)
-                                matrix.postTranslate(s.x * safeTargetW, s.y * safeTargetH)
+                                matrix.postTranslate(s.x * croppedW, s.y * croppedH)
                                 overlayPaint.alpha = (s.opacity * 255f).roundToInt().coerceIn(0, 255)
                                 canvas.drawBitmap(bmp, matrix, overlayPaint)
                             }
                         } else {
-                            val bmp = stickerEngine.getStickerBitmap(s.assetPath, safeTargetW)
+                            val bmp = stickerEngine.getStickerBitmap(s.assetPath, croppedW)
                             if (bmp != null) {
                                 matrix.reset()
                                 matrix.postTranslate(-bmp.width / 2f, -bmp.height / 2f)
                                 matrix.postScale(s.scale, s.scale)
                                 matrix.postRotate(s.rotation)
-                                matrix.postTranslate(s.x * safeTargetW, s.y * safeTargetH)
+                                matrix.postTranslate(s.x * croppedW, s.y * croppedH)
                                 overlayPaint.alpha = (s.opacity * 255f).roundToInt().coerceIn(0, 255)
                                 canvas.drawBitmap(bmp, matrix, overlayPaint)
                             }
@@ -1010,12 +1054,12 @@ class ExportEngine @Inject constructor(
 
                     val activeTextLayers = state.textLayers.filter { it.isVisible }.sortedBy { it.zIndex }
                     for (t in activeTextLayers) {
-                        val bmp = textEngine.getTextBitmap(t, safeTargetW)
+                        val bmp = textEngine.getTextBitmap(t, croppedW)
                         if (bmp != null) {
                             matrix.reset()
                             matrix.postTranslate(-bmp.width / 2f, -bmp.height / 2f)
                             matrix.postRotate(t.rotation)
-                            matrix.postTranslate(t.x * safeTargetW, t.y * safeTargetH)
+                            matrix.postTranslate(t.x * croppedW, t.y * croppedH)
                             overlayPaint.alpha = (t.opacity * 255f).roundToInt().coerceIn(0, 255)
                             canvas.drawBitmap(bmp, matrix, overlayPaint)
                         }
@@ -1094,7 +1138,6 @@ class ExportEngine @Inject constructor(
 
 /**
  * --- THE AUDIO MIXER (VolumeAudioProcessor) ---
- * Scales PCM 16-bit audio samples by `volume` with saturation clamping.
  */
 @UnstableApi
 class VolumeAudioProcessor(private val volume: Float) : BaseAudioProcessor() {

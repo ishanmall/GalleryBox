@@ -25,7 +25,8 @@ import javax.inject.Inject
  * 🛡️ THE SECURITY GUARD (SecurityViewModel)
  * =========================================================================================
  * Manages app-wide and Vault authentication state, EncryptedSharedPreferences storage,
- * biometric/device-credential capability checks, and monotonic auto-lock timers.
+ * system biometric / device screen-lock (PIN, Pattern, Password) capability checks,
+ * and monotonic auto-lock timers.
  */
 @HiltViewModel
 class SecurityViewModel @Inject constructor(
@@ -35,6 +36,7 @@ class SecurityViewModel @Inject constructor(
     companion object {
         private const val TAG = "SecurityViewModel"
         private const val PREFS_FILE_NAME = "bank_grade_secure_gallery_prefs"
+        private const val LEGACY_VAULT_PREFS_NAME = "gallerybox_vault_security_prefs"
         private const val KEY_APP_LOCK_ENABLED = "app_lock_enabled"
         private const val KEY_AUTO_LOCK_TIMEOUT = "auto_lock_timeout"
         private const val DEFAULT_TIMEOUT_MINUTES = 5
@@ -67,6 +69,8 @@ class SecurityViewModel @Inject constructor(
     val autoLockTimeout: StateFlow<Int> = _autoLockTimeout.asStateFlow()
 
     init {
+        purgeLegacyCustomPinPrefs(context)
+
         _autoLockTimeout.value = runCatching {
             securePrefs.getInt(KEY_AUTO_LOCK_TIMEOUT, DEFAULT_TIMEOUT_MINUTES)
         }.getOrDefault(DEFAULT_TIMEOUT_MINUTES)
@@ -74,6 +78,22 @@ class SecurityViewModel @Inject constructor(
         _appLockEnabled.value = runCatching {
             securePrefs.getBoolean(KEY_APP_LOCK_ENABLED, false)
         }.getOrDefault(false)
+    }
+
+    /**
+     * Removes any leftover custom Vault PIN/Password preferences from older versions.
+     */
+    private fun purgeLegacyCustomPinPrefs(ctx: Context) {
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                ctx.deleteSharedPreferences(LEGACY_VAULT_PREFS_NAME)
+            } else {
+                ctx.getSharedPreferences(LEGACY_VAULT_PREFS_NAME, Context.MODE_PRIVATE)
+                    .edit()
+                    .clear()
+                    .apply()
+            }
+        }
     }
 
     private fun createSafeEncryptedPrefs(ctx: Context): SharedPreferences {
@@ -164,7 +184,7 @@ class SecurityViewModel @Inject constructor(
     }
 
     /**
-     * Callback invoked when BiometricPrompt or Vault PIN/Password verification succeeds.
+     * Callback invoked when system BiometricPrompt or device screen-lock verification succeeds.
      */
     fun onAuthenticationSuccess() {
         unlockReal()
