@@ -66,7 +66,7 @@ android {
         multiDexEnabled = true
 
         // Tells the app to only pack English text. If we download a tool that has Spanish or French text, throw it away to save space.
-        resConfigs("en")
+        resourceConfigurations += listOf("en")
 
         // Advanced Settings for C++ code (NDK).
         // We set memory "page sizes" to 16KB, which is a strict new requirement for modern Android 15 phones to manage memory efficiently.
@@ -280,16 +280,20 @@ dependencies {
 
     // --- Media3 (ExoPlayer) ---
     // The absolute best Video and Audio engine available for Android. Made by Google.
-    val media3Version = "1.8.0"
+    val media3Version = "1.5.1"
     implementation("androidx.media3:media3-exoplayer:$media3Version") // The actual player engine
     implementation("androidx.media3:media3-ui:$media3Version") // The play/pause buttons and sliders
     implementation("androidx.media3:media3-session:$media3Version") // Connects the music to the phone's lock screen
     implementation("androidx.media3:media3-common:$media3Version")
     implementation("androidx.media3:media3-effect:$media3Version") // Video filters (cropping, rotating, color)
     implementation("androidx.media3:media3-transformer:$media3Version") // Engine to permanently save edited videos to the hard drive
-    implementation("androidx.media3:media3-exoplayer-rtsp:${media3Version}") // Tool to stream live security camera footage
+    implementation("androidx.media3:media3-exoplayer-rtsp:$media3Version") // Tool to stream live security camera footage
+    // Extra tools for ExoPlayer to allow it to stream live internet TV & Radio formats (Aligned to $media3Version!)
+    implementation("androidx.media3:media3-exoplayer-hls:$media3Version")
+    implementation("androidx.media3:media3-exoplayer-dash:$media3Version")
+    implementation("androidx.media3:media3-exoplayer-smoothstreaming:$media3Version")
 
-    implementation("com.google.android.gms:play-services-oss-licenses:17.3.0")
+    implementation("com.google.android.gms:play-services-oss-licenses:17.1.0")
 
     // --- Coil & Image Processing ---
     // Coil is the "Image Loader". It grabs photos from the hard drive or internet and displays them instantly without freezing the app.
@@ -300,11 +304,11 @@ dependencies {
     implementation("me.saket.telephoto:zoomable-image-coil:0.14.0") // Tool that lets the user pinch-to-zoom into photos
     implementation("androidx.palette:palette-ktx:1.0.0") // Tool that looks at a photo and finds its most dominant colors
     implementation("androidx.exifinterface:exifinterface:1.3.7") // Tool to read the hidden GPS/Camera data saved inside photos
-    implementation("io.coil-kt:coil-svg:2.7.0") // Allows Coil to draw vector stickers
+    implementation("io.coil-kt:coil-svg:$coilVersion") // Allows Coil to draw vector stickers
 
     implementation("org.apache.poi:poi-ooxml:5.2.5") // More document reading tools
-    implementation("androidx.documentfile:documentfile:1.1.0") // Helps the app talk to SD Cards safely
-    implementation("androidx.pdf:pdf-viewer:1.0.0-alpha15") // Tool to display PDF files
+    implementation("androidx.documentfile:documentfile:1.0.1") // Helps the app talk to SD Cards safely
+    implementation("androidx.pdf:pdf-viewer:1.0.0-alpha05") // Tool to display PDF files
 
     // AndroidSVG
     implementation("com.caverock:androidsvg-aar:1.4") // Engine for drawing sharp vector sticker files
@@ -342,16 +346,11 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-collections-immutable:0.3.7") // Prevents accidental data changes
 
     // --- Paging 3 (The Waiter) ---
-    // If you have 50,000 photos, loading them all crashes the phone. Paging acts like a waiter, bringing you exactly 50 photos at a time as you scroll.
-    val pagingVersion = "3.4.2"
+    // FIXED: Version 3.4.2 does not exist on Google Maven; 3.3.6 is the real stable release!
+    val pagingVersion = "3.3.6"
     implementation("androidx.paging:paging-runtime:$pagingVersion")
     implementation("androidx.paging:paging-compose:$pagingVersion")
     implementation("androidx.paging:paging-common:$pagingVersion")
-
-    // Extra tools for ExoPlayer to allow it to stream live internet TV formats
-    implementation("androidx.media3:media3-exoplayer-hls:1.4.1")
-    implementation("androidx.media3:media3-exoplayer-dash:1.4.1")
-    implementation("androidx.media3:media3-exoplayer-smoothstreaming:1.4.1")
 
     // --- Testing ---
     // These tools are used by developers or robots to automatically click buttons in the app and make sure nothing crashes.

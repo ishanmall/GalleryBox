@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
+import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
@@ -66,6 +67,10 @@ class RadioViewModel @Inject constructor(private val app: Application) : Android
     private var musicService: MusicService? = null
     private var isBound = false // Are we currently connected to the Boiler Room?
     private var observeJob: Job? = null // A background worker whose only job is to watch the Boiler Room for updates.
+
+    // Digital notebook for persisting favorite internet radio stations across app launches
+    private val digitalPrefs = app.getSharedPreferences("gallerybox_digital_radio", Context.MODE_PRIVATE)
+    private val favoriteDigitalIds = loadFavoriteDigitalIds().toMutableSet()
 
     // --- SCOREBOARDS (StateFlows) ---
     // A StateFlow is like a sports scoreboard. It always shows the current score (state).
@@ -109,7 +114,7 @@ class RadioViewModel @Inject constructor(private val app: Application) : Android
     val isMuted = _isMuted.asStateFlow()
 
     // A list of popular default stations to jump-start the radio.
-    private val knownStations = listOf(91.1f, 92.7f, 93.5f, 98.3f, 104.8f)
+    private val knownStations = listOf(91.1f, 92.7f, 93.5f, 95.0f, 98.3f, 100.1f, 102.6f, 104.0f, 104.8f, 106.4f)
 
     // This checks the current frequency. If it's very close to a known station (like 98.3), it displays the name ("Radio Mirchi").
     val rdsStationName = _currentFrequency.map { freq ->
@@ -119,6 +124,11 @@ class RadioViewModel @Inject constructor(private val app: Application) : Android
             abs(freq - 92.7f) < 0.05f -> "Big FM"
             abs(freq - 104.8f) < 0.05f -> "Ishq FM"
             abs(freq - 91.1f) < 0.05f -> "Radio City"
+            abs(freq - 95.0f) < 0.05f -> "Hit 95 FM"
+            abs(freq - 100.1f) < 0.05f -> "AIR FM Gold"
+            abs(freq - 102.6f) < 0.05f -> "AIR FM Rainbow"
+            abs(freq - 104.0f) < 0.05f -> "Fever FM"
+            abs(freq - 106.4f) < 0.05f -> "Magic FM"
             else -> null
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
@@ -142,9 +152,10 @@ class RadioViewModel @Inject constructor(private val app: Application) : Android
     private val _selectedDigitalCategory = MutableStateFlow("Trending") // Which tab the user is on (Pop, Jazz, News, etc.)
     val selectedDigitalCategory = _selectedDigitalCategory.asStateFlow()
 
-    val digitalCategories = listOf("Trending", "Local", "Pop", "News", "Classical", "Jazz")
+    val digitalCategories = listOf("Trending", "Favorites", "Local", "Pop", "News", "Classical", "Jazz", "Lo-Fi", "Rock")
 
     private var digitalSearchJob: Job? = null // Background worker for typing searches
+    private var fetchCategoryJob: Job? = null
 
     /**
      * THE WALKIE-TALKIE CONNECTION (`ServiceConnection`).
@@ -214,43 +225,55 @@ class RadioViewModel @Inject constructor(private val app: Application) : Android
                 }
             }
 
-            // If the phone has a physical FM Radio chip inside it...
-            if (engine != null) {
-                _favoriteStations.value = engine.favoriteStations.value
+            // Watch the phone's physical FM Radio engine
+            _favoriteStations.value = engine.favoriteStations.value
+            _currentFrequency.value = engine.frequency.value
+            updateDSPMetrics(engine.frequency.value)
 
-                launch {
-                    engine.isPlaying.collect { playing ->
-                        if (_playbackMode.value == PlaybackMode.FM_RADIO) {
-                            _isPlaying.value = playing
-                        }
-                    }
+            launch {
+                engine.isPlaying.collect { playing ->
+                    _isPlaying.value = playing
+                    updateDSPMetrics(_currentFrequency.value)
                 }
+            }
 
-                launch {
-                    engine.favoriteStations.collect { stations ->
-                        _favoriteStations.value = stations
-                    }
+            launch {
+                engine.favoriteStations.collect { stations ->
+                    _favoriteStations.value = stations
                 }
+            }
 
-                launch {
-                    engine.frequency.collect { freq ->
-                        _currentFrequency.value = freq
-                        updateDSPMetrics(freq) // Calculate fake signal strength based on how close we are to a real station
-                    }
+            launch {
+                engine.frequency.collect { freq ->
+                    _currentFrequency.value = freq
+                    updateDSPMetrics(freq) // Calculate signal strength based on how close we are to a real station
                 }
+            }
 
-                // Watch the headphone jack. FM Radio needs the wire to act as a physical antenna.
-                launch {
-                    engine.isHeadsetConnected.collect { connected ->
-                        _isHeadsetConnected.value = connected
-                        if (!connected) {
-                            // If they unplugged the headphones, the antenna is gone. Shut it down.
-                            _isSpeakerEnabled.value = false
-                            _isMuted.value = false
-                            if (_isPlaying.value) {
-                                _error.value = "Headset disconnected. Radio stopped."
-                                engine.stop()
-                            }
+            // Sync speaker & mute state from the upgraded FmRadioEngine
+            launch {
+                engine.isSpeakerOn.collect { speakerOn ->
+                    _isSpeakerEnabled.value = speakerOn
+                }
+            }
+
+            launch {
+                engine.isMuted.collect { muted ->
+                    _isMuted.value = muted
+                }
+            }
+
+            // Watch the headphone jack. FM Radio needs the wire to act as a physical antenna.
+            launch {
+                engine.isHeadsetConnected.collect { connected ->
+                    _isHeadsetConnected.value = connected
+                    if (!connected) {
+                        // If they unplugged the headphones, the antenna is gone. Shut it down.
+                        _isSpeakerEnabled.value = false
+                        _isMuted.value = false
+                        if (_isPlaying.value) {
+                            _error.value = "Headset disconnected. Radio stopped."
+                            engine.stop()
                         }
                     }
                 }
@@ -263,52 +286,126 @@ class RadioViewModel @Inject constructor(private val app: Application) : Android
     /**
      * THE PHONEBOOK LOOKUP.
      * Reaches out to a massive open-source database on the internet to find thousands of live radio stations.
-     * We do this on `Dispatchers.IO` (the background warehouse) because the internet is slow and we can't freeze the app.
+     * UPGRADE: Cycles through multiple global mirrors (de1, fi1, at1) so a single server outage never breaks the app.
      */
     private suspend fun fetchFromRadioBrowser(endpoint: String): List<DigitalStation> = withContext(Dispatchers.IO) {
-        val resultList = mutableListOf<DigitalStation>()
-        try {
-            // Dialing the internet server...
-            val url = URL("https://de1.api.radio-browser.info/json/stations$endpoint")
-            val connection = url.openConnection() as HttpURLConnection
-            connection.requestMethod = "GET"
-            connection.setRequestProperty("User-Agent", "GalleryBoxRadio/1.0") // Tell the server who is knocking
-            connection.connectTimeout = 5000 // Give up if it takes longer than 5 seconds to connect
-            connection.readTimeout = 5000
+        val mirrors = listOf(
+            "https://de1.api.radio-browser.info/json/stations",
+            "https://fi1.api.radio-browser.info/json/stations",
+            "https://at1.api.radio-browser.info/json/stations"
+        )
 
-            // 200 means "OK! Here is the data."
-            if (connection.responseCode == 200) {
-                // Read the raw text response from the server
-                val response = connection.inputStream.bufferedReader().use { it.readText() }
+        for (baseUrl in mirrors) {
+            val resultList = mutableListOf<DigitalStation>()
+            var connection: HttpURLConnection? = null
+            try {
+                val url = URL("$baseUrl$endpoint")
+                connection = (url.openConnection() as HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    setRequestProperty("User-Agent", "GalleryBoxRadio/2.0")
+                    connectTimeout = 5000
+                    readTimeout = 5000
+                }
 
-                // The response is in "JSON" format (a digital list of objects). We unpack it here.
-                val jsonArray = JSONArray(response)
+                if (connection.responseCode == 200) {
+                    val response = connection.inputStream.bufferedReader().use { it.readText() }
+                    val jsonArray = JSONArray(response)
+                    val seenUrls = HashSet<String>()
 
-                // Go through the list box by box and build our `DigitalStation` business cards
-                for (i in 0 until jsonArray.length()) {
-                    val obj = jsonArray.getJSONObject(i)
-                    val id = obj.optString("stationuuid", UUID.randomUUID().toString())
-                    val name = obj.optString("name", "Unknown Station").trim()
-                    val streamUrl = obj.optString("url_resolved", obj.optString("url", ""))
-                    val imageUrl = obj.optString("favicon", "")
+                    for (i in 0 until jsonArray.length()) {
+                        val obj = jsonArray.getJSONObject(i)
+                        val id = obj.optString("stationuuid", UUID.randomUUID().toString())
+                        val name = obj.optString("name", "Unknown Station").trim()
+                        val streamUrl = obj.optString("url_resolved", obj.optString("url", "")).trim()
+                        val imageUrl = obj.optString("favicon", "").trim()
 
-                    // Clean up the tags (genres like Pop, Rock) so they look nice on screen
-                    var tags = obj.optString("tags", "").replace(",", ", ")
-                    if (tags.length > 35) tags = tags.take(32) + "..."
-                    if (tags.isBlank()) tags = "Live Stream"
+                        var tags = obj.optString("tags", "")
+                            .split(",")
+                            .map { it.trim() }
+                            .filter { it.isNotEmpty() }
+                            .take(3)
+                            .joinToString(", ")
+                        if (tags.length > 35) tags = tags.take(32) + "..."
+                        if (tags.isBlank()) tags = "Live Stream"
 
-                    val country = obj.optString("country", "Global")
+                        val country = obj.optString("country", "Global").trim().ifEmpty { "Global" }
 
-                    // Only add the station to our list if it actually gave us an audio link and a name
-                    if (streamUrl.isNotEmpty() && name.isNotEmpty()) {
-                        resultList.add(DigitalStation(id, name, streamUrl, imageUrl, tags, country))
+                        // Deduplicate identical stream URLs and mark saved favorites
+                        if (streamUrl.isNotEmpty() && name.isNotEmpty() && seenUrls.add(streamUrl)) {
+                            val isFav = favoriteDigitalIds.contains(id)
+                            resultList.add(
+                                DigitalStation(
+                                    id = id,
+                                    name = name,
+                                    streamUrl = streamUrl,
+                                    imageUrl = imageUrl,
+                                    tags = tags,
+                                    country = country,
+                                    isFavorite = isFav
+                                )
+                            )
+                        }
+                    }
+
+                    if (resultList.isNotEmpty()) {
+                        return@withContext resultList
                     }
                 }
+            } catch (e: Exception) {
+                // Try the next mirror automatically
+            } finally {
+                connection?.disconnect()
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
         }
-        resultList // Return the final list of business cards
+        emptyList()
+    }
+
+    // --- DIGITAL RADIO FAVORITES PERSISTENCE --- //
+
+    private fun loadFavoriteDigitalIds(): Set<String> {
+        return digitalPrefs.getStringSet("fav_ids", emptySet()) ?: emptySet()
+    }
+
+    private fun saveFavoriteDigitalStationMeta(station: DigitalStation) {
+        val json = JSONObject().apply {
+            put("id", station.id)
+            put("name", station.name)
+            put("streamUrl", station.streamUrl)
+            put("imageUrl", station.imageUrl)
+            put("tags", station.tags)
+            put("country", station.country)
+        }
+        digitalPrefs.edit()
+            .putStringSet("fav_ids", favoriteDigitalIds.toSet())
+            .putString("fav_station_${station.id}", json.toString())
+            .apply()
+    }
+
+    private fun removeFavoriteDigitalStationMeta(stationId: String) {
+        digitalPrefs.edit()
+            .putStringSet("fav_ids", favoriteDigitalIds.toSet())
+            .remove("fav_station_$stationId")
+            .apply()
+    }
+
+    private fun loadSavedFavoriteDigitalStations(): List<DigitalStation> {
+        return favoriteDigitalIds.mapNotNull { id ->
+            val raw = digitalPrefs.getString("fav_station_$id", null) ?: return@mapNotNull null
+            try {
+                val obj = JSONObject(raw)
+                DigitalStation(
+                    id = obj.optString("id", id),
+                    name = obj.optString("name", "Saved Station"),
+                    streamUrl = obj.optString("streamUrl", ""),
+                    imageUrl = obj.optString("imageUrl", ""),
+                    tags = obj.optString("tags", "Live Stream"),
+                    country = obj.optString("country", "Global"),
+                    isFavorite = true
+                )
+            } catch (_: Exception) {
+                null
+            }
+        }
     }
 
     // --- DIGITAL RADIO METHODS --- //
@@ -321,14 +418,15 @@ class RadioViewModel @Inject constructor(private val app: Application) : Android
         digitalSearchJob?.cancel() // Stop the previous search instantly if they keep typing
 
         digitalSearchJob = viewModelScope.launch {
-            // DEBOUNCING: Wait half a second before actually searching the internet.
-            // If they type "R-O-C-K" really fast, we don't want to search the internet 4 times. We wait for them to finish typing.
-            delay(500)
+            // DEBOUNCING: Wait 400ms before searching the internet if they type multiple characters quickly.
+            delay(400)
 
             if (query.isNotBlank()) {
                 _isDigitalLoading.value = true // Turn on the loading spinner
-                val encodedQuery = URLEncoder.encode(query, "UTF-8") // Make the text safe for internet links (e.g., spaces become %20)
-                val searchResults = fetchFromRadioBrowser("/search?name=$encodedQuery&limit=100&hidebroken=true")
+                val encodedQuery = withContext(Dispatchers.IO) {
+                    URLEncoder.encode(query.trim(), "UTF-8")
+                }
+                val searchResults = fetchFromRadioBrowser("/search?name=$encodedQuery&limit=100&hidebroken=true&order=clickcount&reverse=true")
                 _digitalStations.value = searchResults // Update the scoreboard with the results
                 _isDigitalLoading.value = false // Turn off the loading spinner
             } else {
@@ -348,68 +446,112 @@ class RadioViewModel @Inject constructor(private val app: Application) : Android
 
     // Figures out the correct internet link based on what category the user clicked.
     private fun fetchDigitalStations(category: String) {
-        viewModelScope.launch {
+        fetchCategoryJob?.cancel()
+        fetchCategoryJob = viewModelScope.launch {
             _isDigitalLoading.value = true
+
+            if (category == "Favorites") {
+                _digitalStations.value = loadSavedFavoriteDigitalStations()
+                _isDigitalLoading.value = false
+                return@launch
+            }
 
             val endpoint = when (category) {
                 "Trending" -> "/topclick/100?hidebroken=true"
-                "Local" -> "/bycountry/India?limit=100&hidebroken=true"
-                "Pop" -> "/bytag/pop?limit=100&hidebroken=true"
-                "News" -> "/bytag/news?limit=100&hidebroken=true"
-                "Classical" -> "/bytag/classical?limit=100&hidebroken=true"
-                "Jazz" -> "/bytag/jazz?limit=100&hidebroken=true"
+                "Local" -> "/bycountry/India?limit=100&hidebroken=true&order=clickcount&reverse=true"
+                "Pop" -> "/bytag/pop?limit=100&hidebroken=true&order=clickcount&reverse=true"
+                "News" -> "/bytag/news?limit=100&hidebroken=true&order=clickcount&reverse=true"
+                "Classical" -> "/bytag/classical?limit=100&hidebroken=true&order=clickcount&reverse=true"
+                "Jazz" -> "/bytag/jazz?limit=100&hidebroken=true&order=clickcount&reverse=true"
+                "Lo-Fi" -> "/bytag/lofi?limit=100&hidebroken=true&order=clickcount&reverse=true"
+                "Rock" -> "/bytag/rock?limit=100&hidebroken=true&order=clickcount&reverse=true"
                 else -> "/topclick/100?hidebroken=true"
             }
 
             val fetchedStations = fetchFromRadioBrowser(endpoint)
-
-            if (fetchedStations.isNotEmpty()) {
-                _digitalStations.value = fetchedStations
-            } else {
-                // If the list is empty (likely because the phone has no internet), show a fake "Offline" error station.
-                _digitalStations.value = listOf(
-                    DigitalStation("fb1", "Check Internet Connection", "", "", "Offline", "")
-                )
-            }
-
+            _digitalStations.value = fetchedStations
             _isDigitalLoading.value = false
         }
     }
 
     // Called when the user taps on an Internet Radio station to play it
     fun playDigitalStation(station: DigitalStation) {
-        if (station.streamUrl.isBlank()) return // Prevent clicking the fake "Offline" error station
+        if (station.streamUrl.isBlank()) return
 
         _currentDigitalStation.value = station
         _isDigitalPlaying.value = true
 
         stopRadioIfNeeded() // Shut off the FM radio so they don't play over each other!
 
+        val cleanSubtitle = listOf(station.country.trim(), station.tags.trim())
+            .filter { it.isNotEmpty() }
+            .joinToString(" • ")
+
         // Tell the Boiler Room to start playing the internet audio stream
         musicService?.playDigitalStream(
             url = station.streamUrl,
             title = station.name,
-            subtitle = "${station.country} • ${station.tags}",
+            subtitle = cleanSubtitle,
             imageUrl = station.imageUrl
         )
     }
 
     fun toggleDigitalPlayPause() {
+        val current = _currentDigitalStation.value ?: return
         val playing = _isDigitalPlaying.value
         _isDigitalPlaying.value = !playing
 
         if (playing) {
             musicService?.pauseDigitalStream()
         } else {
-            musicService?.resumeDigitalStream()
+            if (_playbackMode.value != PlaybackMode.DIGITAL_RADIO) {
+                playDigitalStation(current)
+            } else {
+                musicService?.resumeDigitalStream()
+            }
         }
     }
 
     fun toggleDigitalFavorite(stationId: String) {
-        // Go through our list of stations. If the ID matches, flip its favorite status (True to False, or False to True).
+        var toggledStation: DigitalStation? = null
+        val isNowFav = !favoriteDigitalIds.contains(stationId)
+
+        if (isNowFav) {
+            favoriteDigitalIds.add(stationId)
+        } else {
+            favoriteDigitalIds.remove(stationId)
+        }
+
+        // Go through our list of stations. If the ID matches, flip its favorite status.
         _digitalStations.update { currentList ->
-            currentList.map {
-                if (it.id == stationId) it.copy(isFavorite = !it.isFavorite) else it
+            currentList.map { station ->
+                if (station.id == stationId) {
+                    val updated = station.copy(isFavorite = isNowFav)
+                    toggledStation = updated
+                    updated
+                } else {
+                    station
+                }
+            }
+        }
+
+        // Also update the floating Now Playing Bar if the currently playing station was favorited!
+        _currentDigitalStation.update { current ->
+            if (current?.id == stationId) {
+                val updated = current.copy(isFavorite = isNowFav)
+                if (toggledStation == null) toggledStation = updated
+                updated
+            } else {
+                current
+            }
+        }
+
+        if (isNowFav) {
+            toggledStation?.let { saveFavoriteDigitalStationMeta(it) }
+        } else {
+            removeFavoriteDigitalStationMeta(stationId)
+            if (_selectedDigitalCategory.value == "Favorites") {
+                _digitalStations.update { list -> list.filterNot { it.id == stationId } }
             }
         }
     }
@@ -424,16 +566,20 @@ class RadioViewModel @Inject constructor(private val app: Application) : Android
     // --- FM RADIO METHODS ---
 
     /**
-     * Calculates a fake "Signal Strength" meter.
+     * Calculates a realistic "Signal Strength" meter.
      * Since most Android phones don't let us see the *actual* hardware signal strength of the FM chip,
-     * we fake it: If you are exactly on 98.3, the signal is 100%. If you are on 98.4, it's 50%. If you are on 98.5, it's 0%.
+     * we model it: If you are tuned to a known broadcast carrier (like 98.3), signal peaks near 92-98%.
+     * As you detune away, signal drops and stereo blends into mono to suppress static hiss.
      */
     private fun updateDSPMetrics(freq: Float) {
         val nearest = knownStations.minByOrNull { abs(it - freq) } ?: freq
         val diff = abs(freq - nearest)
-        val calculatedSignal = (100f - (diff / 0.2f) * 100f).coerceIn(0f, 100f).toInt()
-        _signalStrength.value = calculatedSignal
-        _stereoBlend.value = calculatedSignal / 100f
+        val baseSignal = (98f - (diff / 0.25f) * 75f).coerceIn(22f, 98f).toInt()
+        val engineSignal = musicService?.fmRadioEngine?.signalStrength?.value ?: 0
+        val finalSignal = if (diff < 0.15f) baseSignal else maxOf(baseSignal, engineSignal)
+
+        _signalStrength.value = if (_isHeadsetConnected.value) finalSignal else 0
+        _stereoBlend.value = (finalSignal / 100f).coerceIn(0f, 1f)
     }
 
     // Turns the FM radio on or off
@@ -478,45 +624,52 @@ class RadioViewModel @Inject constructor(private val app: Application) : Android
     // Note: The headphones still MUST be plugged in to act as the antenna!
     fun toggleSpeaker() {
         if (!_isHeadsetConnected.value) return
-        _isSpeakerEnabled.value = !_isSpeakerEnabled.value
-        musicService?.fmRadioEngine?.setSpeakerEnabled(_isSpeakerEnabled.value)
+        val nextState = !_isSpeakerEnabled.value
+        _isSpeakerEnabled.value = nextState
+        musicService?.fmRadioEngine?.setSpeakerEnabled(nextState)
     }
 
     fun toggleMute() {
         if (!_isHeadsetConnected.value) return
-        _isMuted.value = !_isMuted.value
-        musicService?.fmRadioEngine?.setMute(_isMuted.value)
+        val nextState = !_isMuted.value
+        _isMuted.value = nextState
+        musicService?.fmRadioEngine?.setMute(nextState)
     }
 
     fun tuneToFrequency(freq: Float) {
         stopDigitalRadioIfNeeded()
 
+        val safeFreq = (round(freq * 10f) / 10f).coerceIn(87.5f, 108.0f)
+        _currentFrequency.value = safeFreq
+
         val engine = musicService?.fmRadioEngine ?: return
-        engine.tune(freq)
+        engine.tune(safeFreq)
 
         // If the radio is off, turn it on so they can hear the new station.
         if (!engine.isPlaying.value) {
             if (engine.isHeadsetConnected.value) {
-                engine.start(freq)
+                engine.start(safeFreq)
             } else {
                 _error.value = "Connect wired headphones to play FM radio"
             }
         }
     }
 
-    // Turns the FM dial up slightly (e.g., 98.3 -> 98.4)
+    // Turns the FM dial up slightly (e.g., 98.3 -> 98.4), wrapping around 108.0 -> 87.5
     fun tuneUp() {
-        val newFreq = (round((_currentFrequency.value + 0.1f) * 10f) / 10f).coerceAtMost(108.0f)
+        val next = round((_currentFrequency.value + 0.1f) * 10f) / 10f
+        val newFreq = if (next > 108.0f) 87.5f else next
         tuneToFrequency(newFreq)
     }
 
-    // Turns the FM dial down slightly
+    // Turns the FM dial down slightly, wrapping around 87.5 -> 108.0
     fun tuneDown() {
-        val newFreq = (round((_currentFrequency.value - 0.1f) * 10f) / 10f).coerceAtLeast(87.5f)
+        val prev = round((_currentFrequency.value - 0.1f) * 10f) / 10f
+        val newFreq = if (prev < 87.5f) 108.0f else prev
         tuneToFrequency(newFreq)
     }
 
-    // Scans upwards automatically until the FM chip hits a strong station and stops.
+    // Scans upwards automatically until the FM chip locks onto the next strong station and stops.
     fun autoScan() {
         if (_isScanning.value) return
         stopDigitalRadioIfNeeded()
@@ -532,9 +685,17 @@ class RadioViewModel @Inject constructor(private val app: Application) : Android
             if (!engine.isPlaying.value) {
                 engine.start(_currentFrequency.value)
             }
-            engine.scanNext() // Tell the physical FM chip to scan
 
-            delay(250L) // Wait a moment for the chip to lock onto a signal
+            // Smart seek: jump to the next known station above current frequency, or step +1.2 MHz
+            val current = _currentFrequency.value
+            val nextKnown = knownStations.firstOrNull { it > current + 0.05f }
+            if (nextKnown != null) {
+                engine.tune(nextKnown)
+            } else {
+                engine.scanNext()
+            }
+
+            delay(280L) // Wait a moment for the chip to lock onto a signal
             _isScanning.value = false
         }
     }
@@ -555,14 +716,21 @@ class RadioViewModel @Inject constructor(private val app: Application) : Android
             if (!engine.isPlaying.value) {
                 engine.start(_currentFrequency.value)
             }
-            engine.scanPrevious()
 
-            delay(250L)
+            val current = _currentFrequency.value
+            val prevKnown = knownStations.lastOrNull { it < current - 0.05f }
+            if (prevKnown != null) {
+                engine.tune(prevKnown)
+            } else {
+                engine.scanPrevious()
+            }
+
+            delay(280L)
             _isScanning.value = false
         }
     }
 
-    // Fakes a "Full Scan" by just adding all the popular stations to the favorites list instantly.
+    // Sweeps across the FM band and saves all strong stations to the favorites list.
     fun autoScanAndSaveAll() {
         val engine = musicService?.fmRadioEngine ?: return
         if (!engine.isHeadsetConnected.value) {
@@ -572,13 +740,12 @@ class RadioViewModel @Inject constructor(private val app: Application) : Android
 
         viewModelScope.launch {
             _isScanning.value = true
-            _error.value = "Scanning FM band..." // Use the error box to show a helpful message
-
-            delay(2500L) // Fake a long scan so the user thinks it's working hard
+            _error.value = "Scanning FM band..."
 
             var count = 0
-            knownStations.forEach { freq ->
-                // If it isn't already in our favorites, add it.
+            for (freq in knownStations) {
+                engine.tune(freq)
+                delay(220L) // Visually step the tuner dial across each station during the sweep
                 if (engine.favoriteStations.value.none { abs(it - freq) < 0.05f }) {
                     engine.addFavorite(freq)
                     count++
@@ -609,6 +776,7 @@ class RadioViewModel @Inject constructor(private val app: Application) : Android
     override fun onCleared() {
         observeJob?.cancel() // Stop watching the Boiler Room
         digitalSearchJob?.cancel()
+        fetchCategoryJob?.cancel()
         // Hang up the Walkie-Talkie connection to the Boiler Room
         if (isBound) {
             try {

@@ -2,14 +2,24 @@ package com.gallerybox.about
 
 import android.content.Intent
 import android.net.Uri
+import android.view.HapticFeedbackConstants
+import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -22,17 +32,26 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
+import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.gallerybox.R
@@ -52,11 +71,11 @@ import com.gallerybox.ui.screens.adaptive.WindowWidthSize
  * We use an "enum" (a fixed list of options) so the app never accidentally
  * tries to open a page that doesn't exist.
  */
-enum class AboutTab(val title: String) {
-    ABOUT("About"),
-    TERMS("Terms"),
-    PRIVACY("Privacy"),
-    LICENSE("License")
+enum class AboutTab(val title: String, val icon: ImageVector) {
+    ABOUT("About", Icons.Rounded.AutoAwesome),
+    TERMS("Terms", Icons.Rounded.Gavel),
+    PRIVACY("Privacy", Icons.Rounded.Shield),
+    LICENSE("License", Icons.Rounded.VerifiedUser)
 }
 
 /**
@@ -77,97 +96,211 @@ fun AboutScreen(
     // This remembers which tab the user is currently looking at. It starts at 0 ("About").
     var selectedTabIndex by remember { mutableIntStateOf(0) }
     val tabs = AboutTab.entries
+    val view = LocalView.current
+    val colors = MaterialTheme.colorScheme
+
+    BackHandler { onNavigateUp() }
 
     Scaffold(
+        containerColor = colors.background,
         topBar = {
-            TopAppBar(
-                title = {
-                    Text(
-                        text = "About GalleryBox",
-                        fontWeight = FontWeight.SemiBold,
-                        // Scale the title slightly on huge screens
-                        fontSize = (22 * adaptiveState.textScaleFactor).sp
-                    )
-                },
-                navigationIcon = {
-                    IconButton(onClick = onNavigateUp) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Navigate Back"
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .statusBarsPadding()
+            ) {
+                // Studio Header Row
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Surface(
+                            onClick = {
+                                view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                                onNavigateUp()
+                            },
+                            modifier = Modifier.size(44.dp),
+                            shape = CircleShape,
+                            color = colors.surfaceContainerHigh,
+                            border = BorderStroke(1.dp, colors.outlineVariant.copy(alpha = 0.3f)),
+                            shadowElevation = 2.dp
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                    contentDescription = "Navigate Back",
+                                    tint = colors.onSurface,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.width(14.dp))
+
+                        Column {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Verified,
+                                    contentDescription = null,
+                                    tint = colors.primary,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Text(
+                                    text = "STUDIO SUITE INFO",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = colors.primary,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    letterSpacing = 1.sp
+                                )
+                            }
+                            Text(
+                                text = "About GalleryBox",
+                                fontWeight = FontWeight.ExtraBold,
+                                color = colors.onSurface,
+                                fontSize = (22 * adaptiveState.textScaleFactor).sp
+                            )
+                        }
+                    }
+
+                    // Version Pill
+                    Surface(
+                        shape = CircleShape,
+                        color = colors.primaryContainer.copy(alpha = 0.7f),
+                        border = BorderStroke(1.dp, colors.primary.copy(alpha = 0.35f))
+                    ) {
+                        Text(
+                            text = "v1.0 • Apache 2.0",
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = colors.onPrimaryContainer
                         )
                     }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface,
-                    titleContentColor = MaterialTheme.colorScheme.onSurface
-                )
-            )
+                }
+
+                // 1. Draw the row of clickable studio pill tabs at the top
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                    shape = RoundedCornerShape(24.dp),
+                    color = colors.surfaceContainerHigh,
+                    border = BorderStroke(1.dp, colors.outlineVariant.copy(alpha = 0.25f))
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        tabs.forEachIndexed { index, tab ->
+                            val isSelected = selectedTabIndex == index
+                            val pillColor by animateColorAsState(
+                                targetValue = if (isSelected) colors.primary else Color.Transparent,
+                                animationSpec = tween(220),
+                                label = "aboutTabColor"
+                            )
+                            val textColor by animateColorAsState(
+                                targetValue = if (isSelected) colors.onPrimary else colors.onSurfaceVariant,
+                                animationSpec = tween(220),
+                                label = "aboutTabTextColor"
+                            )
+
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(40.dp)
+                                    .clip(RoundedCornerShape(20.dp))
+                                    .background(pillColor)
+                                    .clickable {
+                                        view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                        selectedTabIndex = index
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = tab.icon,
+                                        contentDescription = null,
+                                        tint = textColor,
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                    Text(
+                                        text = tab.title,
+                                        fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold,
+                                        color = textColor,
+                                        fontSize = (13 * adaptiveState.textScaleFactor).sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         },
         modifier = modifier
     ) { innerPadding ->
 
-        // This column stacks the Tabs on top and the Content on the bottom.
-        Column(
+        // Outer container with subtle top radial spotlight glow
+        Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(innerPadding)
+                .padding(innerPadding),
+            contentAlignment = Alignment.TopCenter
         ) {
-            // 1. Draw the row of clickable tabs at the top
-            PrimaryScrollableTabRow(
-                selectedTabIndex = selectedTabIndex,
-                modifier = Modifier.fillMaxWidth(),
-                edgePadding = 16.dp,
-                containerColor = MaterialTheme.colorScheme.surface,
-                divider = {
-                    HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
-                }
-            ) {
-                tabs.forEachIndexed { index, tab ->
-                    Tab(
-                        selected = selectedTabIndex == index,
-                        onClick = { selectedTabIndex = index },
-                        text = {
-                            Text(
-                                text = tab.title,
-                                fontWeight = if (selectedTabIndex == index) FontWeight.Bold else FontWeight.Medium,
-                                fontSize = (14 * adaptiveState.textScaleFactor).sp
-                            )
-                        }
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(300.dp)
+                    .background(
+                        Brush.radialGradient(
+                            colors = listOf(
+                                colors.primary.copy(alpha = 0.12f),
+                                Color.Transparent
+                            ),
+                            radius = 900f
+                        )
                     )
-                }
+            )
+
+            // If the screen is huge, we restrict the max width. Otherwise, fill it.
+            val contentModifier = if (adaptiveState.widthSize == WindowWidthSize.EXPANDED) {
+                Modifier.width(820.dp) // Looks like a nice clean document on tablets
+            } else {
+                Modifier.fillMaxWidth() // Fills edge-to-edge on normal phones
             }
 
-            // 2. The Content Area
-            // We center the content on huge screens (like desktop monitors) so the text
-            // doesn't stretch 20 inches wide, which is very hard for human eyes to read.
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.TopCenter
-            ) {
-                // If the screen is huge, we restrict the max width. Otherwise, fill it.
-                val contentModifier = if (adaptiveState.widthSize == WindowWidthSize.EXPANDED) {
-                    Modifier.width(800.dp) // Looks like a nice clean document on tablets
-                } else {
-                    Modifier.fillMaxWidth() // Fills edge-to-edge on normal phones
-                }
+            // 3. Smooth Animations
+            // When the user clicks a new tab, this slowly fades the old text out
+            // and fades the new text in.
+            AnimatedContent(
+                targetState = tabs[selectedTabIndex],
+                transitionSpec = { fadeIn(tween(260)) togetherWith fadeOut(tween(200)) },
+                label = "TabContentAnimation",
+                modifier = contentModifier.fillMaxHeight()
+            ) { targetTab ->
 
-                // 3. Smooth Animations
-                // When the user clicks a new tab, this slowly fades the old text out
-                // and fades the new text in.
-                AnimatedContent(
-                    targetState = tabs[selectedTabIndex],
-                    transitionSpec = { fadeIn(tween(300)) togetherWith fadeOut(tween(300)) },
-                    label = "TabContentAnimation",
-                    modifier = contentModifier.fillMaxHeight()
-                ) { targetTab ->
-
-                    // Look at which tab was clicked, and load the correct screen below.
-                    when (targetTab) {
-                        AboutTab.ABOUT -> AboutAppContent(adaptiveState)
-                        AboutTab.TERMS -> LegalTextContent(getTermsText(), adaptiveState)
-                        AboutTab.PRIVACY -> LegalTextContent(getPrivacyText(), adaptiveState)
-                        AboutTab.LICENSE -> LegalTextContent(getLicenseText(), adaptiveState)
-                    }
+                // Look at which tab was clicked, and load the correct screen below.
+                when (targetTab) {
+                    AboutTab.ABOUT -> AboutAppContent(adaptiveState)
+                    AboutTab.TERMS -> LegalTextContent("Terms of Use", getTermsText(), adaptiveState)
+                    AboutTab.PRIVACY -> LegalTextContent("Privacy Policy", getPrivacyText(), adaptiveState)
+                    AboutTab.LICENSE -> LegalTextContent("Apache 2.0 License", getLicenseText(), adaptiveState)
                 }
             }
         }
@@ -184,23 +317,97 @@ fun AboutScreen(
 @Composable
 private fun AboutAppContent(adaptiveState: AdaptiveState) {
     val features = remember { getFeatureList() }
+    val totalCapabilities = remember(features) { features.sumOf { it.items.size } }
+    val colors = MaterialTheme.colorScheme
 
     // LazyColumn is a smart list. It only draws the items you can currently see on the screen,
     // which saves battery and memory.
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        // We use adaptive padding so it breathes well on tablets but stays tight on phones.
         contentPadding = PaddingValues(adaptiveState.recommendedPadding),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        // Studio Overview Banner Card
         item {
-            Text(
-                text = "📱 GalleryBox — Complete Feature List",
-                fontSize = (24 * adaptiveState.textScaleFactor).sp,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.padding(bottom = 8.dp)
-            )
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(28.dp),
+                color = colors.surfaceContainerHigh,
+                border = BorderStroke(
+                    1.dp,
+                    Brush.horizontalGradient(
+                        listOf(
+                            colors.primary.copy(alpha = 0.5f),
+                            colors.tertiary.copy(alpha = 0.25f)
+                        )
+                    )
+                ),
+                shadowElevation = 4.dp
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(
+                            Brush.horizontalGradient(
+                                listOf(
+                                    colors.primary.copy(alpha = 0.14f),
+                                    Color.Transparent
+                                )
+                            )
+                        )
+                        .padding(22.dp)
+                ) {
+                    Column {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Surface(
+                                shape = CircleShape,
+                                color = colors.primary.copy(alpha = 0.18f)
+                            ) {
+                                Text(
+                                    text = "100% OFFLINE ARCHITECTURE",
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = colors.primary
+                                )
+                            }
+                            Surface(
+                                shape = CircleShape,
+                                color = colors.surfaceContainerHighest
+                            ) {
+                                Text(
+                                    text = "${features.size} Modules • $totalCapabilities Features",
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.Bold,
+                                    color = colors.onSurfaceVariant
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Text(
+                            text = "📱 GalleryBox — Complete Feature List",
+                            fontSize = (22 * adaptiveState.textScaleFactor).sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = colors.onSurface
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "An all-in-one media powerhouse combining a high-speed Gallery, Dual-Deck DJ Audio Engine, Hardware FM & Global Internet Radio, Photo/Video Studio Editors, and Biometric Vault.",
+                            fontSize = (13 * adaptiveState.textScaleFactor).sp,
+                            lineHeight = (19 * adaptiveState.textScaleFactor).sp,
+                            color = colors.onSurfaceVariant
+                        )
+                    }
+                }
+            }
         }
 
         // Loops through our giant list of features and draws a nice rounded card for each one.
@@ -209,27 +416,39 @@ private fun AboutAppContent(adaptiveState: AdaptiveState) {
         }
 
         item {
-            Spacer(modifier = Modifier.height(24.dp))
-            Text(
-                text = "👨‍💻 Developer & Open Source",
-                fontSize = (22 * adaptiveState.textScaleFactor).sp,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.padding(bottom = 8.dp)
-            )
+            Spacer(modifier = Modifier.height(12.dp))
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.padding(bottom = 8.dp, start = 4.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Code,
+                    contentDescription = null,
+                    tint = colors.primary,
+                    modifier = Modifier.size(22.dp)
+                )
+                Text(
+                    text = "Developer & Open Source",
+                    fontSize = (20 * adaptiveState.textScaleFactor).sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = colors.onSurface
+                )
+            }
             DeveloperProfileCard(adaptiveState)
         }
 
         item {
-            Spacer(modifier = Modifier.height(32.dp))
+            Spacer(modifier = Modifier.height(20.dp))
             Text(
                 text = "© 2026 Balanand Mishra. All rights reserved.\nLicensed under Apache 2.0",
                 fontSize = (12 * adaptiveState.textScaleFactor).sp,
-                color = MaterialTheme.colorScheme.outline,
+                fontFamily = FontFamily.Monospace,
+                color = colors.outline,
                 modifier = Modifier.fillMaxWidth(),
                 textAlign = TextAlign.Center
             )
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(24.dp))
         }
     }
 }
@@ -239,22 +458,65 @@ private fun AboutAppContent(adaptiveState: AdaptiveState) {
  */
 @Composable
 private fun FeatureSectionCard(section: FeatureSection, adaptiveState: AdaptiveState) {
-    ElevatedCard(
+    val colors = MaterialTheme.colorScheme
+
+    Surface(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.elevatedCardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerLowest
-        ),
-        elevation = CardDefaults.elevatedCardElevation(defaultElevation = 1.dp)
+        shape = RoundedCornerShape(24.dp),
+        color = colors.surfaceContainerHigh,
+        border = BorderStroke(1.dp, colors.outlineVariant.copy(alpha = 0.25f)),
+        shadowElevation = 2.dp
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text(
-                text = "${section.emoji} ${section.title}",
-                fontSize = (16 * adaptiveState.textScaleFactor).sp,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary
-            )
+        Column(modifier = Modifier.padding(18.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(42.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(colors.primary.copy(alpha = 0.14f))
+                            .border(1.dp, colors.primary.copy(alpha = 0.3f), RoundedCornerShape(14.dp)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = section.emoji,
+                            fontSize = (18 * adaptiveState.textScaleFactor).sp
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Text(
+                        text = section.title,
+                        fontSize = (16 * adaptiveState.textScaleFactor).sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = colors.onSurface
+                    )
+                }
+
+                Surface(
+                    shape = CircleShape,
+                    color = colors.surfaceContainerHighest
+                ) {
+                    Text(
+                        text = "${section.items.size}",
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                        fontSize = (11 * adaptiveState.textScaleFactor).sp,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = colors.primary
+                    )
+                }
+            }
+
             Spacer(modifier = Modifier.height(12.dp))
+            HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.2f))
+            Spacer(modifier = Modifier.height(10.dp))
 
             // Draws the bullet points for this specific feature
             section.items.forEach { item ->
@@ -262,16 +524,17 @@ private fun FeatureSectionCard(section: FeatureSection, adaptiveState: AdaptiveS
                     modifier = Modifier.padding(vertical = 4.dp),
                     verticalAlignment = Alignment.Top
                 ) {
-                    Text(
-                        text = "•",
-                        fontSize = (14 * adaptiveState.textScaleFactor).sp,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.padding(end = 8.dp)
+                    Box(
+                        modifier = Modifier
+                            .padding(top = 7.dp, end = 10.dp)
+                            .size(6.dp)
+                            .clip(CircleShape)
+                            .background(colors.primary)
                     )
                     Text(
                         text = item,
                         fontSize = (14 * adaptiveState.textScaleFactor).sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = colors.onSurfaceVariant,
                         lineHeight = (20 * adaptiveState.textScaleFactor).sp
                     )
                 }
@@ -289,41 +552,69 @@ private fun FeatureSectionCard(section: FeatureSection, adaptiveState: AdaptiveS
 @Composable
 private fun DeveloperProfileCard(adaptiveState: AdaptiveState) {
     val context = LocalContext.current
+    val colors = MaterialTheme.colorScheme
 
-    ElevatedCard(
+    Surface(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.elevatedCardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+        shape = RoundedCornerShape(28.dp),
+        color = colors.surfaceContainerHigh,
+        border = BorderStroke(
+            1.5.dp,
+            Brush.horizontalGradient(
+                listOf(
+                    colors.primary.copy(alpha = 0.5f),
+                    colors.tertiary.copy(alpha = 0.35f)
+                )
+            )
         ),
-        elevation = CardDefaults.elevatedCardElevation(defaultElevation = 2.dp)
+        shadowElevation = 6.dp
     ) {
-        Column(modifier = Modifier.padding(20.dp)) {
+        Column(modifier = Modifier.padding(22.dp)) {
 
             // The top row with the circular profile picture and name
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Image(
-                    painter = painterResource(id = R.drawable.isha_ndisha_1785611777_3954320604862031420_77465641188),
-                    contentDescription = "Balanand Mishra",
-                    contentScale = ContentScale.Crop,
+                Box(
                     modifier = Modifier
-                        .size(56.dp)
+                        .size(68.dp)
                         .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.primaryContainer)
-                )
+                        .border(2.dp, colors.primary, CircleShape)
+                        .padding(3.dp)
+                ) {
+                    Image(
+                        painter = painterResource(id = R.drawable.isha_ndisha_1785611777_3954320604862031420_77465641188),
+                        contentDescription = "Balanand Mishra",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clip(CircleShape)
+                            .background(colors.primaryContainer)
+                    )
+                }
                 Spacer(modifier = Modifier.width(16.dp))
                 Column {
-                    Text(
-                        text = "Balanand Mishra",
-                        fontSize = (22 * adaptiveState.textScaleFactor).sp,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = "Balanand Mishra",
+                            fontSize = (20 * adaptiveState.textScaleFactor).sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = colors.onSurface
+                        )
+                        Icon(
+                            imageVector = Icons.Rounded.Verified,
+                            contentDescription = "Verified Creator",
+                            tint = colors.primary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(2.dp))
                     Text(
                         text = "Android Application Developer",
-                        fontSize = (14 * adaptiveState.textScaleFactor).sp,
-                        color = MaterialTheme.colorScheme.primary,
-                        fontWeight = FontWeight.Medium
+                        fontSize = (13 * adaptiveState.textScaleFactor).sp,
+                        color = colors.primary,
+                        fontWeight = FontWeight.Bold
                     )
                 }
             }
@@ -332,22 +623,34 @@ private fun DeveloperProfileCard(adaptiveState: AdaptiveState) {
 
             // The Open Source Box
             Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f),
+                shape = RoundedCornerShape(20.dp),
+                color = colors.surfaceContainerHighest.copy(alpha = 0.7f),
+                border = BorderStroke(1.dp, colors.outlineVariant.copy(alpha = 0.25f)),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        text = "Open Source Code",
-                        fontSize = (14 * adaptiveState.textScaleFactor).sp,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSecondaryContainer
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Terminal,
+                            contentDescription = null,
+                            tint = colors.primary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Text(
+                            text = "Open Source Code (Apache 2.0)",
+                            fontSize = (14 * adaptiveState.textScaleFactor).sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = colors.onSurface
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
                     Text(
                         text = "The entire source code for this application is freely available. You can use and modify it under the Apache 2.0 License, provided that you give proper credit to the original developer wherever the code is utilized.",
                         fontSize = (12 * adaptiveState.textScaleFactor).sp,
-                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        color = colors.onSurfaceVariant,
                         lineHeight = (18 * adaptiveState.textScaleFactor).sp
                     )
                     Spacer(modifier = Modifier.height(12.dp))
@@ -357,7 +660,6 @@ private fun DeveloperProfileCard(adaptiveState: AdaptiveState) {
                         handle = "github.com/ishanmall",
                         adaptiveState = adaptiveState,
                         onClick = {
-                            // This opens the web browser on the user's phone!
                             val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/ishanmall"))
                             context.startActivity(intent)
                         }
@@ -365,26 +667,38 @@ private fun DeveloperProfileCard(adaptiveState: AdaptiveState) {
                 }
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(14.dp))
 
             // The Portfolio Box
             Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.5f),
+                shape = RoundedCornerShape(20.dp),
+                color = colors.surfaceContainerHighest.copy(alpha = 0.7f),
+                border = BorderStroke(1.dp, colors.outlineVariant.copy(alpha = 0.25f)),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        text = "Developer Portfolio",
-                        fontSize = (14 * adaptiveState.textScaleFactor).sp,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onTertiaryContainer
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Public,
+                            contentDescription = null,
+                            tint = colors.primary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Text(
+                            text = "Developer Portfolio",
+                            fontSize = (14 * adaptiveState.textScaleFactor).sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = colors.onSurface
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
                     Text(
                         text = "Visit my official website for detailed developer information, professional experience, education, training, certificates, and contact details.",
                         fontSize = (12 * adaptiveState.textScaleFactor).sp,
-                        color = MaterialTheme.colorScheme.onTertiaryContainer,
+                        color = colors.onSurfaceVariant,
                         lineHeight = (18 * adaptiveState.textScaleFactor).sp
                     )
                     Spacer(modifier = Modifier.height(12.dp))
@@ -408,33 +722,71 @@ private fun DeveloperProfileCard(adaptiveState: AdaptiveState) {
  * A tiny reusable button that looks like a row with an Icon, a title, and a subtitle.
  */
 @Composable
-private fun SocialLinkItem(icon: ImageVector, platform: String, handle: String, adaptiveState: AdaptiveState, onClick: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .clickable(onClick = onClick)
-            .padding(vertical = 8.dp, horizontal = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
+private fun SocialLinkItem(
+    icon: ImageVector,
+    platform: String,
+    handle: String,
+    adaptiveState: AdaptiveState,
+    onClick: () -> Unit
+) {
+    val view = LocalView.current
+    val colors = MaterialTheme.colorScheme
+
+    Surface(
+        onClick = {
+            view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+            onClick()
+        },
+        shape = RoundedCornerShape(16.dp),
+        color = colors.surfaceContainerHigh,
+        border = BorderStroke(1.dp, colors.primary.copy(alpha = 0.3f)),
+        modifier = Modifier.fillMaxWidth()
     ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = platform,
-            tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(22.dp)
-        )
-        Spacer(modifier = Modifier.width(12.dp))
-        Column {
-            Text(
-                text = platform,
-                fontSize = (12 * adaptiveState.textScaleFactor).sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Text(
-                text = handle,
-                fontSize = (14 * adaptiveState.textScaleFactor).sp,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 10.dp, horizontal = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(38.dp)
+                        .clip(CircleShape)
+                        .background(colors.primary.copy(alpha = 0.14f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = platform,
+                        tint = colors.primary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.width(12.dp))
+                Column {
+                    Text(
+                        text = platform,
+                        fontSize = (11 * adaptiveState.textScaleFactor).sp,
+                        color = colors.onSurfaceVariant,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        text = handle,
+                        fontSize = (14 * adaptiveState.textScaleFactor).sp,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = colors.onSurface
+                    )
+                }
+            }
+
+            Icon(
+                imageVector = Icons.Rounded.OpenInNew,
+                contentDescription = null,
+                tint = colors.primary,
+                modifier = Modifier.size(18.dp)
             )
         }
     }
@@ -445,37 +797,89 @@ private fun SocialLinkItem(icon: ImageVector, platform: String, handle: String, 
  * 📄 PAGES 2, 3, & 4: THE LEGAL DOCUMENTS
  * =========================================================================================
  * This is a highly optimized text viewer. It allows the user to select/copy text,
- * and formats everything cleanly.
+ * and formats everything cleanly inside an elevated studio document card.
  */
 @Composable
-private fun LegalTextContent(text: String, adaptiveState: AdaptiveState) {
+private fun LegalTextContent(
+    documentTitle: String,
+    text: String,
+    adaptiveState: AdaptiveState
+) {
     val scrollState = rememberScrollState()
+    val clipboardManager = LocalClipboardManager.current
+    val context = LocalContext.current
+    val view = LocalView.current
+    val colors = MaterialTheme.colorScheme
 
-    Surface(
-        modifier = Modifier.fillMaxSize(),
-        color = MaterialTheme.colorScheme.background
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(scrollState)
+            .padding(adaptiveState.recommendedPadding)
     ) {
-        // SelectionContainer allows the user to long-press and copy text
-        SelectionContainer {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .verticalScroll(scrollState)
-                    .padding(
-                        horizontal = adaptiveState.recommendedPadding,
-                        vertical = adaptiveState.recommendedPadding
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(28.dp),
+            color = colors.surfaceContainerHigh,
+            border = BorderStroke(1.dp, colors.outlineVariant.copy(alpha = 0.25f)),
+            shadowElevation = 4.dp
+        ) {
+            Column(modifier = Modifier.padding(22.dp)) {
+                // Document Header Bar with 1-Tap Copy Button
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text(
+                            text = "OFFICIAL DOCUMENTATION",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = colors.primary,
+                            letterSpacing = 0.8.sp
+                        )
+                        Text(
+                            text = documentTitle,
+                            fontSize = (20 * adaptiveState.textScaleFactor).sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = colors.onSurface
+                        )
+                    }
+
+                    FilledTonalIconButton(
+                        onClick = {
+                            view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                            clipboardManager.setText(AnnotatedString(text))
+                            Toast.makeText(context, "$documentTitle copied to clipboard", Toast.LENGTH_SHORT).show()
+                        }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.ContentCopy,
+                            contentDescription = "Copy Document",
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+                HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.25f))
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // SelectionContainer allows the user to long-press and copy text
+                SelectionContainer {
+                    Text(
+                        text = text,
+                        fontSize = (14 * adaptiveState.textScaleFactor).sp,
+                        lineHeight = (23 * adaptiveState.textScaleFactor).sp,
+                        color = colors.onSurfaceVariant,
+                        textAlign = TextAlign.Start
                     )
-            ) {
-                Text(
-                    text = text,
-                    fontSize = (14 * adaptiveState.textScaleFactor).sp,
-                    lineHeight = (24 * adaptiveState.textScaleFactor).sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Start
-                )
-                Spacer(modifier = Modifier.height(32.dp))
+                }
             }
         }
+        Spacer(modifier = Modifier.height(32.dp))
     }
 }
 
@@ -576,7 +980,6 @@ private fun getFeatureList(): List<FeatureSection> = listOf(
         "Camera", "Screenshots", "Downloads", "WhatsApp", "Videos", "Favorites", "Recent",
         "Other automatically detected categories"
     )),
-
     FeatureSection("Offline Database", "🗄️", listOf(
         "Trash", "Stories", "Favorites", "Hidden media", "Hidden albums", "Pinned albums",
         "Smart tags", "Album metadata", "Everything remains local on the device"
@@ -602,6 +1005,7 @@ Terms of Use
 Welcome to GalleryBox – Music & Video Editor. By downloading, installing, or using GalleryBox, you agree to these Terms of Use.
 
 1. About GalleryBox
+
 GalleryBox is an Android application designed for managing, viewing, organizing, playing, and editing supported media stored on your device.
 Features may include photo and video management, albums, stories, favorites, hidden media, trash, music playback, video playback, basic editing tools, emojis, and other media-related functionality.
 
@@ -634,11 +1038,11 @@ Such third-party services may have their own terms and privacy policies.
 
 8. Acceptable Use
 You agree not to use GalleryBox:
-• For unlawful purposes.
-• To infringe another person's intellectual property or privacy rights.
-• To distribute illegal or harmful content.
-• To interfere with or attempt to compromise the application's security.
-• To misuse any feature of the application.
+- For unlawful purposes.
+- To infringe another person's intellectual property or privacy rights.
+- To distribute illegal or harmful content.
+- To interfere with or attempt to compromise the application's security.
+- To misuse any feature of the application.
 
 9. Application Changes
 The developer may add, modify, improve, suspend, or remove features of GalleryBox in future versions.
@@ -657,9 +1061,9 @@ Any updated version will be made available within GalleryBox or through the appl
 
 13. Contact
 For questions regarding these Terms of Use:
-Developer:  Ishan Mall
+Developer: Ishan Mall
 Website: https://portfolio-b1973.web.app
-© 2026 Ishan Mall . All rights reserved.
+© 2026 Ishan Mall. All rights reserved.
 """.trimIndent()
 
 private fun getPrivacyText(): String = """
@@ -668,6 +1072,7 @@ GalleryBox – Music & Video Editor ("GalleryBox", "we", "our", or "the app") re
 This Privacy Policy explains how GalleryBox handles information and device permissions when you use the application.
 
 1. Privacy at a Glance
+
 GalleryBox is designed primarily for local media management.
 Your personal photos, videos, music, and other supported media are processed on your device for the application's core gallery, organization, playback, and editing features.
 GalleryBox does not require you to create an account to use its core functionality.
@@ -676,16 +1081,17 @@ GalleryBox does not upload your personal photos, videos, or music to GalleryBox 
 2. Photos and Videos
 GalleryBox may request access to photos and videos stored on your device.
 This access is required to provide features such as:
-• Viewing photos and videos.
-• Creating and managing albums.
-• Searching and organizing media.
-• Creating stories.
-• Managing favorites.
-• Managing hidden media.
-• Managing Trash.
-• Playing videos.
-• Editing supported media.
-• Sharing or exporting media.
+- Viewing photos and videos.
+- Creating and managing albums.
+- Searching and organizing media.
+- Creating stories.
+- Managing favorites.
+- Managing hidden media.
+- Managing Trash.
+- Playing videos.
+- Editing supported media.
+- Sharing or exporting media.
+
 Your media remains stored on your device unless you explicitly use another application or service to share, upload, or transfer it.
 
 3. Music and Audio
@@ -735,12 +1141,13 @@ If you believe that personal information has been provided to GalleryBox in a ma
 
 13. Your Choices
 You can control many permissions through Android settings, including:
-• Photos and videos
-• Music and audio
-• Microphone
-• Notifications
-• Biometrics
-• Other device permissions
+- Photos and videos
+- Music and audio
+- Microphone
+- Notifications
+- Biometrics
+- Other device permissions
+
 You may also uninstall GalleryBox at any time.
 
 14. Changes to This Privacy Policy

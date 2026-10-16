@@ -18,8 +18,8 @@ import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.media.AudioManager
 import android.media.MediaMetadataRetriever
-import android.os.Build
 import android.net.Uri
+import android.os.Build
 import android.provider.Settings
 import android.util.LruCache
 import android.util.Rational
@@ -30,6 +30,7 @@ import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -49,11 +50,11 @@ import androidx.compose.material.icons.outlined.*
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -65,6 +66,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -76,11 +79,6 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.ui.zIndex
 import androidx.core.app.PictureInPictureModeChangedInfo
 import androidx.core.net.toUri
@@ -94,19 +92,17 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.media3.common.*
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.gallerybox.viewmodel.GalleryViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.flow.debounce
-import kotlin.math.roundToInt
 import java.util.Locale
+import kotlin.math.roundToInt
 
 // ---------------------------------------------------------------------------
 // 🧠 ADAPTIVE LOGIC IMPORTS
@@ -279,11 +275,11 @@ fun ScaleButton(onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boo
         val am = context.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
         val mi = android.app.ActivityManager.MemoryInfo()
         am.getMemoryInfo(mi)
-        (mi.totalMem / (1024.0 * 1024 * 1024)) <= 3.0
+        (mi.totalMem / (1024.0 * 1024.0 * 1024.0)) <= 3.0
     }
     val animSpec: AnimationSpec<Float> = if (isLowEnd) tween(90) else spring(dampingRatio = Spring.DampingRatioMediumBouncy)
 
-    val scale by animateFloatAsState(if (pressed && enabled) 0.92f else 1.0f, animationSpec = animSpec, label = "scale")
+    val scale by animateFloatAsState(if (pressed && enabled) 0.90f else 1.0f, animationSpec = animSpec, label = "scale")
 
     Box(
         modifier = modifier
@@ -537,6 +533,7 @@ fun VideoPlayerContent(
         {
             gestureState.seekPosition = it
             gestureState.isSeeking = true
+            gestureState.gestureText = formatTime((it / 1000f).roundToInt() * 1000L)
             resetControlsTimer()
         }
     }
@@ -567,7 +564,14 @@ fun VideoPlayerContent(
         {
             val modes = PremiumResizeMode.entries.toTypedArray()
             resizeMode = modes[(resizeMode.ordinal + 1) % modes.size]
-            resizeModeToast = resizeMode.name.replace("_", " ")
+            resizeModeToast = when (resizeMode) {
+                PremiumResizeMode.FIT -> "Fit to screen"
+                PremiumResizeMode.ZOOM -> "Crop to fill"
+                PremiumResizeMode.FILL -> "Stretch to fill"
+                PremiumResizeMode.STRETCH -> "Stretch"
+                PremiumResizeMode.RATIO_16_9 -> "16 : 9"
+                PremiumResizeMode.RATIO_4_3 -> "4 : 3"
+            }
             resetControlsTimer()
         }
     }
@@ -628,7 +632,7 @@ fun VideoPlayerContent(
                     )
                 }
 
-                Box(modifier = Modifier.weight(1f).fillMaxWidth().background(Color.Black)) {
+                Box(modifier = Modifier.weight(1f).fillMaxWidth().background(Color(0xFF0A0A0C))) {
                     VideoBottomControls(
                         isPlaying = isPlaying,
                         playbackState = playbackState,
@@ -664,20 +668,23 @@ fun VideoPlayerContent(
                 },
                 update = { viewParams ->
                     if (viewParams.player != player) viewParams.player = player
-                    viewParams.resizeMode = when(resizeMode) {
+                    viewParams.resizeMode = when (resizeMode) {
                         PremiumResizeMode.FIT -> AspectRatioFrameLayout.RESIZE_MODE_FIT
                         PremiumResizeMode.ZOOM -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
                         PremiumResizeMode.FILL, PremiumResizeMode.STRETCH -> AspectRatioFrameLayout.RESIZE_MODE_FILL
                         else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
                     }
                 },
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier
+                    .fillMaxSize()
                     .then(if (isMirrored) Modifier.graphicsLayer { scaleX = -1f } else Modifier)
-                    .then(when(resizeMode){
-                        PremiumResizeMode.RATIO_16_9 -> Modifier.aspectRatio(16f/9f)
-                        PremiumResizeMode.RATIO_4_3 -> Modifier.aspectRatio(4f/3f)
-                        else -> Modifier
-                    })
+                    .then(
+                        when (resizeMode) {
+                            PremiumResizeMode.RATIO_16_9 -> Modifier.aspectRatio(16f / 9f)
+                            PremiumResizeMode.RATIO_4_3 -> Modifier.aspectRatio(4f / 3f)
+                            else -> Modifier
+                        }
+                    )
                     .pointerInput(isLocked, configuration.orientation) {
                         if (isLocked) {
                             detectTapGestures(
@@ -734,7 +741,10 @@ fun VideoPlayerContent(
                                     doubleTapAlignment = Alignment.CenterEnd
                                 }
                                 doubleTapJob?.cancel()
-                                doubleTapJob = scope.launch { delay(600); showDoubleTapText = "" }
+                                doubleTapJob = scope.launch {
+                                    delay(600)
+                                    showDoubleTapText = ""
+                                }
                             }
                         )
                     }
@@ -764,68 +774,175 @@ fun VideoPlayerContent(
                     }
             )
 
+            // --- SAMSUNG ONE UI VOLUME HUD (Right Edge) ---
             AnimatedVisibility(
                 visible = gestureState.showVolume,
-                enter = fadeIn(),
-                exit = fadeOut(),
-                modifier = Modifier.align(Alignment.CenterEnd).padding(end = 32.dp)
+                enter = fadeIn(tween(150)) + slideInHorizontally(initialOffsetX = { it / 2 }),
+                exit = fadeOut(tween(180)) + slideOutHorizontally(targetOffsetX = { it / 2 }),
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .padding(end = 28.dp)
             ) {
-                VolumeBrightnessBar(value = gestureState.volume, icon = Icons.Rounded.VolumeUp)
+                val volIcon = when {
+                    gestureState.volume <= 0.01f -> Icons.Rounded.VolumeOff
+                    gestureState.volume < 0.5f -> Icons.Rounded.VolumeDown
+                    else -> Icons.Rounded.VolumeUp
+                }
+                VolumeBrightnessBar(value = gestureState.volume, icon = volIcon)
             }
 
+            // --- SAMSUNG ONE UI BRIGHTNESS HUD (Left Edge) ---
             AnimatedVisibility(
                 visible = gestureState.showBrightness,
-                enter = fadeIn(),
-                exit = fadeOut(),
-                modifier = Modifier.align(Alignment.CenterStart).padding(start = 32.dp)
+                enter = fadeIn(tween(150)) + slideInHorizontally(initialOffsetX = { -it / 2 }),
+                exit = fadeOut(tween(180)) + slideOutHorizontally(targetOffsetX = { -it / 2 }),
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .padding(start = 28.dp)
             ) {
-                VolumeBrightnessBar(value = gestureState.brightness, icon = Icons.Rounded.BrightnessMedium)
+                VolumeBrightnessBar(value = gestureState.brightness, icon = Icons.Rounded.WbSunny)
             }
 
+            // --- DOUBLE-TAP SEEK OVERLAY ---
             AnimatedVisibility(
                 visible = showDoubleTapText.isNotEmpty(),
-                enter = scaleIn(initialScale = 0.8f) + fadeIn(),
-                exit = scaleOut(targetScale = 0.8f) + fadeOut(),
-                modifier = Modifier.align(doubleTapAlignment).padding(horizontal = 48.dp)
+                enter = scaleIn(initialScale = 0.82f, animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy)) + fadeIn(tween(120)),
+                exit = scaleOut(targetScale = 0.88f, animationSpec = tween(150)) + fadeOut(tween(150)),
+                modifier = Modifier
+                    .align(doubleTapAlignment)
+                    .padding(horizontal = 44.dp)
             ) {
-                Surface(color = Color.Black.copy(0.6f), shape = RoundedCornerShape(24.dp)) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp)) {
-                        Icon(if (doubleTapForward) Icons.Rounded.FastForward else Icons.Rounded.FastRewind, contentDescription = null, tint = Color.White)
-                        Text(showDoubleTapText, color = Color.White, fontWeight = FontWeight.Bold)
+                Surface(
+                    color = Color(0xCC121318),
+                    shape = RoundedCornerShape(28.dp),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.16f)),
+                    shadowElevation = 12.dp
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.padding(horizontal = 26.dp, vertical = 14.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (doubleTapForward) Icons.Rounded.FastForward else Icons.Rounded.FastRewind,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(28.dp)
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = showDoubleTapText,
+                            color = Color.White,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 15.sp,
+                            letterSpacing = 0.3.sp
+                        )
                     }
                 }
             }
 
-            AnimatedVisibility(visible = resizeModeToast.isNotEmpty(), enter = fadeIn(), exit = fadeOut(), modifier = Modifier.align(Alignment.Center)) {
-                Surface(color = Color.Black.copy(0.6f), shape = RoundedCornerShape(24.dp)) {
-                    Text(resizeModeToast, color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp))
+            // --- ASPECT RATIO HUD PILL ---
+            AnimatedVisibility(
+                visible = resizeModeToast.isNotEmpty(),
+                enter = scaleIn(initialScale = 0.9f) + fadeIn(tween(150)),
+                exit = scaleOut(targetScale = 0.9f) + fadeOut(tween(180)),
+                modifier = Modifier.align(Alignment.Center)
+            ) {
+                Surface(
+                    color = Color(0xD9101116),
+                    shape = CircleShape,
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.18f)),
+                    shadowElevation = 10.dp
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(horizontal = 22.dp, vertical = 12.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.AspectRatio,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            text = resizeModeToast,
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 15.sp,
+                            letterSpacing = 0.4.sp
+                        )
+                    }
                 }
             }
 
-            AnimatedVisibility(visible = isLongPressing && isPlaying, enter = fadeIn() + scaleIn(), exit = fadeOut() + scaleOut(), modifier = Modifier.align(Alignment.TopCenter).padding(top = 100.dp)) {
-                Surface(color = Color.Black.copy(0.6f), shape = CircleShape) {
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-                        Icon(Icons.Rounded.Bolt, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("2×", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            // --- LONG-PRESS 2X SPEED BADGE ---
+            AnimatedVisibility(
+                visible = isLongPressing && isPlaying,
+                enter = fadeIn(tween(140)) + scaleIn(initialScale = 0.85f),
+                exit = fadeOut(tween(140)) + scaleOut(targetScale = 0.85f),
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .statusBarsPadding()
+                    .padding(top = 78.dp)
+            ) {
+                Surface(
+                    color = Color(0xD9101116),
+                    shape = CircleShape,
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.20f)),
+                    shadowElevation = 8.dp
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.FastForward,
+                            contentDescription = null,
+                            tint = Color(0xFFFFD54F),
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = "${(playbackSpeed * 2f).coerceAtMost(8f)}× Speed",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp,
+                            letterSpacing = 0.3.sp
+                        )
                     }
                 }
             }
 
             if (!isInPiPMode) {
-                val currentTitle = player.currentMediaItem?.mediaMetadata?.displayTitle?.toString() ?: player.currentMediaItem?.mediaMetadata?.title?.toString() ?: currentVideoUri?.substringAfterLast("/") ?: "Video"
+                val currentTitle = player.currentMediaItem?.mediaMetadata?.displayTitle?.toString()
+                    ?: player.currentMediaItem?.mediaMetadata?.title?.toString()
+                    ?: currentVideoUri?.substringAfterLast("/")
+                    ?: "Video"
 
-                AnimatedVisibility(visible = showControls && !isLocked && !showSettingsMenu, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.align(Alignment.TopCenter)) {
+                AnimatedVisibility(
+                    visible = showControls && !isLocked && !showSettingsMenu,
+                    enter = fadeIn(tween(180)) + slideInVertically(initialOffsetY = { -it / 3 }),
+                    exit = fadeOut(tween(180)) + slideOutVertically(targetOffsetY = { -it / 3 }),
+                    modifier = Modifier.align(Alignment.TopCenter)
+                ) {
                     VideoTopBar(
                         title = currentTitle,
                         format = videoFormat,
                         onBack = onBackPress,
-                        onMenu = { showSettingsMenu = true; showControls = false },
+                        onMenu = {
+                            showSettingsMenu = true
+                            showControls = false
+                        },
                         adaptiveState = adaptiveState
                     )
                 }
 
-                AnimatedVisibility(visible = showControls && !isLocked && !showSettingsMenu, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.align(Alignment.BottomCenter)) {
+                AnimatedVisibility(
+                    visible = showControls && !isLocked && !showSettingsMenu,
+                    enter = fadeIn(tween(180)) + slideInVertically(initialOffsetY = { it / 3 }),
+                    exit = fadeOut(tween(180)) + slideOutVertically(targetOffsetY = { it / 3 }),
+                    modifier = Modifier.align(Alignment.BottomCenter)
+                ) {
                     VideoBottomControls(
                         isPlaying = isPlaying,
                         playbackState = playbackState,
@@ -852,25 +969,59 @@ fun VideoPlayerContent(
                 }
             }
 
-            AnimatedVisibility(visible = isLocked && showControls, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.align(Alignment.CenterStart).padding(start = 32.dp)) {
+            // --- SAMSUNG ONE UI LOCKED SCREEN FLOATING UNLOCK PILL ---
+            AnimatedVisibility(
+                visible = isLocked && showControls,
+                enter = fadeIn(tween(160)) + scaleIn(initialScale = 0.88f),
+                exit = fadeOut(tween(160)) + scaleOut(targetScale = 0.88f),
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .padding(start = 28.dp)
+            ) {
                 ScaleButton(
                     onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         isLocked = false
                         showControls = true
                         resetControlsTimer()
-                    },
-                    modifier = Modifier.background(Color.Black.copy(0.6f), CircleShape).padding(12.dp)
+                    }
                 ) {
-                    Icon(Icons.Outlined.LockOpen, "Unlock", tint = Color.White, modifier = Modifier.size(28.dp))
+                    Surface(
+                        color = Color(0xCC121318),
+                        shape = RoundedCornerShape(24.dp),
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.22f)),
+                        shadowElevation = 8.dp
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.LockOpen,
+                                contentDescription = "Unlock",
+                                tint = Color.White,
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = "Unlock",
+                                color = Color.White,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
                 }
             }
         }
 
         AnimatedVisibility(
             visible = showSettingsMenu,
-            enter = fadeIn(),
-            exit = fadeOut(),
-            modifier = Modifier.fillMaxSize().zIndex(100f)
+            enter = fadeIn(tween(200)),
+            exit = fadeOut(tween(180)),
+            modifier = Modifier
+                .fillMaxSize()
+                .zIndex(100f)
         ) {
             FullscreenSettingsMenu(
                 modifier = Modifier
@@ -911,17 +1062,17 @@ fun VideoPlayerContent(
 
 /**
  * =========================================================================================
- * 🔘 VIDEO TOP BAR
+ * 🔘 VIDEO TOP BAR (Samsung One UI Pro Cinema Header)
  * =========================================================================================
  */
 @Composable
 fun VideoTopBar(title: String, format: Format?, onBack: () -> Unit, onMenu: () -> Unit, adaptiveState: AdaptiveState) {
     val height = format?.height ?: 0
     val resBadge = when {
-        height >= 2160 -> "4K"
-        height >= 1440 -> "1440p"
-        height >= 1080 -> "1080p"
-        height >= 720 -> "720p"
+        height >= 2160 -> "UHD 4K"
+        height >= 1440 -> "QHD"
+        height >= 1080 -> "FHD"
+        height >= 720 -> "HD"
         height > 0 -> "${height}p"
         else -> null
     }
@@ -929,38 +1080,121 @@ fun VideoTopBar(title: String, format: Format?, onBack: () -> Unit, onMenu: () -
     val transfer = format?.colorInfo?.colorTransfer
     val isHdr = transfer?.let { it == C.COLOR_TRANSFER_ST2084 || it == C.COLOR_TRANSFER_HLG } == true
     val hdrBadge = when (transfer) {
-        C.COLOR_TRANSFER_ST2084 -> "HDR10"
+        C.COLOR_TRANSFER_ST2084 -> "HDR10+"
         C.COLOR_TRANSFER_HLG -> "HLG"
         else -> if (isHdr) "HDR" else null
     }
 
     Box(Modifier.fillMaxWidth()) {
-        Box(Modifier.matchParentSize().background(Brush.verticalGradient(listOf(Color.Black.copy(0.85f), Color.Transparent))))
+        Box(
+            Modifier
+                .matchParentSize()
+                .background(
+                    Brush.verticalGradient(
+                        0.0f to Color.Black.copy(alpha = 0.88f),
+                        0.6f to Color.Black.copy(alpha = 0.42f),
+                        1.0f to Color.Transparent
+                    )
+                )
+        )
 
-        Row(Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            ScaleButton(onClick = onBack, modifier = Modifier.size(44.dp).background(Color.Black.copy(0.2f), CircleShape)) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = Color.White)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .statusBarsPadding()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            ScaleButton(onClick = onBack) {
+                Surface(
+                    modifier = Modifier.size(44.dp),
+                    shape = CircleShape,
+                    color = Color.White.copy(alpha = 0.12f),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f))
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back",
+                            tint = Color.White,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                }
             }
-            Spacer(Modifier.width(16.dp))
+
+            Spacer(Modifier.width(14.dp))
 
             Column(modifier = Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    hdrBadge?.let {
-                        Surface(color = Color.White.copy(alpha = 0.2f), shape = RoundedCornerShape(4.dp), modifier = Modifier.padding(end = 6.dp)) {
-                            Text(it, color = Color.White, fontSize = (9 * adaptiveState.textScaleFactor).sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp))
+                Text(
+                    text = title,
+                    color = Color.White,
+                    fontSize = (16 * adaptiveState.textScaleFactor).sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    letterSpacing = 0.15.sp
+                )
+                if (hdrBadge != null || resBadge != null) {
+                    Spacer(Modifier.height(4.dp))
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        hdrBadge?.let {
+                            Surface(
+                                color = Color(0x33FFC107),
+                                shape = RoundedCornerShape(6.dp),
+                                border = BorderStroke(0.8.dp, Color(0x80FFD54F))
+                            ) {
+                                Text(
+                                    text = it,
+                                    color = Color(0xFFFFE082),
+                                    fontSize = (10 * adaptiveState.textScaleFactor).sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    letterSpacing = 0.5.sp,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
                         }
-                    }
-                    resBadge?.let {
-                        Surface(color = Color.White.copy(alpha = 0.2f), shape = RoundedCornerShape(4.dp), modifier = Modifier.padding(end = 6.dp)) {
-                            Text(it, color = Color.White, fontSize = (9 * adaptiveState.textScaleFactor).sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp))
+                        resBadge?.let {
+                            Surface(
+                                color = Color.White.copy(alpha = 0.14f),
+                                shape = RoundedCornerShape(6.dp),
+                                border = BorderStroke(0.8.dp, Color.White.copy(alpha = 0.22f))
+                            ) {
+                                Text(
+                                    text = it,
+                                    color = Color.White.copy(alpha = 0.92f),
+                                    fontSize = (10 * adaptiveState.textScaleFactor).sp,
+                                    fontWeight = FontWeight.Bold,
+                                    letterSpacing = 0.5.sp,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
                         }
                     }
                 }
-                Text(title, color = Color.White, fontSize = (16 * adaptiveState.textScaleFactor).sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
 
-            ScaleButton(onClick = onMenu, modifier = Modifier.size(44.dp).background(Color.Black.copy(0.2f), CircleShape)) {
-                Icon(Icons.Default.MoreVert, null, tint = Color.White)
+            Spacer(Modifier.width(12.dp))
+
+            ScaleButton(onClick = onMenu) {
+                Surface(
+                    modifier = Modifier.size(44.dp),
+                    shape = CircleShape,
+                    color = Color.White.copy(alpha = 0.12f),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f))
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Default.MoreVert,
+                            contentDescription = "Settings",
+                            tint = Color.White,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                }
             }
         }
     }
@@ -968,98 +1202,247 @@ fun VideoTopBar(title: String, format: Format?, onBack: () -> Unit, onMenu: () -
 
 /**
  * =========================================================================================
- * 🔘 VIDEO BOTTOM CONTROLS (Play, Pause, Timeline)
+ * 🔘 VIDEO BOTTOM CONTROLS (Samsung One UI Timeline & Floating Control Deck)
  * =========================================================================================
  */
 @Composable
 fun VideoBottomControls(
-    isPlaying: Boolean, playbackState: Int,
-    currentMs: Long, bufferedMs: Long, durationMs: Long,
-    isSeeking: Boolean, previewBitmap: Bitmap?, seekPosition: Float, gestureText: String,
-    hasNext: Boolean, hasPrev: Boolean, isLandscape: Boolean,
-    onTogglePlay: () -> Unit, onNext: () -> Unit, onPrev: () -> Unit,
-    onSeek: (Float) -> Unit, onSeekFinished: () -> Unit, onLock: () -> Unit,
-    onRotateToggle: () -> Unit, onAspectRatioToggle: () -> Unit,
+    isPlaying: Boolean,
+    playbackState: Int,
+    currentMs: Long,
+    bufferedMs: Long,
+    durationMs: Long,
+    isSeeking: Boolean,
+    previewBitmap: Bitmap?,
+    seekPosition: Float,
+    gestureText: String,
+    hasNext: Boolean,
+    hasPrev: Boolean,
+    isLandscape: Boolean,
+    onTogglePlay: () -> Unit,
+    onNext: () -> Unit,
+    onPrev: () -> Unit,
+    onSeek: (Float) -> Unit,
+    onSeekFinished: () -> Unit,
+    onLock: () -> Unit,
+    onRotateToggle: () -> Unit,
+    onAspectRatioToggle: () -> Unit,
     adaptiveState: AdaptiveState
 ) {
     Box(Modifier.fillMaxWidth()) {
-        Box(Modifier.matchParentSize().background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(0.85f)))))
+        Box(
+            Modifier
+                .matchParentSize()
+                .background(
+                    Brush.verticalGradient(
+                        0.0f to Color.Transparent,
+                        0.35f to Color.Black.copy(alpha = 0.55f),
+                        1.0f to Color.Black.copy(alpha = 0.92f)
+                    )
+                )
+        )
         Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .then(
                     if (adaptiveState.widthSize == WindowWidthSize.EXPANDED) {
-                        Modifier.width(600.dp)
+                        Modifier.width(640.dp)
                     } else {
                         Modifier.fillMaxWidth()
                     }
                 )
                 .navigationBarsPadding()
-                .padding(
-                    start = 16.dp,
-                    end = 16.dp,
-                    bottom = 12.dp
-                )
-        ){
-            Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), horizontalArrangement = Arrangement.End) {
-                ScaleButton(onClick = onAspectRatioToggle) {
-                    Icon(Icons.Outlined.AspectRatio, contentDescription = "Aspect Ratio", tint = Color.White, modifier = Modifier.size(24.dp))
-                }
-            }
+                .padding(start = 18.dp, end = 18.dp, bottom = 14.dp, top = 8.dp)
+        ) {
+            // --- TIMELINE & FLOATING SCRUB PREVIEW ---
+            PlayerTimelineSection(
+                currentMs = currentMs,
+                bufferedMs = bufferedMs,
+                durationMs = durationMs,
+                isSeeking = isSeeking,
+                previewBitmap = previewBitmap,
+                seekPosition = seekPosition,
+                gestureText = gestureText,
+                onSeek = onSeek,
+                onSeekFinished = onSeekFinished
+            )
 
-            PlayerTimelineSection(currentMs, bufferedMs, durationMs, isSeeking, previewBitmap, seekPosition, gestureText, onSeek, onSeekFinished)
+            Spacer(Modifier.height(10.dp))
 
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+            // --- SAMSUNG ONE UI GLASSMORPHIC CONTROL DECK ---
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(28.dp),
+                color = Color.White.copy(alpha = 0.08f),
+                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.12f))
             ) {
-                ScaleButton(onClick = onLock) {
-                    Icon(Icons.Outlined.Lock, null, tint = Color.White, modifier = Modifier.size(28.dp))
-                }
-                ScaleButton(onClick = onPrev, enabled = hasPrev) {
-                    Icon(Icons.Rounded.SkipPrevious, null, tint = if (hasPrev) Color.White else Color.White.copy(0.3f), modifier = Modifier.size(32.dp))
-                }
-                ScaleButton(onClick = onTogglePlay) {
-                    Surface(modifier = Modifier.size(56.dp), shape = CircleShape, color = Color.White.copy(alpha = 0.22f)) {
-                        Box(contentAlignment = Alignment.Center) {
-                            val playIcon = if (playbackState == Player.STATE_ENDED) Icons.Rounded.Replay else if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow
-                            Icon(imageVector = playIcon, contentDescription = "Play/Pause", tint = Color.White, modifier = Modifier.size(32.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // Left Utility Cluster: Screen Lock
+                    ScaleButton(onClick = onLock, modifier = Modifier.size(44.dp)) {
+                        Icon(
+                            imageVector = Icons.Outlined.Lock,
+                            contentDescription = "Lock Screen",
+                            tint = Color.White.copy(alpha = 0.9f),
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+
+                    // Center Playback Cluster: Previous | Play/Pause | Next
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(18.dp)
+                    ) {
+                        ScaleButton(onClick = onPrev, enabled = hasPrev, modifier = Modifier.size(46.dp)) {
+                            Icon(
+                                imageVector = Icons.Rounded.SkipPrevious,
+                                contentDescription = "Previous",
+                                tint = if (hasPrev) Color.White else Color.White.copy(alpha = 0.28f),
+                                modifier = Modifier.size(32.dp)
+                            )
+                        }
+
+                        ScaleButton(onClick = onTogglePlay) {
+                            Surface(
+                                modifier = Modifier.size(60.dp),
+                                shape = CircleShape,
+                                color = Color.White.copy(alpha = 0.20f),
+                                border = BorderStroke(1.2.dp, Color.White.copy(alpha = 0.35f)),
+                                shadowElevation = 6.dp
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    val playIcon = when {
+                                        playbackState == Player.STATE_ENDED -> Icons.Rounded.Replay
+                                        isPlaying -> Icons.Rounded.Pause
+                                        else -> Icons.Rounded.PlayArrow
+                                    }
+                                    Icon(
+                                        imageVector = playIcon,
+                                        contentDescription = "Play/Pause",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(34.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        ScaleButton(onClick = onNext, enabled = hasNext, modifier = Modifier.size(46.dp)) {
+                            Icon(
+                                imageVector = Icons.Rounded.SkipNext,
+                                contentDescription = "Next",
+                                tint = if (hasNext) Color.White else Color.White.copy(alpha = 0.28f),
+                                modifier = Modifier.size(32.dp)
+                            )
+                        }
+                    }
+
+                    // Right Utility Cluster: Aspect Ratio + Screen Rotate
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        ScaleButton(onClick = onAspectRatioToggle, modifier = Modifier.size(42.dp)) {
+                            Icon(
+                                imageVector = Icons.Outlined.AspectRatio,
+                                contentDescription = "Aspect Ratio",
+                                tint = Color.White.copy(alpha = 0.9f),
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+
+                        var rotateAngle by remember { mutableFloatStateOf(0f) }
+                        val animatedAngle by animateFloatAsState(rotateAngle, spring(dampingRatio = Spring.DampingRatioMediumBouncy), label = "rotation")
+                        ScaleButton(
+                            onClick = {
+                                rotateAngle += 180f
+                                onRotateToggle()
+                            },
+                            modifier = Modifier.size(42.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.ScreenRotation,
+                                contentDescription = "Rotate Screen",
+                                tint = Color.White.copy(alpha = 0.9f),
+                                modifier = Modifier
+                                    .size(22.dp)
+                                    .graphicsLayer { rotationZ = animatedAngle }
+                            )
                         }
                     }
                 }
-                ScaleButton(onClick = onNext, enabled = hasNext) {
-                    Icon(Icons.Rounded.SkipNext, null, tint = if (hasNext) Color.White else Color.White.copy(0.3f), modifier = Modifier.size(32.dp))
-                }
-
-                var rotateAngle by remember { mutableFloatStateOf(0f) }
-                val animatedAngle by animateFloatAsState(rotateAngle, spring(), label = "rotation")
-                ScaleButton(onClick = {
-                    rotateAngle += 180f
-                    onRotateToggle()
-                }) {
-                    Icon(Icons.Outlined.ScreenRotation, null, tint = Color.White, modifier = Modifier.size(28.dp).graphicsLayer { rotationZ = animatedAngle })
-                }
             }
         }
     }
 }
 
-// Draws the vertical volume/brightness sliders on the left/right of the screen
+/**
+ * =========================================================================================
+ * 🎚️ SAMSUNG ONE UI VERTICAL VOLUME & BRIGHTNESS PILL
+ * =========================================================================================
+ */
 @Composable
 fun VolumeBrightnessBar(value: Float, icon: ImageVector) {
-    Column(
-        modifier = Modifier.background(Color.Black.copy(0.4f), RoundedCornerShape(16.dp)).padding(8.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
+    val clamped = value.coerceIn(0f, 1f)
+    val animatedFill by animateFloatAsState(targetValue = clamped, animationSpec = tween(60), label = "hud_fill")
+    val percentage = (clamped * 100).roundToInt()
+
+    Surface(
+        color = Color(0xCC121318),
+        shape = RoundedCornerShape(26.dp),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.16f)),
+        shadowElevation = 10.dp
     ) {
-        Icon(icon, null, tint = Color.White, modifier = Modifier.size(24.dp))
-        Spacer(Modifier.height(8.dp))
-        Box(Modifier.width(4.dp).height(100.dp).background(Color.White.copy(0.3f), CircleShape), contentAlignment = Alignment.BottomCenter) {
-            Box(Modifier.fillMaxWidth().fillMaxHeight(value).background(Color.White, CircleShape))
+        Column(
+            modifier = Modifier
+                .width(48.dp)
+                .padding(vertical = 14.dp, horizontal = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier.size(22.dp)
+            )
+            Spacer(Modifier.height(10.dp))
+            Box(
+                modifier = Modifier
+                    .width(6.dp)
+                    .height(116.dp)
+                    .clip(CircleShape)
+                    .background(Color.White.copy(alpha = 0.22f)),
+                contentAlignment = Alignment.BottomCenter
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .fillMaxHeight(animatedFill)
+                        .clip(CircleShape)
+                        .background(Color.White)
+                )
+            }
+            Spacer(Modifier.height(10.dp))
+            Text(
+                text = "$percentage%",
+                color = Color.White.copy(alpha = 0.92f),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1
+            )
         }
     }
 }
 
+/**
+ * =========================================================================================
+ * ⏱️ TIMELINE & CLAMPED FLOATING FRAME PREVIEW
+ * =========================================================================================
+ */
 @Composable
 private fun PlayerTimelineSection(
     currentMs: Long,
@@ -1074,101 +1457,248 @@ private fun PlayerTimelineSection(
 ) {
     val density = LocalDensity.current
     var thumbXOffset by remember { mutableFloatStateOf(0f) }
+    var containerWidthPx by remember { mutableFloatStateOf(0f) }
 
-    Column(Modifier.fillMaxWidth()) {
-        Box(Modifier.fillMaxWidth().padding(bottom = 4.dp)) {
-            if (isSeeking) {
+    val activeTimeMs = if (isSeeking) seekPosition.toLong() else currentMs
+    val displayGestureText = gestureText.ifEmpty { formatTime(activeTimeMs) }
+
+    // Synchronize thumbXOffset when horizontal gesture scrubbing occurs on the video surface
+    val safeTotal = maxOf(1f, durationMs.toFloat())
+    val effectiveThumbX = if (thumbXOffset > 0f) {
+        thumbXOffset
+    } else {
+        (activeTimeMs.toFloat() / safeTotal).coerceIn(0f, 1f) * containerWidthPx
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .onGloballyPositioned { containerWidthPx = it.size.width.toFloat() }
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 2.dp)
+        ) {
+            // --- FLOATING FRAME PREVIEW TOOLTIP ---
+            androidx.compose.animation.AnimatedVisibility(
+                visible = isSeeking,
+                enter = fadeIn(tween(120)) + scaleIn(initialScale = 0.88f),
+                exit = fadeOut(tween(120)) + scaleOut(targetScale = 0.88f),
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .offset {
+                        val cardWidthPx = with(density) { (if (previewBitmap != null) 156.dp else 88.dp).toPx() }
+                        val halfCard = cardWidthPx / 2f
+                        val maxLeft = (containerWidthPx - cardWidthPx).coerceAtLeast(0f)
+                        val clampedX = (effectiveThumbX - halfCard).coerceIn(0f, maxLeft)
+                        IntOffset(
+                            x = clampedX.roundToInt(),
+                            y = with(density) { (-34).dp.roundToPx() }
+                        )
+                    }
+            ) {
                 if (previewBitmap != null) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.align(Alignment.BottomStart)
-                            .offset {
-                                IntOffset(
-                                    x = (thumbXOffset - 70.dp.toPx()).roundToInt(),
-                                    y = (-20).dp.toPx().roundToInt()
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = Color(0xFF101116),
+                        border = BorderStroke(1.2.dp, Color.White.copy(alpha = 0.32f)),
+                        shadowElevation = 12.dp,
+                        modifier = Modifier.size(width = 156.dp, height = 92.dp)
+                    ) {
+                        Box(Modifier.fillMaxSize()) {
+                            Image(
+                                bitmap = previewBitmap.asImageBitmap(),
+                                contentDescription = null,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .align(Alignment.BottomCenter)
+                                    .background(
+                                        Brush.verticalGradient(
+                                            listOf(Color.Transparent, Color.Black.copy(alpha = 0.85f))
+                                        )
+                                    )
+                                    .padding(vertical = 4.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = displayGestureText,
+                                    color = Color.White,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    letterSpacing = 0.4.sp
                                 )
                             }
-                    ) {
-                        Image(bitmap = previewBitmap.asImageBitmap(), contentDescription = null, modifier = Modifier.size(140.dp, 80.dp).clip(RoundedCornerShape(8.dp)).border(1.dp, Color.White.copy(0.5f), RoundedCornerShape(8.dp)))
-                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 4.dp)) {
-                            Icon(Icons.Rounded.FastForward, null, tint = Color.White, modifier = Modifier.size(14.dp))
-                            Text(gestureText, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Medium)
                         }
                     }
-                } else if (gestureText.isNotEmpty()) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.align(Alignment.BottomStart)
-                            .offset {
-                                IntOffset(
-                                    x = (thumbXOffset - 20.dp.toPx()).roundToInt(),
-                                    y = (-20).dp.toPx().roundToInt()
-                                )
-                            }
+                } else {
+                    Surface(
+                        shape = CircleShape,
+                        color = Color(0xD9121318),
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.22f)),
+                        shadowElevation = 8.dp
                     ) {
-                        Icon(Icons.Rounded.FastForward, null, tint = Color.White, modifier = Modifier.size(14.dp))
-                        Text(gestureText, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                        Text(
+                            text = displayGestureText,
+                            color = Color.White,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                        )
                     }
                 }
             }
+
             SamsungSeekBar(
                 current = if (isSeeking) seekPosition else currentMs.toFloat(),
                 buffered = bufferedMs.toFloat(),
-                total = maxOf(1f, durationMs.toFloat()),
-                modifier = Modifier.fillMaxWidth().height(28.dp).align(Alignment.BottomCenter),
-                onSeek = { pos, xOffset -> thumbXOffset = xOffset; onSeek(pos) },
-                onSeekFinished = onSeekFinished
+                total = safeTotal,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(30.dp)
+                    .align(Alignment.BottomCenter),
+                onSeek = { pos, xOffset ->
+                    thumbXOffset = xOffset
+                    onSeek(pos)
+                },
+                onSeekFinished = {
+                    thumbXOffset = 0f
+                    onSeekFinished()
+                }
             )
         }
 
-        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(formatTime(currentMs), color = Color.White, style = MaterialTheme.typography.labelMedium)
-            Text(formatTime(durationMs), color = Color.White.copy(0.7f), style = MaterialTheme.typography.labelMedium)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 6.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = formatTime(activeTimeMs),
+                color = Color.White,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = 0.3.sp
+            )
+            Text(
+                text = formatTime(durationMs),
+                color = Color.White.copy(alpha = 0.68f),
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+                letterSpacing = 0.3.sp
+            )
         }
     }
 }
 
 @Composable
-fun SamsungSeekBar(current: Float, buffered: Float, total: Float, modifier: Modifier, onSeek: (Float, Float) -> Unit, onSeekFinished: () -> Unit) {
+fun SamsungSeekBar(
+    current: Float,
+    buffered: Float,
+    total: Float,
+    modifier: Modifier,
+    onSeek: (Float, Float) -> Unit,
+    onSeekFinished: () -> Unit
+) {
     var width by remember { mutableFloatStateOf(0f) }
+    var isDraggingBar by remember { mutableStateOf(false) }
     val safeTotal = total.coerceAtLeast(1f)
 
-    Canvas(modifier
-        .pointerInput(safeTotal) {
-            detectTapGestures { tapOffset ->
-                if (width <= 0f) return@detectTapGestures
-                val safeX = tapOffset.x.coerceIn(0f, width)
-                val p = (safeX / width) * safeTotal
-                onSeek(p, safeX)
-                onSeekFinished()
+    val trackHeightDp by animateDpAsState(
+        targetValue = if (isDraggingBar) 6.dp else 4.dp,
+        animationSpec = tween(120),
+        label = "track_height"
+    )
+    val thumbRadiusDp by animateDpAsState(
+        targetValue = if (isDraggingBar) 9.dp else 7.dp,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
+        label = "thumb_radius"
+    )
+
+    Canvas(
+        modifier = modifier
+            .pointerInput(safeTotal) {
+                detectTapGestures { tapOffset ->
+                    if (width <= 0f) return@detectTapGestures
+                    val safeX = tapOffset.x.coerceIn(0f, width)
+                    val p = (safeX / width) * safeTotal
+                    onSeek(p, safeX)
+                    onSeekFinished()
+                }
             }
-        }
-        .pointerInput(safeTotal) {
-            detectDragGestures(onDragEnd = onSeekFinished) { dragChange, _ ->
-                if (width <= 0f) return@detectDragGestures
-                val safeX = dragChange.position.x.coerceIn(0f, width)
-                val p = (safeX / width) * safeTotal
-                onSeek(p, safeX)
+            .pointerInput(safeTotal) {
+                detectDragGestures(
+                    onDragStart = { isDraggingBar = true },
+                    onDragEnd = {
+                        isDraggingBar = false
+                        onSeekFinished()
+                    },
+                    onDragCancel = {
+                        isDraggingBar = false
+                        onSeekFinished()
+                    }
+                ) { dragChange, _ ->
+                    if (width <= 0f) return@detectDragGestures
+                    val safeX = dragChange.position.x.coerceIn(0f, width)
+                    val p = (safeX / width) * safeTotal
+                    onSeek(p, safeX)
+                }
             }
-        }
     ) {
         width = size.width
-        val h = 3.dp.toPx()
-        val y = size.height / 2
+        val h = trackHeightDp.toPx()
+        val y = size.height / 2f
         val bW = (buffered / safeTotal).coerceIn(0f, 1f) * width
         val cW = (current / safeTotal).coerceIn(0f, 1f) * width
-        val thumbR = 8.dp.toPx()
+        val thumbR = thumbRadiusDp.toPx()
 
-        drawRoundRect(Color.White.copy(0.25f), Offset(0f, y - h / 2), Size(width, h), CornerRadius(h / 2))
-        drawRoundRect(Color.White.copy(0.50f), Offset(0f, y - h / 2), Size(bW, h), CornerRadius(h / 2))
-        drawRoundRect(Color.White, Offset(0f, y - h / 2), Size(cW, h), CornerRadius(h / 2))
-        drawCircle(Color.White, radius = thumbR, center = Offset(cW, y))
+        // Unplayed Background Track
+        drawRoundRect(
+            color = Color.White.copy(alpha = 0.24f),
+            topLeft = Offset(0f, y - h / 2f),
+            size = Size(width, h),
+            cornerRadius = CornerRadius(h / 2f)
+        )
+        // Buffered Track
+        drawRoundRect(
+            color = Color.White.copy(alpha = 0.48f),
+            topLeft = Offset(0f, y - h / 2f),
+            size = Size(bW, h),
+            cornerRadius = CornerRadius(h / 2f)
+        )
+        // Active Played Track
+        drawRoundRect(
+            color = Color.White,
+            topLeft = Offset(0f, y - h / 2f),
+            size = Size(cW, h),
+            cornerRadius = CornerRadius(h / 2f)
+        )
+        // Outer Thumb Halo when scrubbing
+        if (isDraggingBar) {
+            drawCircle(
+                color = Color.White.copy(alpha = 0.28f),
+                radius = thumbR * 1.75f,
+                center = Offset(cW, y)
+            )
+        }
+        // Solid Scrubber Thumb
+        drawCircle(
+            color = Color.White,
+            radius = thumbR,
+            center = Offset(cW, y)
+        )
     }
 }
 
 /**
  * =========================================================================================
- * ⚙️ VIDEO SETTINGS MENU (Full Screen Overlay)
+ * ⚙️ VIDEO SETTINGS MENU (Samsung One UI Grouped Card Overlay)
  * =========================================================================================
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -1202,7 +1732,7 @@ private fun FullscreenSettingsMenu(
 
     Scaffold(
         modifier = modifier,
-        containerColor = Color(0xFF121212).copy(alpha = 0.95f),
+        containerColor = Color(0xF20B0C10),
         topBar = {
             @kotlin.OptIn(ExperimentalMaterial3Api::class)
             TopAppBar(
@@ -1219,13 +1749,15 @@ private fun FullscreenSettingsMenu(
                     )
                 },
                 navigationIcon = {
-                    IconButton(onClick = {
-                        if (currentSubMenu != null) {
-                            currentSubMenu = null
-                        } else {
-                            onDismissRequest()
+                    IconButton(
+                        onClick = {
+                            if (currentSubMenu != null) {
+                                currentSubMenu = null
+                            } else {
+                                onDismissRequest()
+                            }
                         }
-                    }) {
+                    ) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
                     }
                 },
@@ -1237,158 +1769,257 @@ private fun FullscreenSettingsMenu(
             )
         }
     ) { paddingValues ->
-        Box(modifier = Modifier.fillMaxSize().padding(paddingValues)) {
-            AnimatedContent(
-                targetState = currentSubMenu,
-                transitionSpec = {
-                    (slideInHorizontally { it } + fadeIn()) togetherWith (slideOutHorizontally { -it } + fadeOut())
-                },
-                label = "SettingsMenuTransition"
-            ) { subMenu ->
-                when (subMenu) {
-                    "SPEED" -> {
-                        LazyColumn(Modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues),
+            contentAlignment = Alignment.TopCenter
+        ) {
+            Box(modifier = Modifier.widthIn(max = 600.dp).fillMaxSize()) {
+                AnimatedContent(
+                    targetState = currentSubMenu,
+                    transitionSpec = {
+                        (slideInHorizontally { it } + fadeIn()) togetherWith (slideOutHorizontally { -it } + fadeOut())
+                    },
+                    label = "SettingsMenuTransition"
+                ) { subMenu ->
+                    when (subMenu) {
+                        "SPEED" -> {
                             val speeds = listOf(0.25f, 0.50f, 0.75f, 1f, 1.25f, 1.50f, 1.75f, 2f, 3f, 4f, 6f, 8f)
-                            items(speeds) { speed ->
-                                val isSelected = speed == currentSpeed
-                                ListItem(
-                                    colors = ListItemDefaults.colors(
-                                        containerColor = Color.Transparent,
-                                        headlineColor = if (isSelected) MaterialTheme.colorScheme.primary else Color.White
-                                    ),
-                                    headlineContent = { Text("${speed}x", fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal) },
-                                    trailingContent = { if (isSelected) Icon(Icons.Default.Check, null, tint = MaterialTheme.colorScheme.primary) },
-                                    modifier = Modifier.clickable {
-                                        onSpeedChange(speed)
-                                        currentSubMenu = null
-                                    }.padding(horizontal = 8.dp)
-                                )
-                            }
-                        }
-                    }
-                    "SLEEP_TIMER" -> {
-                        LazyColumn(Modifier.fillMaxSize()) {
-                            if (sleepTimerActive) {
-                                item {
-                                    ListItem(
-                                        colors = ListItemDefaults.colors(
-                                            containerColor = Color.Transparent,
-                                            headlineColor = MaterialTheme.colorScheme.error,
-                                            leadingIconColor = MaterialTheme.colorScheme.error
+                            LazyColumn(
+                                modifier = Modifier.fillMaxSize(),
+                                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                items(speeds) { speed ->
+                                    val isSelected = speed == currentSpeed
+                                    Surface(
+                                        shape = RoundedCornerShape(18.dp),
+                                        color = if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f) else Color.White.copy(alpha = 0.06f),
+                                        border = BorderStroke(
+                                            1.dp,
+                                            if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.6f) else Color.White.copy(alpha = 0.08f)
                                         ),
-                                        headlineContent = { Text("Cancel Timer", fontWeight = FontWeight.Bold) },
-                                        leadingContent = { Icon(Icons.Rounded.TimerOff, null) },
-                                        modifier = Modifier.clickable {
-                                            onCancelSleepTimer()
-                                            currentSubMenu = null
-                                        }.padding(horizontal = 8.dp)
-                                    )
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(18.dp))
+                                            .clickable {
+                                                onSpeedChange(speed)
+                                                currentSubMenu = null
+                                            }
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Text(
+                                                text = if (speed == 1f) "1.0× (Normal)" else "${speed}×",
+                                                color = if (isSelected) MaterialTheme.colorScheme.primary else Color.White,
+                                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                                fontSize = 16.sp
+                                            )
+                                            if (isSelected) {
+                                                Icon(
+                                                    imageVector = Icons.Rounded.CheckCircle,
+                                                    contentDescription = null,
+                                                    tint = MaterialTheme.colorScheme.primary
+                                                )
+                                            }
+                                        }
+                                    }
                                 }
                             }
+                        }
+                        "SLEEP_TIMER" -> {
                             val times = listOf(15, 30, 45, 60, 90, 120)
-                            items(times) { time ->
-                                ListItem(
-                                    colors = ListItemDefaults.colors(
-                                        containerColor = Color.Transparent,
-                                        headlineColor = Color.White,
-                                        leadingIconColor = Color.White
-                                    ),
-                                    headlineContent = { Text("$time Minutes") },
-                                    leadingContent = { Icon(Icons.Rounded.Timer, null) },
-                                    modifier = Modifier.clickable {
-                                        onSetSleepTimer(time)
-                                        currentSubMenu = null
-                                    }.padding(horizontal = 8.dp)
-                                )
-                            }
-                        }
-                    }
-                    "AUDIO_DELAY" -> {
-                        Column(Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 24.dp)) {
-                            Text(
-                                text = "Offset: ${audioDelayMs.toInt()} ms",
-                                fontWeight = FontWeight.Bold,
-                                color = Color.White,
-                                fontSize = 20.sp,
-                                modifier = Modifier.align(Alignment.CenterHorizontally)
-                            )
-                            Spacer(Modifier.height(32.dp))
-                            Slider(
-                                value = audioDelayMs,
-                                onValueChange = onSetAudioDelay,
-                                valueRange = -1000f..1000f,
-                                steps = 39,
-                                colors = SliderDefaults.colors(
-                                    thumbColor = MaterialTheme.colorScheme.primary,
-                                    activeTrackColor = MaterialTheme.colorScheme.primary
-                                ),
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text("-1000 ms", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
-                                Text("+1000 ms", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
-                            }
-                        }
-                    }
-                    else -> {
-                        LazyColumn(Modifier.fillMaxSize()) {
-                            item { SettingsSectionHeader("Playback") }
-                            item {
-                                SettingsListItem(
-                                    headline = "Playback Speed",
-                                    supporting = "${currentSpeed}x",
-                                    icon = Icons.Outlined.Speed,
-                                    onClick = { currentSubMenu = "SPEED" }
-                                )
-                            }
-                            item {
-                                SettingsListItem(
-                                    headline = "Sleep Timer",
-                                    supporting = if (sleepTimerActive) "Active" else "Off",
-                                    icon = Icons.Rounded.Timer,
-                                    onClick = { currentSubMenu = "SLEEP_TIMER" }
-                                )
-                            }
-                            item {
-                                SettingsListItem(
-                                    headline = "Audio Delay Sync",
-                                    supporting = "${audioDelayMs.toInt()} ms",
-                                    icon = Icons.Rounded.Sync,
-                                    onClick = { currentSubMenu = "AUDIO_DELAY" }
-                                )
-                            }
-                            item { HorizontalDivider(color = Color.White.copy(0.1f)) }
-
-                            item { SettingsSectionHeader("Display & Behavior") }
-                            item {
-                                SettingsListItem(
-                                    headline = "Repeat Mode",
-                                    supporting = autoRepeat.name,
-                                    icon = Icons.Rounded.Repeat,
-                                    onClick = {
-                                        val entries = PremiumRepeatMode.entries.toTypedArray()
-                                        onToggleAutoRepeat(entries[(autoRepeat.ordinal + 1) % entries.size])
+                            LazyColumn(
+                                modifier = Modifier.fillMaxSize(),
+                                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                if (sleepTimerActive) {
+                                    item {
+                                        Surface(
+                                            shape = RoundedCornerShape(18.dp),
+                                            color = MaterialTheme.colorScheme.error.copy(alpha = 0.16f),
+                                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.5f)),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clip(RoundedCornerShape(18.dp))
+                                                .clickable {
+                                                    onCancelSleepTimer()
+                                                    currentSubMenu = null
+                                                }
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Rounded.TimerOff,
+                                                    contentDescription = null,
+                                                    tint = MaterialTheme.colorScheme.error
+                                                )
+                                                Spacer(Modifier.width(16.dp))
+                                                Text(
+                                                    text = "Cancel Active Timer",
+                                                    color = MaterialTheme.colorScheme.error,
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 16.sp
+                                                )
+                                            }
+                                        }
                                     }
-                                )
+                                }
+                                items(times) { time ->
+                                    Surface(
+                                        shape = RoundedCornerShape(18.dp),
+                                        color = Color.White.copy(alpha = 0.06f),
+                                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(18.dp))
+                                            .clickable {
+                                                onSetSleepTimer(time)
+                                                currentSubMenu = null
+                                            }
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Rounded.Timer,
+                                                contentDescription = null,
+                                                tint = Color.White.copy(alpha = 0.85f)
+                                            )
+                                            Spacer(Modifier.width(16.dp))
+                                            Text(
+                                                text = "$time Minutes",
+                                                color = Color.White,
+                                                fontWeight = FontWeight.Medium,
+                                                fontSize = 16.sp
+                                            )
+                                        }
+                                    }
+                                }
                             }
-                            item {
-                                SettingsSwitchItem(
-                                    headline = "Auto Play Next",
-                                    icon = Icons.Rounded.PlaylistPlay,
-                                    checked = autoPlayNext,
-                                    onCheckedChange = onToggleAutoPlay
-                                )
+                        }
+                        "AUDIO_DELAY" -> {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(horizontal = 20.dp, vertical = 16.dp)
+                            ) {
+                                Surface(
+                                    shape = RoundedCornerShape(24.dp),
+                                    color = Color.White.copy(alpha = 0.06f),
+                                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.10f)),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(24.dp),
+                                        horizontalAlignment = Alignment.CenterHorizontally
+                                    ) {
+                                        Text(
+                                            text = "${audioDelayMs.toInt()} ms",
+                                            fontWeight = FontWeight.ExtraBold,
+                                            color = Color.White,
+                                            fontSize = 28.sp
+                                        )
+                                        Spacer(Modifier.height(6.dp))
+                                        Text(
+                                            text = "Adjust audio synchronization offset",
+                                            color = Color.White.copy(alpha = 0.6f),
+                                            style = MaterialTheme.typography.bodySmall
+                                        )
+                                        Spacer(Modifier.height(28.dp))
+                                        Slider(
+                                            value = audioDelayMs,
+                                            onValueChange = onSetAudioDelay,
+                                            valueRange = -1000f..1000f,
+                                            steps = 39,
+                                            colors = SliderDefaults.colors(
+                                                thumbColor = MaterialTheme.colorScheme.primary,
+                                                activeTrackColor = MaterialTheme.colorScheme.primary,
+                                                inactiveTrackColor = Color.White.copy(alpha = 0.2f)
+                                            ),
+                                            modifier = Modifier.fillMaxWidth()
+                                        )
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Text("-1000 ms", color = Color.White.copy(alpha = 0.55f), style = MaterialTheme.typography.labelSmall)
+                                            Text("0 ms", color = Color.White.copy(alpha = 0.55f), style = MaterialTheme.typography.labelSmall)
+                                            Text("+1000 ms", color = Color.White.copy(alpha = 0.55f), style = MaterialTheme.typography.labelSmall)
+                                        }
+                                    }
+                                }
                             }
-                            item { HorizontalDivider(color = Color.White.copy(0.1f)) }
+                        }
+                        else -> {
+                            LazyColumn(
+                                modifier = Modifier.fillMaxSize(),
+                                contentPadding = PaddingValues(bottom = 32.dp)
+                            ) {
+                                item { SettingsSectionHeader("Playback") }
+                                item {
+                                    SettingsListItem(
+                                        headline = "Playback Speed",
+                                        supporting = "${currentSpeed}×",
+                                        icon = Icons.Outlined.Speed,
+                                        onClick = { currentSubMenu = "SPEED" }
+                                    )
+                                }
+                                item {
+                                    SettingsListItem(
+                                        headline = "Sleep Timer",
+                                        supporting = if (sleepTimerActive) "Active" else "Off",
+                                        icon = Icons.Rounded.Timer,
+                                        onClick = { currentSubMenu = "SLEEP_TIMER" }
+                                    )
+                                }
+                                item {
+                                    SettingsListItem(
+                                        headline = "Audio Delay Sync",
+                                        supporting = "${audioDelayMs.toInt()} ms",
+                                        icon = Icons.Rounded.Sync,
+                                        onClick = { currentSubMenu = "AUDIO_DELAY" }
+                                    )
+                                }
 
-                            item { SettingsSectionHeader("Advanced") }
-                            item {
-                                SettingsSwitchItem(
-                                    headline = "Background Play",
-                                    icon = Icons.Rounded.PlayCircleOutline,
-                                    checked = backgroundPlay,
-                                    onCheckedChange = onToggleBackgroundPlay
-                                )
+                                item { SettingsSectionHeader("Display & Behavior") }
+                                item {
+                                    SettingsListItem(
+                                        headline = "Repeat Mode",
+                                        supporting = autoRepeat.name,
+                                        icon = Icons.Rounded.Repeat,
+                                        onClick = {
+                                            val entries = PremiumRepeatMode.entries.toTypedArray()
+                                            onToggleAutoRepeat(entries[(autoRepeat.ordinal + 1) % entries.size])
+                                        }
+                                    )
+                                }
+                                item {
+                                    SettingsSwitchItem(
+                                        headline = "Auto Play Next",
+                                        icon = Icons.Rounded.PlaylistPlay,
+                                        checked = autoPlayNext,
+                                        onCheckedChange = onToggleAutoPlay
+                                    )
+                                }
+
+                                item { SettingsSectionHeader("Advanced") }
+                                item {
+                                    SettingsSwitchItem(
+                                        headline = "Background Play",
+                                        icon = Icons.Rounded.PlayCircleOutline,
+                                        checked = backgroundPlay,
+                                        onCheckedChange = onToggleBackgroundPlay
+                                    )
+                                }
                             }
                         }
                     }
@@ -1405,11 +2036,12 @@ private fun FullscreenSettingsMenu(
 @Composable
 fun SettingsSectionHeader(title: String) {
     Text(
-        text = title,
-        fontWeight = FontWeight.Medium,
-        style = MaterialTheme.typography.titleSmall,
+        text = title.uppercase(Locale.getDefault()),
+        fontWeight = FontWeight.Bold,
+        fontSize = 12.sp,
+        letterSpacing = 1.sp,
         color = MaterialTheme.colorScheme.primary,
-        modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 24.dp, bottom = 8.dp)
+        modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 22.dp, bottom = 8.dp)
     )
 }
 
@@ -1420,18 +2052,56 @@ fun SettingsListItem(
     icon: ImageVector,
     onClick: () -> Unit
 ) {
-    ListItem(
-        colors = ListItemDefaults.colors(
-            containerColor = Color.Transparent,
-            headlineColor = Color.White,
-            supportingColor = Color.LightGray,
-            leadingIconColor = Color.White
-        ),
-        headlineContent = { Text(headline, fontWeight = FontWeight.Medium) },
-        supportingContent = supporting?.let { { Text(it) } },
-        leadingContent = { Icon(icon, null) },
-        modifier = Modifier.clickable(onClick = onClick).padding(horizontal = 8.dp)
-    )
+    Surface(
+        shape = RoundedCornerShape(18.dp),
+        color = Color.White.copy(alpha = 0.06f),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+            .clip(RoundedCornerShape(18.dp))
+            .clickable(onClick = onClick)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color.White.copy(alpha = 0.10f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
+            }
+            Spacer(Modifier.width(16.dp))
+            Text(
+                text = headline,
+                color = Color.White,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 15.sp,
+                modifier = Modifier.weight(1f)
+            )
+            if (supporting != null) {
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f))
+                ) {
+                    Text(
+                        text = supporting,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
+                    )
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -1441,17 +2111,42 @@ fun SettingsSwitchItem(
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit
 ) {
-    ListItem(
-        colors = ListItemDefaults.colors(
-            containerColor = Color.Transparent,
-            headlineColor = Color.White,
-            leadingIconColor = Color.White
-        ),
-        headlineContent = { Text(headline, fontWeight = FontWeight.Medium) },
-        leadingContent = { Icon(icon, null) },
-        trailingContent = { Switch(checked = checked, onCheckedChange = onCheckedChange) },
-        modifier = Modifier.padding(horizontal = 8.dp)
-    )
+    Surface(
+        shape = RoundedCornerShape(18.dp),
+        color = Color.White.copy(alpha = 0.06f),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+            .clip(RoundedCornerShape(18.dp))
+            .clickable { onCheckedChange(!checked) }
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color.White.copy(alpha = 0.10f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
+            }
+            Spacer(Modifier.width(16.dp))
+            Text(
+                text = headline,
+                color = Color.White,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 15.sp,
+                modifier = Modifier.weight(1f)
+            )
+            Switch(checked = checked, onCheckedChange = onCheckedChange)
+        }
+    }
 }
 
 fun formatTime(ms: Long): String {

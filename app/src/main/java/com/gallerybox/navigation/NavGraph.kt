@@ -71,20 +71,13 @@ import com.gallerybox.ui.screens.adaptive.NavigationStyle
 import com.gallerybox.ui.screens.adaptive.rememberAdaptiveState
 
 /**
-- =========================================================================================
-
--
-🗺️ THE APP ROADMAP (ROUTES)
-- =========================================================================================
-
-- Think of this section as the "Addresses" in a GPS system.
-
-- Every single screen in the app has a specific address (a "Route").
-
-- When a user clicks a button to go somewhere, we tell the app to travel to one of these Routes.
-
-- =========================================================================================
-
+ * =========================================================================================
+ * 🗺️ THE APP ROADMAP (ROUTES)
+ * =========================================================================================
+ * Think of this section as the "Addresses" in a GPS system.
+ * Every single screen in the app has a specific address (a "Route").
+ * When a user clicks a button to go somewhere, we tell the app to travel to one of these Routes.
+ * =========================================================================================
  */
 sealed interface Route {
     @Serializable data object Pictures : Route
@@ -115,12 +108,9 @@ sealed interface Route {
 }
 
 /**
-- Helper tools to turn complex text (like file paths with slashes and symbols)
-
-- into a safe, messy string (Base64) so it doesn't break our navigation system.
-
-- It's like packing a fragile item in bubble wrap before mailing it.
-
+ * Helper tools to turn complex text (like file paths with slashes and symbols)
+ * into a safe, messy string (Base64) so it doesn't break our navigation system.
+ * It's like packing a fragile item in bubble wrap before mailing it.
  */
 fun String.toSafeRouteArgs() = Base64.encodeToString(this.toByteArray(), Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
 
@@ -131,8 +121,7 @@ fun String.fromSafeRouteArgs() = try {
 }
 
 /**
-- A blueprint for the main menu buttons (Photos, Albums, Music).
-
+ * A blueprint for the main menu buttons (Photos, Albums, Music).
  */
 data class BottomTab(
     val route: Route,
@@ -143,20 +132,13 @@ data class BottomTab(
 )
 
 /**
-- =========================================================================================
-
--
-🛡️ THE SECURITY GATEKEEPER (GalleryNavHost)
-- =========================================================================================
-
-- This is the very first thing the app loads. Before showing any photos, it checks:
-
-- "Is AppLock enabled? Does the user need to enter a PIN code?"
-
-- If locked, it shows the Vault screen. If unlocked, it lets them in.
-
-- =========================================================================================
-
+ * =========================================================================================
+ * 🛡️ THE SECURITY GATEKEEPER (GalleryNavHost)
+ * =========================================================================================
+ * This is the very first thing the app loads. Before showing any photos, it checks:
+ * "Is AppLock enabled? Does the user need to enter a PIN code?"
+ * If locked, it shows the Vault screen. If unlocked, it lets them in.
+ * =========================================================================================
  */
 @Composable
 fun GalleryNavHost(
@@ -511,16 +493,11 @@ fun GalleryAppContent(
 }
 
 /**
-- =========================================================================================
-
--
-🔀 THE NAV HOST (The actual list of screens)
-- =========================================================================================
-
-- We extracted this into its own function so we can easily inject it into our Adaptive
-
-- Layouts (Bottom Bar vs Side Rail) without copying and pasting the code 3 times.
-
+ * =========================================================================================
+ * 🔀 THE NAV HOST (The actual list of screens)
+ * =========================================================================================
+ * We extracted this into its own function so we can easily inject it into our Adaptive
+ * Layouts (Bottom Bar vs Side Rail) without copying and pasting the code 3 times.
  */
 @Composable
 private fun AppNavHost(
@@ -581,10 +558,8 @@ private fun AppNavHost(
 }
 
 /**
-- Below are the extension functions that define exactly what Composable Screen
-
-- to load when the app arrives at a specific Route (address).
-
+ * Below are the extension functions that define exactly what Composable Screen
+ * to load when the app arrives at a specific Route (address).
  */
 
 private fun NavGraphBuilder.mainTabs(
@@ -796,13 +771,16 @@ private fun NavGraphBuilder.toolsAndUtilityGraphs(
         val mediaItem = galleryViewModel.getMediaItemById(args.mediaId ?: -1L) ?: rawMedia.find { m -> m.uri.toString() == decodedUri }
 
         if (mediaItem != null) {
-            WallpaperScreen(item = mediaItem, onBack = { nav.popBackStack() })
+            // Updated to pass the full MediaItem directly based on the new WallpaperScreen signature
+            WallpaperScreen(
+                item = mediaItem,
+                onBack = { nav.popBackStack() }
+            )
         } else {
             val isBusy by galleryViewModel.isBusy.collectAsState()
             if (!isBusy) LaunchedEffect(Unit) { nav.popBackStack() }
         }
     }
-
     composable<Route.Trash> {
         TrashScreen(
             trashViewModel = trashViewModel,
@@ -864,14 +842,10 @@ private fun NavGraphBuilder.toolsAndUtilityGraphs(
 }
 
 /**
-- =========================================================================================
-
--
-🔘 MENU COMPONENT 1: THE BOTTOM BAR (For Normal Phones)
-- =========================================================================================
-
-- Your exact custom Bottom Bar implementation with perfectly rounded corners.
-
+ * =========================================================================================
+ * 🔘 MENU COMPONENT 1: THE BOTTOM BAR (For Normal Phones)
+ * =========================================================================================
+ * Your exact custom Bottom Bar implementation with perfectly rounded corners.
  */
 @Composable
 fun BottomNavigationBar(
@@ -931,14 +905,10 @@ fun BottomNavigationBar(
 }
 
 /**
-- =========================================================================================
-
--
-🔘 MENU COMPONENT 2: THE SIDE RAIL (For Foldables & Small Tablets)
-- =========================================================================================
-
-- Uses official Material 3 Side Rail. Puts buttons vertically on the left edge.
-
+ * =========================================================================================
+ * 🔘 MENU COMPONENT 2: THE SIDE RAIL (For Foldables & Small Tablets)
+ * =========================================================================================
+ * Uses official Material 3 Side Rail. Puts buttons vertically on the left edge.
  */
 @Composable
 fun AppSideNavigationRail(
@@ -970,14 +940,10 @@ fun AppSideNavigationRail(
 }
 
 /**
-- =========================================================================================
-
--
-🔘 MENU COMPONENT 3: THE DESKTOP DRAWER (For Big Tablets & Desktop Monitors)
-- =========================================================================================
-
-- A permanently open menu on the left side of a giant screen.
-
+ * =========================================================================================
+ * 🔘 MENU COMPONENT 3: THE DESKTOP DRAWER (For Big Tablets & Desktop Monitors)
+ * =========================================================================================
+ * A permanently open menu on the left side of a giant screen.
  */
 @Composable
 fun AppDesktopDrawer(
@@ -1016,8 +982,7 @@ fun AppDesktopDrawer(
 }
 
 /**
-- Simple helper to safely open the phone's default Camera app.
-
+ * Simple helper to safely open the phone's default Camera app.
  */
 fun safeLaunchCamera(context: Context) {
     try {

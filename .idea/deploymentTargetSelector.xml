@@ -4,10 +4,10 @@
     <selectionStates>
       <SelectionState runConfigName="app">
         <option name="selectionMode" value="DROPDOWN" />
-        <DropdownSelection timestamp="2026-05-20T14:57:27.787011300Z">
+        <DropdownSelection timestamp="2026-10-16T11:21:23.064839900Z">
           <Target type="DEFAULT_BOOT">
             <handle>
-              <DeviceId pluginId="LocalEmulator" identifier="path=C:\Users\ishan\.android\avd\Pixel_10_Pro_XL.avd" />
+              <DeviceId pluginId="Wireless" identifier="serviceName=adb-RZGYB227R9K-Hcdt22" />
             </handle>
           </Target>
         </DropdownSelection>
@@ -48,10 +48,10 @@
       </SelectionState>
       <SelectionState runConfigName="main">
         <option name="selectionMode" value="DROPDOWN" />
-        <DropdownSelection timestamp="2026-10-13T06:26:59.808056500Z">
+        <DropdownSelection timestamp="2026-10-14T17:24:36.244553700Z">
           <Target type="DEFAULT_BOOT">
             <handle>
-              <DeviceId pluginId="PhysicalDevice" identifier="serial=RZGYB227R9K" />
+              <DeviceId pluginId="Wireless" identifier="serviceName=adb-RZGYB227R9K-Hcdt22" />
             </handle>
           </Target>
         </DropdownSelection>

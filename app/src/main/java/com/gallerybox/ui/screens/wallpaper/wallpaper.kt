@@ -3,16 +3,25 @@
 
 package com.gallerybox.ui.screens.wallpaper
 
-// =========================================================================================
-// --- IMPORTS ---
-// Bringing in all the tools we need.
-// =========================================================================================
-import android.app.Activity
 import android.app.WallpaperManager
-import android.content.*
-import android.graphics.*
+import android.content.BroadcastReceiver
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.content.SharedPreferences
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Matrix
+import android.graphics.Paint
+import android.graphics.Rect
 import android.graphics.drawable.BitmapDrawable
+import android.media.ExifInterface
+import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.os.Build
 import android.os.PowerManager
 import android.service.wallpaper.WallpaperService
 import android.util.Log
@@ -20,93 +29,308 @@ import android.view.SurfaceHolder
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.spring
-import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Canvas as ComposeCanvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.calculatePan
-import androidx.compose.foundation.gestures.calculateRotation
-import androidx.compose.foundation.gestures.calculateZoom
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.filled.RotateLeft
+import androidx.compose.material.icons.filled.RotateRight
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.VolumeOff
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.rounded.Check
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.withTransform
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.positionChange
-import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
-import androidx.core.content.edit
 import androidx.core.net.toUri
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.common.C
+import androidx.media3.common.MediaItem as ExoMediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
-import androidx.media3.common.MediaItem as ExoMediaItem
+import androidx.media3.common.VideoSize
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import coil.imageLoader
 import coil.request.ImageRequest
 import coil.request.SuccessResult
+import coil.size.Size
+import com.gallerybox.data.MediaItem
+import com.gallerybox.ui.screens.adaptive.WindowWidthSize
+import com.gallerybox.ui.screens.adaptive.rememberAdaptiveState
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
-import kotlin.math.*
+import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.roundToInt
+import kotlin.math.sin
 
-// Importing the data model
-import com.gallerybox.data.MediaItem
+// =========================================================================================
+// --- SHARED WALLPAPER TRANSFORM & UI STATE ---
+// =========================================================================================
+data class WallpaperTransform(
+    val scale: Float = 1f,
+    val offsetX: Float = 0f,
+    val offsetY: Float = 0f
+)
 
-// Importing the Adaptive Engine so our UI knows what shape the phone is
-import com.gallerybox.ui.screens.adaptive.AdaptiveState
-import com.gallerybox.ui.screens.adaptive.rememberAdaptiveState
-import com.gallerybox.ui.screens.adaptive.WindowWidthSize
+data class WallpaperUiState(
+    val scale: Float = 1f,
+    val offsetX: Float = 0f,
+    val offsetY: Float = 0f,
+    val rotation: Float = 0f,
+    val previewWidth: Int = 0,
+    val previewHeight: Int = 0,
+    val mediaWidth: Int = 0,
+    val mediaHeight: Int = 0,
+    val playAudio: Boolean = false,
+    val loopVideo: Boolean = true,
+    val dimLevel: Float = 0f
+)
+
+class WallpaperViewModel : ViewModel() {
+    private val _uiState = MutableStateFlow(WallpaperUiState())
+    val uiState: StateFlow<WallpaperUiState> = _uiState.asStateFlow()
+
+    private val _transform = MutableStateFlow(WallpaperTransform())
+    val transform: StateFlow<WallpaperTransform> = _transform.asStateFlow()
+
+    fun setPreviewSize(width: Int, height: Int) {
+        if (width <= 0 || height <= 0) return
+        _uiState.update { old ->
+            clampState(old.copy(previewWidth = width, previewHeight = height))
+        }
+    }
+
+    fun setMediaSize(width: Int, height: Int) {
+        if (width <= 0 || height <= 0) return
+        _uiState.update { old ->
+            clampState(old.copy(mediaWidth = width, mediaHeight = height))
+        }
+    }
+
+    fun applyGesture(
+        zoom: Float,
+        panX: Float,
+        panY: Float,
+        rotationDelta: Float = 0f
+    ) {
+        _uiState.update { old ->
+            val candidate = old.copy(
+                scale = (old.scale * zoom).coerceIn(1f, 8f),
+                offsetX = old.offsetX + panX,
+                offsetY = old.offsetY + panY,
+                rotation = old.rotation
+            )
+            clampState(candidate)
+        }
+        val current = _uiState.value
+        _transform.value = WallpaperTransform(
+            scale = current.scale,
+            offsetX = current.offsetX,
+            offsetY = current.offsetY
+        )
+    }
+
+    fun rotateLeft() {
+        _uiState.update { old ->
+            val nextRot = (old.rotation - 90f) % 360f
+            clampState(old.copy(rotation = nextRot))
+        }
+    }
+
+    fun rotateRight() {
+        _uiState.update { old ->
+            val nextRot = (old.rotation + 90f) % 360f
+            clampState(old.copy(rotation = nextRot))
+        }
+    }
+
+    fun toggleAudio() {
+        _uiState.update { it.copy(playAudio = !it.playAudio) }
+    }
+
+    fun setLoopVideo(loop: Boolean) {
+        _uiState.update { it.copy(loopVideo = loop) }
+    }
+
+    fun setDimLevel(level: Float) {
+        _uiState.update { it.copy(dimLevel = level.coerceIn(0f, 0.8f)) }
+    }
+
+    fun resetTransform() {
+        _uiState.update { old ->
+            old.copy(
+                scale = 1f,
+                offsetX = 0f,
+                offsetY = 0f,
+                rotation = 0f,
+                dimLevel = 0f
+            )
+        }
+        _transform.value = WallpaperTransform()
+    }
+
+    private fun clampState(state: WallpaperUiState): WallpaperUiState {
+        val pw = state.previewWidth.toFloat()
+        val ph = state.previewHeight.toFloat()
+        val mw = state.mediaWidth.toFloat()
+        val mh = state.mediaHeight.toFloat()
+
+        if (pw <= 0f || ph <= 0f || mw <= 0f || mh <= 0f) return state
+
+        val rad = Math.toRadians(state.rotation.toDouble())
+        val cosA = abs(cos(rad)).toFloat()
+        val sinA = abs(sin(rad)).toFloat()
+
+        val rotW = mw * cosA + mh * sinA
+        val rotH = mw * sinA + mh * cosA
+
+        val scaleX = pw / rotW
+        val scaleY = ph / rotH
+        val baseScale = max(scaleX, scaleY)
+        val finalScale = baseScale * state.scale
+
+        val drawnW = rotW * finalScale
+        val drawnH = rotH * finalScale
+
+        val maxOffsetX = max(0f, (drawnW - pw) / 2f)
+        val maxOffsetY = max(0f, (drawnH - ph) / 2f)
+
+        return state.copy(
+            offsetX = state.offsetX.coerceIn(-maxOffsetX, maxOffsetX),
+            offsetY = state.offsetY.coerceIn(-maxOffsetY, maxOffsetY)
+        )
+    }
+}
 
 // =========================================================================================
 // --- THE SMART RESIZER (CacheEngine) ---
-// Analogy: Imagine trying to fit a giant billboard poster onto a small office desk.
-// It would crush the desk! (In phone terms, loading a massive 8K image crashes the app
-// with an "Out of Memory" error).
-// This tool looks at the giant picture and calculates exactly how much we need to shrink
-// it before bringing it into the room.
 // =========================================================================================
 object CacheEngine {
     fun calculateInSampleSize(options: BitmapFactory.Options, reqWidth: Int, reqHeight: Int): Int {
         val (height, width) = options.outHeight to options.outWidth
         var inSampleSize = 1
         if (height > reqHeight || width > reqWidth) {
-            val halfHeight = height / 2; val halfWidth = width / 2
-            // We keep cutting the size in half (1, 2, 4, 8) until it safely fits our required size.
-            while (halfHeight / inSampleSize >= reqHeight && halfWidth / inSampleSize >= reqWidth) inSampleSize *= 2
+            val halfHeight = height / 2
+            val halfWidth = width / 2
+            while (halfHeight / inSampleSize >= reqHeight && halfWidth / inSampleSize >= reqWidth) {
+                inSampleSize *= 2
+            }
         }
         return inSampleSize
+    }
+
+    fun decodeExifCorrectedBitmap(context: Context, uri: Uri, reqWidth: Int, reqHeight: Int): Bitmap? {
+        val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        context.contentResolver.openInputStream(uri)?.use {
+            BitmapFactory.decodeStream(it, null, options)
+        }
+
+        options.inSampleSize = calculateInSampleSize(options, reqWidth, reqHeight)
+        options.inJustDecodeBounds = false
+        options.inPreferredConfig = Bitmap.Config.ARGB_8888
+
+        val rawBitmap = context.contentResolver.openInputStream(uri)?.use {
+            BitmapFactory.decodeStream(it, null, options)
+        } ?: return null
+
+        val exifRotation = try {
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                val exif = ExifInterface(input)
+                when (exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)) {
+                    ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+                    ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+                    ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+                    else -> 0f
+                }
+            } ?: 0f
+        } catch (_: Exception) {
+            0f
+        }
+
+        return if (exifRotation != 0f) {
+            val matrix = Matrix().apply { postRotate(exifRotation) }
+            val rotated = Bitmap.createBitmap(rawBitmap, 0, 0, rawBitmap.width, rawBitmap.height, matrix, true)
+            if (rotated != rawBitmap) rawBitmap.recycle()
+            rotated
+        } else {
+            rawBitmap
+        }
     }
 }
 
 // =========================================================================================
 // --- THE PHOTOSHOP ARTIST (ImageEngine) ---
-// Analogy: This is the artist in the back room. You tell them, "Take this photo, spin it
-// 45 degrees, zoom in 2x, slide it to the left, and make it 30% darker."
-// This engine creates a brand new, single, flat canvas with all your edits permanently painted on.
 // =========================================================================================
 object ImageEngine {
     fun createFinalBitmap(
@@ -114,7 +338,8 @@ object ImageEngine {
         uri: Uri,
         screenWidth: Int,
         screenHeight: Int,
-        imageScaleMode: String,
+        previewWidth: Int,
+        previewHeight: Int,
         userScale: Float,
         userOffsetX: Float,
         userOffsetY: Float,
@@ -122,31 +347,12 @@ object ImageEngine {
         dimLevel: Float
     ): Bitmap? {
         try {
-            // 1. "Peek" at the image size without actually loading the heavy image.
-            val options = BitmapFactory.Options().apply {
-                inJustDecodeBounds = true
-            }
+            val safeScale = userScale.coerceIn(1f, 8f)
+            val reqW = (screenWidth * min(safeScale, 2.5f)).roundToInt().coerceAtLeast(screenWidth)
+            val reqH = (screenHeight * min(safeScale, 2.5f)).roundToInt().coerceAtLeast(screenHeight)
 
-            context.contentResolver.openInputStream(uri)?.use {
-                BitmapFactory.decodeStream(it, null, options)
-            }
+            val original = CacheEngine.decodeExifCorrectedBitmap(context, uri, reqW, reqH) ?: return null
 
-            // 2. Calculate how much to shrink it based on our phone's screen size
-            options.inSampleSize = CacheEngine.calculateInSampleSize(
-                options,
-                (screenWidth * userScale).toInt(),
-                (screenHeight * userScale).toInt()
-            )
-
-            // 3. Now load the actual pixels into memory, safely shrunk!
-            options.inJustDecodeBounds = false
-            options.inPreferredConfig = Bitmap.Config.ARGB_8888
-
-            val original = context.contentResolver.openInputStream(uri)?.use {
-                BitmapFactory.decodeStream(it, null, options)
-            } ?: return null
-
-            // 4. Create the final blank canvas that exactly matches the phone screen.
             val finalBitmap = Bitmap.createBitmap(
                 screenWidth,
                 screenHeight,
@@ -154,41 +360,61 @@ object ImageEngine {
             )
 
             val canvas = Canvas(finalBitmap).apply {
-                drawColor(Color.BLACK) // Paint the background black
+                drawColor(Color.BLACK)
             }
 
-            val matrix = Matrix() // A Matrix is just a math tool used to slide, spin, and stretch things.
+            val rad = Math.toRadians(userRotation.toDouble())
+            val cosA = abs(cos(rad)).toFloat()
+            val sinA = abs(sin(rad)).toFloat()
 
-            val scaleX = screenWidth.toFloat() / original.width
-            val scaleY = screenHeight.toFloat() / original.height
+            val rotW = original.width * cosA + original.height * sinA
+            val rotH = original.width * sinA + original.height * cosA
 
-            val baseScaleX: Float
-            val baseScaleY: Float
+            val sx = screenWidth.toFloat() / rotW
+            val sy = screenHeight.toFloat() / rotH
 
-            // How should the picture fit the screen by default?
-            when (imageScaleMode) {
-                "Fill" -> { baseScaleX = scaleX; baseScaleY = scaleY }
-                "Original" -> { baseScaleX = 1f; baseScaleY = 1f }
-                else -> { val s = min(scaleX, scaleY); baseScaleX = s; baseScaleY = s } // "Fit"
+            // Always cover the wallpaper output.
+            val base = max(sx, sy)
+            val finalScale = base * safeScale
+
+            val mappedOffsetX = if (previewWidth > 0) {
+                userOffsetX * (screenWidth.toFloat() / previewWidth.toFloat())
+            } else {
+                userOffsetX
             }
+            val mappedOffsetY = if (previewHeight > 0) {
+                userOffsetY * (screenHeight.toFloat() / previewHeight.toFloat())
+            } else {
+                userOffsetY
+            }
+
+            val drawnW = rotW * finalScale
+            val drawnH = rotH * finalScale
+            val maxOffsetX = max(0f, (drawnW - screenWidth) / 2f)
+            val maxOffsetY = max(0f, (drawnH - screenHeight) / 2f)
+
+            val clampedOffsetX = mappedOffsetX.coerceIn(-maxOffsetX, maxOffsetX)
+            val clampedOffsetY = mappedOffsetY.coerceIn(-maxOffsetY, maxOffsetY)
 
             val cx = screenWidth / 2f
             val cy = screenHeight / 2f
 
-            // Apply all the user's pinches, spins, and drags to the math matrix
-            matrix.postTranslate(-original.width / 2f, -original.height / 2f)
-            matrix.postScale(baseScaleX * userScale, baseScaleY * userScale)
-            matrix.postRotate(userRotation)
-            matrix.postTranslate(cx + userOffsetX, cy + userOffsetY)
+            val matrix = Matrix().apply {
+                postTranslate(-original.width / 2f, -original.height / 2f)
+                postScale(finalScale, finalScale)
+                postRotate(userRotation)
+                postTranslate(cx + clampedOffsetX, cy + clampedOffsetY)
+            }
 
-            // Paint the original image onto the blank canvas using the math matrix
-            canvas.drawBitmap(original, matrix, Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG))
-            original.recycle() // Throw away the original to save phone memory!
+            canvas.drawBitmap(
+                original,
+                matrix,
+                Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
+            )
+            original.recycle()
 
-            // If the user wanted the wallpaper darkened, paint a see-through black layer over it.
             if (dimLevel > 0f) {
-                val dimCanvas = Canvas(finalBitmap)
-                dimCanvas.drawColor(Color.argb((dimLevel * 255).toInt(), 0, 0, 0))
+                canvas.drawColor(Color.argb((dimLevel * 255f).roundToInt().coerceIn(0, 255), 0, 0, 0))
             }
 
             return finalBitmap
@@ -204,41 +430,64 @@ object ImageEngine {
 
 // =========================================================================================
 // --- THE INTERIOR DECORATOR (StaticEngine) ---
-// Analogy: Once the Photoshop Artist finishes painting the picture, this guy takes the
-// picture and permanently glues it to the wall (your phone's Home Screen or Lock Screen).
 // =========================================================================================
 object StaticEngine {
     suspend fun apply(
-        context: Context, item: MediaItem, flags: Int,
-        imageScaleMode: String, scale: Float, offsetX: Float, offsetY: Float, rotation: Float, dimLevel: Float,
+        context: Context,
+        item: MediaItem,
+        flags: Int,
+        previewWidth: Int,
+        previewHeight: Int,
+        scale: Float,
+        offsetX: Float,
+        offsetY: Float,
+        rotation: Float,
+        dimLevel: Float,
         onSuccess: () -> Unit
-    ) = withContext(Dispatchers.IO) { // Warehouse Worker: Do this heavy work in the background!
+    ) = withContext(Dispatchers.IO) {
         try {
             val wm = WallpaperManager.getInstance(context)
             val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-            val bounds = windowManager.currentWindowMetrics.bounds
 
-            val targetWidth = max(wm.desiredMinimumWidth, bounds.width())
-            val targetHeight = max(wm.desiredMinimumHeight, bounds.height())
+            val bounds = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                windowManager.currentWindowMetrics.bounds
+            } else {
+                val dm = context.resources.displayMetrics
+                Rect(0, 0, dm.widthPixels, dm.heightPixels)
+            }
 
-            wm.suggestDesiredDimensions(targetWidth, targetHeight)
+            val targetWidth = bounds.width().coerceAtLeast(1080)
+            val targetHeight = bounds.height().coerceAtLeast(1920)
 
-            // Ask the artist to paint the picture...
+            runCatching { wm.suggestDesiredDimensions(targetWidth, targetHeight) }
+
             val finalBitmap = ImageEngine.createFinalBitmap(
-                context, item.uri, targetWidth, targetHeight, imageScaleMode,
-                scale, offsetX, offsetY, rotation, dimLevel
+                context = context,
+                uri = item.uri,
+                screenWidth = targetWidth,
+                screenHeight = targetHeight,
+                previewWidth = previewWidth,
+                previewHeight = previewHeight,
+                userScale = scale,
+                userOffsetX = offsetX,
+                userOffsetY = offsetY,
+                userRotation = rotation,
+                dimLevel = dimLevel
             ) ?: throw Exception("Failed to create bitmap, possibly OutOfMemory")
 
-            // Glue it to the wall!
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+            val visibleCropHint = Rect(0, 0, targetWidth, targetHeight)
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                 when (flags) {
-                    WallpaperManager.FLAG_SYSTEM -> wm.setBitmap(finalBitmap, null, true, WallpaperManager.FLAG_SYSTEM)
-                    WallpaperManager.FLAG_LOCK -> wm.setBitmap(finalBitmap, null, true, WallpaperManager.FLAG_LOCK)
+                    WallpaperManager.FLAG_SYSTEM ->
+                        wm.setBitmap(finalBitmap, visibleCropHint, true, WallpaperManager.FLAG_SYSTEM)
+                    WallpaperManager.FLAG_LOCK ->
+                        wm.setBitmap(finalBitmap, visibleCropHint, true, WallpaperManager.FLAG_LOCK)
                     WallpaperManager.FLAG_SYSTEM or WallpaperManager.FLAG_LOCK -> {
-                        wm.setBitmap(finalBitmap, null, true, WallpaperManager.FLAG_SYSTEM)
-                        wm.setBitmap(finalBitmap, null, true, WallpaperManager.FLAG_LOCK)
+                        wm.setBitmap(finalBitmap, visibleCropHint, true, WallpaperManager.FLAG_SYSTEM)
+                        wm.setBitmap(finalBitmap, visibleCropHint, true, WallpaperManager.FLAG_LOCK)
                     }
-                    else -> wm.setBitmap(finalBitmap, null, true, flags)
+                    else -> wm.setBitmap(finalBitmap, visibleCropHint, true, flags)
                 }
             } else {
                 wm.setBitmap(finalBitmap)
@@ -246,7 +495,6 @@ object StaticEngine {
 
             finalBitmap.recycle()
 
-            // Tell the Store Manager (Main Screen) that we are done!
             withContext(Dispatchers.Main) {
                 Toast.makeText(context, "Wallpaper Applied Successfully", Toast.LENGTH_SHORT).show()
                 onSuccess()
@@ -262,23 +510,25 @@ object StaticEngine {
 
 // =========================================================================================
 // --- THE MOVIE DIRECTOR (VideoEngine) ---
-// Analogy: If you pick a Video instead of a photo, we can't just glue a flat picture to
-// the wall. We have to save a copy of the movie and tell Android, "Hey, please open the
-// Live Wallpaper menu so the user can hit 'Set Wallpaper'."
 // =========================================================================================
 object VideoEngine {
     suspend fun setVideoWallpaper(
-        context: Context, item: MediaItem, playAudio: Boolean, loop: Boolean, scaleMode: String, onSuccess: () -> Unit
-    ) = withContext(Dispatchers.IO) { // Warehouse Worker: Doing heavy file-copying in the background
+        context: Context,
+        item: MediaItem,
+        playAudio: Boolean,
+        loop: Boolean,
+        onSuccess: () -> Unit
+    ) = withContext(Dispatchers.IO) {
         try {
-            // 1. Create a new, temporary copy of the video file deep inside the app's secret folders
             val uniqueName = "live_wp_${System.currentTimeMillis()}.mp4"
             val finalFile = File(context.filesDir, uniqueName)
             val tempFile = File(context.filesDir, "live_wallpaper_video_new.mp4")
 
             context.contentResolver.openInputStream(item.uri)?.use { input ->
                 FileOutputStream(tempFile).use { output ->
-                    input.copyTo(output)
+                    input.copyTo(output, 64 * 1024)
+                    output.flush()
+                    runCatching { output.fd.sync() }
                 }
             } ?: throw Exception("Cannot open video stream")
 
@@ -287,25 +537,30 @@ object VideoEngine {
                 tempFile.delete()
             }
 
-            // Clean up old live wallpapers so we don't eat up the user's storage
+            if (!finalFile.exists() || finalFile.length() <= 0L) {
+                throw Exception("Saved video file is empty")
+            }
+
+            val prefs = context.getSharedPreferences("wallpaper_prefs", Context.MODE_PRIVATE)
+            val previousUri = prefs.getString("wallpaper_video_uri", null)
+            val previousFileName = previousUri?.toUri()?.lastPathSegment
+
             context.filesDir.listFiles { _, name ->
-                name.startsWith("live_wp_") && name.endsWith(".mp4") && name != uniqueName
+                name.startsWith("live_wp_") &&
+                        name.endsWith(".mp4") &&
+                        name != uniqueName &&
+                        name != previousFileName
             }?.forEach { it.delete() }
 
             val safeUri = Uri.fromFile(finalFile).toString()
 
-            // 2. Write down the settings on a "Sticky Note" (SharedPreferences) so the Live Wallpaper
-            // engine knows how to play it later.
-            val prefs = context.getSharedPreferences("wallpaper_prefs", Context.MODE_PRIVATE)
-            prefs.edit {
-                putString("wallpaper_video_uri", safeUri)
-                putBoolean("wallpaper_video_audio", playAudio)
-                putBoolean("wallpaper_video_loop", loop)
-                putString("wallpaper_video_scale_mode", scaleMode)
-                putLong("wallpaper_update_trigger", System.currentTimeMillis())
-            }
+            prefs.edit()
+                .putString("wallpaper_video_uri", safeUri)
+                .putBoolean("wallpaper_video_audio", playAudio)
+                .putBoolean("wallpaper_video_loop", loop)
+                .putLong("wallpaper_update_trigger", System.currentTimeMillis())
+                .commit()
 
-            // 3. Ask Android to open the Live Wallpaper Chooser
             withContext(Dispatchers.Main) {
                 try {
                     val component = ComponentName(context, VideoWallpaperService::class.java)
@@ -319,10 +574,18 @@ object VideoEngine {
                     try {
                         val fallbackIntent = Intent(WallpaperManager.ACTION_LIVE_WALLPAPER_CHOOSER)
                         context.startActivity(fallbackIntent)
-                        Toast.makeText(context, "Please select GalleryBox Live Wallpaper from the list", Toast.LENGTH_LONG).show()
+                        Toast.makeText(
+                            context,
+                            "Please select GalleryBox Live Wallpaper from the list",
+                            Toast.LENGTH_LONG
+                        ).show()
                         onSuccess()
                     } catch (e2: Exception) {
-                        Toast.makeText(context, "Live Wallpapers not supported on this device", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(
+                            context,
+                            "Live Wallpapers not supported on this device",
+                            Toast.LENGTH_SHORT
+                        ).show()
                     }
                 }
             }
@@ -337,102 +600,140 @@ object VideoEngine {
 
 // =========================================================================================
 // --- THE INVISIBLE CINEMA SCREEN (VideoWallpaperService) ---
-// Analogy: This is an Android System Service. It runs 24/7 in the background behind all
-// your apps. It holds a tiny DVD Player (ExoPlayer) and constantly loops the movie on
-// the background glass (SurfaceHolder).
 // =========================================================================================
 class VideoWallpaperService : WallpaperService() {
     override fun onCreateEngine(): Engine = VideoEngineInstance()
 
     private inner class VideoEngineInstance : Engine(), SharedPreferences.OnSharedPreferenceChangeListener {
-        private var exoPlayer: ExoPlayer? = null
+        private var player: ExoPlayer? = null
+        private var holder: SurfaceHolder? = null
         private var isVisible = false
         private var systemReceiver: BroadcastReceiver? = null
-        private var currentSurfaceHolder: SurfaceHolder? = null
         private var retryCount = 0
-        private var pendingUri: String? = null
 
         override fun onCreate(surfaceHolder: SurfaceHolder) {
             super.onCreate(surfaceHolder)
-            // Read the Sticky Notes (SharedPreferences) to see what video we should play
+            this.holder = surfaceHolder
+
             val prefs = getSharedPreferences("wallpaper_prefs", Context.MODE_PRIVATE)
             prefs.registerOnSharedPreferenceChangeListener(this)
 
-            // Setup the DVD Player (ExoPlayer)
-            exoPlayer = ExoPlayer.Builder(applicationContext).build().apply {
+            player = ExoPlayer.Builder(applicationContext).build().apply {
                 volume = if (prefs.getBoolean("wallpaper_video_audio", false)) 1f else 0f
                 setPlaybackSpeed(1f)
-                repeatMode = if (prefs.getBoolean("wallpaper_video_loop", true)) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
-
-                val scaleModeStr = prefs.getString("wallpaper_video_scale_mode", "Fit")
-                videoScalingMode = if (scaleModeStr == "Fill") C.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING else C.VIDEO_SCALING_MODE_SCALE_TO_FIT
+                repeatMode = if (prefs.getBoolean("wallpaper_video_loop", true)) {
+                    Player.REPEAT_MODE_ONE
+                } else {
+                    Player.REPEAT_MODE_OFF
+                }
+                videoScalingMode = C.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING
 
                 addListener(object : Player.Listener {
                     override fun onPlaybackStateChanged(state: Int) {
-                        when(state) {
-                            Player.STATE_READY -> {
-                                retryCount = 0
-                                if (isVisible) play()
-                            }
-                            Player.STATE_ENDED -> seekTo(0)
-                            Player.STATE_BUFFERING, Player.STATE_IDLE -> { /* No-op */ }
+                        if (state == Player.STATE_READY) {
+                            retryCount = 0
+                            resumeIfAllowed()
+                        } else if (state == Player.STATE_ENDED) {
+                            seekTo(0)
+                            resumeIfAllowed()
                         }
                     }
+
                     override fun onPlayerError(error: PlaybackException) {
-                        if (retryCount < 1) {
+                        Log.e("VideoWallpaperService", "ExoPlayer error", error)
+                        if (retryCount < 2) {
                             retryCount++
-                            prepare()
+                            loadCurrentMedia(force = true)
                         }
                     }
                 })
             }
 
-            pendingUri = prefs.getString("wallpaper_video_uri", null)
+            loadCurrentMedia(force = true)
             registerSystemReceivers()
         }
 
-        private fun startPlaybackIfReady(forceReload: Boolean = false) {
-            val holder = currentSurfaceHolder ?: return
-            val player = exoPlayer ?: return
-            val uri = pendingUri ?: return
+        private fun loadCurrentMedia(force: Boolean = false) {
+            val exo = player ?: return
+            val prefs = getSharedPreferences("wallpaper_prefs", Context.MODE_PRIVATE)
+            val uriString = prefs.getString("wallpaper_video_uri", null) ?: return
 
-            // Connect the DVD player to the TV Screen (SurfaceHolder)
-            player.setVideoSurfaceHolder(holder)
-            if (forceReload || player.currentMediaItem?.mediaId != uri || player.playbackState == Player.STATE_IDLE) {
-                player.setMediaItem(ExoMediaItem.Builder().setUri(uri.toUri()).setMediaId(uri).build())
-                player.prepare()
+            exo.volume = if (prefs.getBoolean("wallpaper_video_audio", false)) 1f else 0f
+            exo.repeatMode = if (prefs.getBoolean("wallpaper_video_loop", true)) {
+                Player.REPEAT_MODE_ONE
+            } else {
+                Player.REPEAT_MODE_OFF
             }
-            player.playWhenReady = true
-            if (isVisible) player.play()
+            exo.videoScalingMode = C.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING
+
+            if (!force &&
+                exo.currentMediaItem?.mediaId == uriString &&
+                exo.playbackState != Player.STATE_IDLE
+            ) {
+                return
+            }
+
+            val mediaItem = ExoMediaItem.Builder()
+                .setUri(uriString.toUri())
+                .setMediaId(uriString)
+                .build()
+
+            exo.setMediaItem(mediaItem)
+            exo.prepare()
         }
 
-        // If the user changes settings in the app, this instantly updates the live wallpaper!
+        private fun resumeIfAllowed() {
+            val exo = player ?: return
+            val currentHolder = holder ?: return
+
+            if (!currentHolder.surface.isValid) return
+
+            val pm = applicationContext.getSystemService(Context.POWER_SERVICE) as PowerManager
+            if (pm.isPowerSaveMode) {
+                exo.pause()
+                return
+            }
+
+            if (isVisible) {
+                if (exo.playbackState == Player.STATE_IDLE) {
+                    exo.prepare()
+                }
+                exo.playWhenReady = true
+                exo.play()
+            } else {
+                exo.pause()
+            }
+        }
+
         override fun onSharedPreferenceChanged(sharedPreferences: SharedPreferences?, key: String?) {
-            if (sharedPreferences == null || exoPlayer == null) return
+            if (sharedPreferences == null || player == null) return
 
             when (key) {
-                "wallpaper_video_audio" -> exoPlayer?.volume = if (sharedPreferences.getBoolean(key, false)) 1f else 0f
-                "wallpaper_video_loop" -> exoPlayer?.repeatMode = if (sharedPreferences.getBoolean(key, true)) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
-                "wallpaper_video_scale_mode" -> {
-                    val scaleModeStr = sharedPreferences.getString(key, "Fit")
-                    exoPlayer?.videoScalingMode = if (scaleModeStr == "Fill") C.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING else C.VIDEO_SCALING_MODE_SCALE_TO_FIT
+                "wallpaper_video_audio" -> {
+                    player?.volume = if (sharedPreferences.getBoolean(key, false)) 1f else 0f
+                }
+                "wallpaper_video_loop" -> {
+                    player?.repeatMode = if (sharedPreferences.getBoolean(key, true)) {
+                        Player.REPEAT_MODE_ONE
+                    } else {
+                        Player.REPEAT_MODE_OFF
+                    }
                 }
                 "wallpaper_video_uri", "wallpaper_update_trigger" -> {
-                    pendingUri = sharedPreferences.getString("wallpaper_video_uri", null)
-                    startPlaybackIfReady(forceReload = true)
+                    holder?.let { player?.setVideoSurfaceHolder(it) }
+                    loadCurrentMedia(force = true)
+                    resumeIfAllowed()
                 }
             }
         }
 
-        // We listen to the Android system. If the user turns their screen off, we PAUSE the video
-        // to save their battery. When they unlock the phone, we hit PLAY again.
         private fun registerSystemReceivers() {
             systemReceiver = object : BroadcastReceiver() {
                 override fun onReceive(context: Context?, intent: Intent?) {
                     when (intent?.action) {
-                        Intent.ACTION_SCREEN_OFF -> exoPlayer?.pause()
-                        Intent.ACTION_SCREEN_ON -> if (isVisible) checkPowerAndPlay()
-                        PowerManager.ACTION_POWER_SAVE_MODE_CHANGED -> checkPowerAndPlay()
+                        Intent.ACTION_SCREEN_OFF -> player?.pause()
+                        Intent.ACTION_SCREEN_ON -> resumeIfAllowed()
+                        PowerManager.ACTION_POWER_SAVE_MODE_CHANGED -> resumeIfAllowed()
                     }
                 }
             }
@@ -450,43 +751,50 @@ class VideoWallpaperService : WallpaperService() {
             )
         }
 
-        private fun checkPowerAndPlay() {
-            val pm = applicationContext.getSystemService(Context.POWER_SERVICE) as PowerManager
-            val shouldPauseForPower = pm.isPowerSaveMode // Don't play videos if Battery Saver is on!
-
-            if (shouldPauseForPower) {
-                exoPlayer?.pause()
-            } else if (isVisible) {
-                exoPlayer?.play()
-            }
-        }
-
         override fun onVisibilityChanged(visible: Boolean) {
+            super.onVisibilityChanged(visible)
             this.isVisible = visible
             if (visible) {
-                checkPowerAndPlay()
+                holder?.let { player?.setVideoSurfaceHolder(it) }
+                loadCurrentMedia()
+                resumeIfAllowed()
             } else {
-                exoPlayer?.pause() // If an app is open covering the home screen, pause the video!
+                player?.pause()
             }
         }
 
         override fun onSurfaceCreated(holder: SurfaceHolder) {
             super.onSurfaceCreated(holder)
-            currentSurfaceHolder = holder
-            startPlaybackIfReady()
+
+            this.holder = holder
+
+            player?.setVideoSurfaceHolder(holder)
+            loadCurrentMedia()
+
+            // Reattach the surface and resume after media is ready.
+            resumeIfAllowed()
         }
 
-        override fun onSurfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+        override fun onSurfaceChanged(
+            holder: SurfaceHolder,
+            format: Int,
+            width: Int,
+            height: Int
+        ) {
             super.onSurfaceChanged(holder, format, width, height)
-            currentSurfaceHolder = holder
-            startPlaybackIfReady()
+
+            this.holder = holder
+            player?.setVideoSurfaceHolder(holder)
+            resumeIfAllowed()
         }
 
         override fun onSurfaceDestroyed(holder: SurfaceHolder) {
             super.onSurfaceDestroyed(holder)
-            currentSurfaceHolder = null
-            exoPlayer?.clearVideoSurfaceHolder(holder)
-            exoPlayer?.pause()
+            if (this.holder === holder) {
+                this.holder = null
+            }
+            player?.clearVideoSurfaceHolder(holder)
+            player?.pause()
         }
 
         override fun onDestroy() {
@@ -494,115 +802,202 @@ class VideoWallpaperService : WallpaperService() {
             val prefs = getSharedPreferences("wallpaper_prefs", Context.MODE_PRIVATE)
             prefs.unregisterOnSharedPreferenceChangeListener(this)
             systemReceiver?.let {
-                try { applicationContext.unregisterReceiver(it) } catch (e: Exception) { /* Ignored */ }
+                try {
+                    applicationContext.unregisterReceiver(it)
+                } catch (_: Exception) {
+                }
             }
-            exoPlayer?.release()
-            exoPlayer = null
+            holder = null
+            player?.release()
+            player = null
         }
     }
 }
 
 // =========================================================================================
+// --- PHOTO PREVIEW COMPOSABLE (Fixed Center Pivot & Full-Frame Cover) ---
+// =========================================================================================
+@Composable
+private fun PhotoPreview(
+    bitmap: Bitmap,
+    state: WallpaperUiState
+) {
+    val image = remember(bitmap) {
+        bitmap.asImageBitmap()
+    }
+
+    ComposeCanvas(
+        modifier = Modifier
+            .fillMaxSize()
+            .clipToBounds()
+    ) {
+        val imageWidth = bitmap.width.toFloat()
+        val imageHeight = bitmap.height.toFloat()
+
+        val rad = Math.toRadians(state.rotation.toDouble())
+        val cosA = abs(cos(rad)).toFloat()
+        val sinA = abs(sin(rad)).toFloat()
+
+        val rotW = imageWidth * cosA + imageHeight * sinA
+        val rotH = imageWidth * sinA + imageHeight * cosA
+
+        val scaleX = size.width / rotW
+        val scaleY = size.height / rotH
+
+        // Automatic cover: fill the entire phone preview without stretching.
+        val baseScale = max(scaleX, scaleY)
+        val finalScale = baseScale * state.scale
+
+        // IMPORTANT FIX: Explicit pivot = Offset.Zero prevents Compose Canvas from
+        // scaling around (size.width/2, size.height/2) a second time!
+        withTransform({
+            translate(
+                left = size.width / 2f + state.offsetX,
+                top = size.height / 2f + state.offsetY
+            )
+            rotate(
+                degrees = state.rotation,
+                pivot = Offset.Zero
+            )
+            scale(
+                scaleX = finalScale,
+                scaleY = finalScale,
+                pivot = Offset.Zero
+            )
+            translate(
+                left = -imageWidth / 2f,
+                top = -imageHeight / 2f
+            )
+        }) {
+            drawImage(image)
+        }
+    }
+}
+
+// =========================================================================================
+// --- VIDEO PREVIEW COMPOSABLE ---
+// =========================================================================================
+@Composable
+private fun VideoPreview(
+    player: ExoPlayer
+) {
+    AndroidView(
+        factory = { ctx ->
+            PlayerView(ctx).apply {
+                useController = false
+                this.player = player
+                this.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+            }
+        },
+        update = { view ->
+            view.player = player
+            view.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+        },
+        modifier = Modifier.fillMaxSize()
+    )
+}
+
+// =========================================================================================
 // --- THE CONTROL ROOM (WallpaperScreen) ---
-// Analogy: This is the UI where the user actually sees their photo/video. They can use two
-// fingers to pinch, zoom, spin, and slide the photo around exactly how they want it before
-// hitting the "Apply" button.
 // =========================================================================================
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun WallpaperScreen(item: MediaItem, onBack: () -> Unit) {
+fun WallpaperScreen(
+    item: MediaItem,
+    onBack: () -> Unit,
+    viewModel: WallpaperViewModel = viewModel()
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-
-    // 🧠 ADAPTIVE ENGINE: This asks the phone, "Are you a tiny phone? A foldable? A tablet?"
     val adaptiveState = rememberAdaptiveState()
 
-    // Sticky Notes (State) to remember the user's settings
-    var playAudio by remember { mutableStateOf(false) }
-    var loopVideo by remember { mutableStateOf(true) }
-    var scaleMode by remember { mutableStateOf("Fit") }
+    val uiState by viewModel.uiState.collectAsState()
 
     var showTargetDialog by remember { mutableStateOf(false) }
     var showAdjustments by remember { mutableStateOf(false) }
     var isApplying by remember { mutableStateOf(false) }
 
-    // Animators! These make the image bounce back smoothly when you let go of it.
-    val scaleAnim = remember { Animatable(1f) }
-    val offsetXAnim = remember { Animatable(0f) }
-    val offsetYAnim = remember { Animatable(0f) }
-    val rotationAnim = remember { Animatable(0f) }
-
-    // These hold the live, exact math numbers while the user's fingers are touching the screen.
-    var gestureScale by remember { mutableFloatStateOf(1f) }
-    var gestureOffsetX by remember { mutableFloatStateOf(0f) }
-    var gestureOffsetY by remember { mutableFloatStateOf(0f) }
-    var gestureRotation by remember { mutableFloatStateOf(0f) }
-    var isTransforming by remember { mutableStateOf(false) }
-
-    // If fingers are touching the screen, use the "gesture" numbers. If not, use the "animator" numbers.
-    val currentScale = if (isTransforming) gestureScale else scaleAnim.value
-    val currentOffsetX = if (isTransforming) gestureOffsetX else offsetXAnim.value
-    val currentOffsetY = if (isTransforming) gestureOffsetY else offsetYAnim.value
-    val currentRotation = if (isTransforming) gestureRotation else rotationAnim.value
-
-    val screenWidth = LocalConfiguration.current.screenWidthDp.dp
-    val screenHeight = LocalConfiguration.current.screenHeightDp.dp
-    val density = LocalDensity.current
-    val wPx = with(density) { screenWidth.toPx() }
-    val hPx = with(density) { screenHeight.toPx() }
-
-    var dimLevel by remember { mutableFloatStateOf(0f) }
-
-    var previewBitmap by remember { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
+    var previewBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var videoBackdropBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var imageLoadFailed by remember { mutableStateOf(false) }
 
-    var tapCount by remember { mutableIntStateOf(0) }
-    var lastTapTime by remember { mutableLongStateOf(0L) }
-    var tapJob by remember { mutableStateOf<Job?>(null) }
+    LaunchedEffect(item.uri, item.isVideo) {
+        viewModel.resetTransform()
+        imageLoadFailed = false
 
-    // Load the picture into memory so we can draw it on the screen
-    if (!item.isVideo) {
-        LaunchedEffect(item.uri) {
-            try {
-                val request = ImageRequest.Builder(context)
-                    .data(item.uri)
-                    .allowHardware(false) // Hardware bitmaps can't be freely drawn on a Canvas, so we disable it.
-                    .build()
-                val result = context.imageLoader.execute(request)
-                if (result is SuccessResult) {
-                    val drawable = result.drawable
-                    if (drawable is BitmapDrawable) {
-                        previewBitmap = drawable.bitmap.asImageBitmap()
+        if (!item.isVideo) {
+            withContext(Dispatchers.IO) {
+                try {
+                    val bmp = CacheEngine.decodeExifCorrectedBitmap(
+                        context = context,
+                        uri = item.uri,
+                        reqWidth = 1440,
+                        reqHeight = 2560
+                    )
+                    if (bmp != null) {
+                        previewBitmap = bmp
+                        viewModel.setMediaSize(bmp.width, bmp.height)
+                    } else {
+                        imageLoadFailed = true
                     }
-                } else {
+                } catch (e: Exception) {
                     imageLoadFailed = true
                 }
-            } catch (e: Exception) {
-                imageLoadFailed = true
+            }
+        } else {
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    val retriever = MediaMetadataRetriever()
+                    retriever.setDataSource(context, item.uri)
+                    val frame = retriever.getFrameAtTime(0L)
+                    retriever.release()
+                    videoBackdropBitmap = frame
+                }
             }
         }
     }
 
-    // A helper command to reset all the image tweaks back to normal with a bouncy spring animation
-    val resetTransforms = {
-        scope.launch { scaleAnim.animateTo(1f, spring(dampingRatio = 0.8f, stiffness = 400f)) }
-        scope.launch { offsetXAnim.animateTo(0f, spring(dampingRatio = 0.8f, stiffness = 400f)) }
-        scope.launch { offsetYAnim.animateTo(0f, spring(dampingRatio = 0.8f, stiffness = 400f)) }
-        scope.launch { rotationAnim.animateTo(0f, spring(dampingRatio = 0.8f, stiffness = 400f)) }
-    }
-
     Scaffold(
+        containerColor = androidx.compose.ui.graphics.Color.Black,
         topBar = {
             TopAppBar(
-                // 🎨 ADAPTIVE: We scale the text up if they are on a huge monitor!
-                title = { Text("Setup Wallpaper", fontSize = (20 * adaptiveState.textScaleFactor).sp, color = androidx.compose.ui.graphics.Color.White) },
-                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = androidx.compose.ui.graphics.Color.White) } },
-                actions = {
-                    IconButton(onClick = { showAdjustments = !showAdjustments }) {
-                        Icon(Icons.Filled.Tune, "Adjust", tint = androidx.compose.ui.graphics.Color.White)
+                title = {
+                    Text(
+                        "Setup Wallpaper",
+                        fontSize = (20 * adaptiveState.textScaleFactor).sp,
+                        color = androidx.compose.ui.graphics.Color.White
+                    )
+                },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back",
+                            tint = androidx.compose.ui.graphics.Color.White
+                        )
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = androidx.compose.ui.graphics.Color.Transparent)
+                actions = {
+                    if (item.isVideo) {
+                        IconButton(onClick = { viewModel.toggleAudio() }) {
+                            Icon(
+                                if (uiState.playAudio) Icons.Filled.VolumeUp else Icons.Filled.VolumeOff,
+                                contentDescription = "Toggle Sound",
+                                tint = androidx.compose.ui.graphics.Color.White
+                            )
+                        }
+                    }
+                    IconButton(onClick = { showAdjustments = !showAdjustments }) {
+                        Icon(
+                            Icons.Filled.Tune,
+                            contentDescription = "Adjust",
+                            tint = androidx.compose.ui.graphics.Color.White
+                        )
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = androidx.compose.ui.graphics.Color.Transparent
+                )
             )
         },
         floatingActionButton = {
@@ -611,341 +1006,277 @@ fun WallpaperScreen(item: MediaItem, onBack: () -> Unit) {
                     if (!isApplying && (item.isVideo || previewBitmap != null)) {
                         showTargetDialog = true
                     } else if (imageLoadFailed) {
-                        Toast.makeText(context, "Cannot apply, media corrupted or deleted", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(
+                            context,
+                            "Cannot apply, media corrupted or deleted",
+                            Toast.LENGTH_SHORT
+                        ).show()
                     }
                 },
-                icon = { Icon(Icons.Rounded.Check, "Apply") },
+                icon = { Icon(Icons.Rounded.Check, contentDescription = "Apply") },
                 text = { Text("Apply", fontSize = (14 * adaptiveState.textScaleFactor).sp) }
             )
         }
-    ) { padding ->
+    ) { innerPadding ->
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(androidx.compose.ui.graphics.Color.Black)
-                // --- HARDCORE MATH ZONE: HANDLING USER FINGERS ---
-                // This block calculates exactly how far the user spread their fingers (zoom),
-                // twisted their wrist (rotation), and dragged their hand (pan).
-                .pointerInput(Unit) {
-                    if (!item.isVideo && previewBitmap != null) {
-                        awaitEachGesture {
-                            awaitFirstDown(requireUnconsumed = false)
-                            isTransforming = true
-
-                            gestureScale = scaleAnim.value
-                            gestureOffsetX = offsetXAnim.value
-                            gestureOffsetY = offsetYAnim.value
-                            gestureRotation = rotationAnim.value
-
-                            var moved = false
-
-                            do {
-                                val event = awaitPointerEvent()
-                                val zoomChange = event.calculateZoom()
-                                val panChange = event.calculatePan()
-                                val rotChange = event.calculateRotation()
-
-                                if (abs(zoomChange - 1f) > 0.005f || panChange.getDistance() > 1f || abs(rotChange) > 0.5f) {
-                                    moved = true
-                                }
-
-                                // 1. Calculate Zoom (with a rubber-band effect if they zoom too far)
-                                var targetScale = gestureScale * zoomChange
-                                if (targetScale < 0.5f) targetScale = 0.5f + (targetScale - 0.5f) * 0.3f
-                                else if (targetScale > 10f) targetScale = 10f + (targetScale - 10f) * 0.3f
-                                gestureScale = targetScale
-
-                                val imgW = previewBitmap!!.width.toFloat()
-                                val imgH = previewBitmap!!.height.toFloat()
-
-                                val screenRatioX = wPx / imgW
-                                val screenRatioY = hPx / imgH
-
-                                val baseScaleX = when (scaleMode) {
-                                    "Fill" -> screenRatioX
-                                    "Original" -> 1f
-                                    else -> min(screenRatioX, screenRatioY) // Fit
-                                }
-                                val baseScaleY = when (scaleMode) {
-                                    "Fill" -> screenRatioY
-                                    "Original" -> 1f
-                                    else -> min(screenRatioX, screenRatioY) // Fit
-                                }
-
-                                val totalScaleX = baseScaleX * gestureScale
-                                val totalScaleY = baseScaleY * gestureScale
-
-                                val rotationRad = Math.toRadians(gestureRotation.toDouble())
-                                val cosA = abs(cos(rotationRad)).toFloat()
-                                val sinA = abs(sin(rotationRad)).toFloat()
-
-                                val boundW = imgW * totalScaleX
-                                val boundH = imgH * totalScaleY
-
-                                val rotW = boundW * cosA + boundH * sinA
-                                val rotH = boundW * sinA + boundH * cosA
-
-                                val limitX = max(0f, (rotW - wPx) / 2f)
-                                val limitY = max(0f, (rotH - hPx) / 2f)
-
-                                // 2. Calculate Pan/Drag (with rubber-band effect at edges)
-                                var targetX = gestureOffsetX + panChange.x
-                                var targetY = gestureOffsetY + panChange.y
-
-                                if (targetX > limitX) targetX = limitX + (targetX - limitX) * 0.3f
-                                else if (targetX < -limitX) targetX = -limitX + (targetX + limitX) * 0.3f
-
-                                if (targetY > limitY) targetY = limitY + (targetY - limitY) * 0.3f
-                                else if (targetY < -limitY) targetY = -limitY + (targetY + limitY) * 0.3f
-
-                                gestureOffsetX = targetX
-                                gestureOffsetY = targetY
-
-                                // 3. Calculate Rotation
-                                var targetRot = gestureRotation + rotChange * 0.8f
-                                if (targetRot > 180f) targetRot -= 360f
-                                else if (targetRot < -180f) targetRot += 360f
-
-                                gestureRotation = targetRot
-
-                                event.changes.forEach { if (it.positionChange() != androidx.compose.ui.geometry.Offset.Zero) it.consume() }
-                            } while (event.changes.any { it.pressed })
-
-                            // When fingers lift off the screen:
-                            isTransforming = false
-
-                            if (!moved) {
-                                // Logic to detect Double-Taps and Triple-Taps to reset the image
-                                val now = System.currentTimeMillis()
-                                if (now - lastTapTime < 300) {
-                                    tapCount++
-                                } else {
-                                    tapCount = 1
-                                }
-                                lastTapTime = now
-
-                                tapJob?.cancel()
-                                tapJob = scope.launch {
-                                    delay(300)
-                                    if (tapCount == 2) {
-                                        scaleMode = "Fit"
-                                        resetTransforms()
-                                    } else if (tapCount >= 3) {
-                                        scaleMode = "Original"
-                                        resetTransforms()
-                                    }
-                                    tapCount = 0
-                                }
-                            }
-
-                            // Snap the image back into safe boundaries if they dragged it too far off screen
-                            scope.launch {
-                                val imgW = previewBitmap!!.width.toFloat()
-                                val imgH = previewBitmap!!.height.toFloat()
-
-                                val screenRatioX = wPx / imgW
-                                val screenRatioY = hPx / imgH
-
-                                val baseScaleX = when (scaleMode) {
-                                    "Fill" -> screenRatioX
-                                    "Original" -> 1f
-                                    else -> min(screenRatioX, screenRatioY)
-                                }
-                                val baseScaleY = when (scaleMode) {
-                                    "Fill" -> screenRatioY
-                                    "Original" -> 1f
-                                    else -> min(screenRatioX, screenRatioY)
-                                }
-
-                                val finalScale = gestureScale.coerceIn(0.5f, 10f)
-
-                                val totalScaleX = baseScaleX * finalScale
-                                val totalScaleY = baseScaleY * finalScale
-
-                                val rotationRad = Math.toRadians(gestureRotation.toDouble())
-                                val cosA = abs(cos(rotationRad)).toFloat()
-                                val sinA = abs(sin(rotationRad)).toFloat()
-
-                                val boundW = imgW * totalScaleX
-                                val boundH = imgH * totalScaleY
-
-                                val rotW = boundW * cosA + boundH * sinA
-                                val rotH = boundW * sinA + boundH * cosA
-
-                                val limitX = max(0f, (rotW - wPx) / 2f)
-                                val limitY = max(0f, (rotH - hPx) / 2f)
-
-                                val finalX = gestureOffsetX.coerceIn(-limitX, limitX)
-                                val finalY = gestureOffsetY.coerceIn(-limitY, limitY)
-
-                                scaleAnim.snapTo(gestureScale)
-                                offsetXAnim.snapTo(gestureOffsetX)
-                                offsetYAnim.snapTo(gestureOffsetY)
-                                rotationAnim.snapTo(gestureRotation)
-
-                                launch { scaleAnim.animateTo(finalScale, spring(dampingRatio = 0.8f, stiffness = 400f)) }
-                                launch { offsetXAnim.animateTo(finalX, spring(dampingRatio = 0.8f, stiffness = 400f)) }
-                                launch { offsetYAnim.animateTo(finalY, spring(dampingRatio = 0.8f, stiffness = 400f)) }
-                            }
-                        }
-                    }
-                },
-            contentAlignment = Alignment.Center
         ) {
-
-            // --- DRAWING THE MEDIA ---
-            // If it's a Video, we load ExoPlayer
-            if (item.isVideo) {
-                var playerError by remember { mutableStateOf(false) }
-                val player = remember {
-                    ExoPlayer.Builder(context).build().apply {
-                        setMediaItem(ExoMediaItem.fromUri(item.uri))
-                        playWhenReady = true
-                        volume = 0f // Mute the preview so it doesn't blast the user's ears
-                        addListener(object : Player.Listener {
-                            override fun onPlayerError(error: PlaybackException) {
-                                playerError = true
-                            }
-                        })
-                        prepare()
-                    }
-                }
-
-                LaunchedEffect(loopVideo) { player.repeatMode = if (loopVideo) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF }
-
-                DisposableEffect(Unit) { onDispose { player.release() } }
-
-                if (playerError) {
-                    Text("Failed to load video", color = androidx.compose.ui.graphics.Color.White)
-                } else {
-                    key(scaleMode) {
-                        AndroidView(
-                            factory = { ctx ->
-                                PlayerView(ctx).apply {
-                                    useController = false
-                                    this.player = player
-                                    this.resizeMode = when (scaleMode) {
-                                        "Fill" -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                                        "Original" -> AspectRatioFrameLayout.RESIZE_MODE_FIT
-                                        else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
-                                    }
-                                }
-                            },
-                            update = { view ->
-                                view.resizeMode = when (scaleMode) {
-                                    "Fill" -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                                    "Original" -> AspectRatioFrameLayout.RESIZE_MODE_FIT
-                                    else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
-                                }
-                            },
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    }
-                }
-            } else {
-                // If it's a Photo, we draw it onto a custom Canvas so we can perfectly track
-                // the user's zoom and rotation math.
-                if (imageLoadFailed) {
-                    Text("Failed to load image", color = androidx.compose.ui.graphics.Color.White)
-                } else if (previewBitmap != null) {
-                    Canvas(modifier = Modifier.fillMaxSize()) {
-                        val imgW = previewBitmap!!.width.toFloat()
-                        val imgH = previewBitmap!!.height.toFloat()
-
-                        val screenRatioX = size.width / imgW
-                        val screenRatioY = size.height / imgH
-
-                        val baseScaleX = when (scaleMode) {
-                            "Fill" -> screenRatioX
-                            "Original" -> 1f
-                            else -> min(screenRatioX, screenRatioY) // Fit
-                        }
-                        val baseScaleY = when (scaleMode) {
-                            "Fill" -> screenRatioY
-                            "Original" -> 1f
-                            else -> min(screenRatioX, screenRatioY) // Fit
-                        }
-
-                        val cx = size.width / 2f
-                        val cy = size.height / 2f
-
-                        withTransform({
-                            translate(cx + currentOffsetX, cy + currentOffsetY)
-                            rotate(currentRotation)
-                            scale(baseScaleX * currentScale, baseScaleY * currentScale)
-                            translate(-imgW / 2f, -imgH / 2f)
-                        }) {
-                            drawImage(image = previewBitmap!!)
-                        }
-                    }
-                } else {
-                    CircularProgressIndicator(color = androidx.compose.ui.graphics.Color.White)
-                }
-            }
-
-            // The dark overlay filter
-            if (dimLevel > 0f) {
-                Box(
+            // Blurred ambient background behind the phone frame
+            val bgBitmap = previewBitmap ?: videoBackdropBitmap
+            if (bgBitmap != null) {
+                Image(
+                    bitmap = remember(bgBitmap) { bgBitmap.asImageBitmap() },
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
                     modifier = Modifier
                         .fillMaxSize()
-                        .background(androidx.compose.ui.graphics.Color.Black.copy(alpha = dimLevel))
+                        .blur(32.dp)
+                        .graphicsLayer { alpha = 0.38f }
                 )
             }
 
-            // --- SETTINGS MENU ---
-            // Opens when the user clicks the little "Tune" icon at the top right.
-            AnimatedVisibility(visible = showAdjustments, modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 100.dp)) {
+            // Samsung-style Phone Preview Frame
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                BoxWithConstraints(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    val windowManager = remember {
+                        context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+                    }
+                    val deviceAspectRatio = remember {
+                        val b = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                            windowManager.currentWindowMetrics.bounds
+                        } else {
+                            val dm = context.resources.displayMetrics
+                            Rect(0, 0, dm.widthPixels, dm.heightPixels)
+                        }
+                        if (b.height() > 0 && b.width() > 0) {
+                            (b.width().toFloat() / b.height().toFloat()).coerceIn(0.42f, 0.56f)
+                        } else {
+                            0.46f
+                        }
+                    }
 
-                // 🎨 ADAPTIVE: Restrict the width of this settings menu on giant tablets so it doesn't stretch 2 feet wide
-                val menuWidth = if (adaptiveState.widthSize == WindowWidthSize.EXPANDED) Modifier.width(400.dp) else Modifier.fillMaxWidth(0.9f)
+                    val phoneWidth = maxWidth * 0.82f
+                    val phoneHeight = minOf(
+                        maxHeight * 0.88f,
+                        phoneWidth / deviceAspectRatio
+                    )
+                    val adjustedPhoneWidth = phoneHeight * deviceAspectRatio
 
-                Surface(color = androidx.compose.ui.graphics.Color.Black.copy(0.7f), shape = RoundedCornerShape(16.dp), modifier = menuWidth) {
-                    Column(Modifier.padding(16.dp)) {
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            Text("Scale Mode", color = androidx.compose.ui.graphics.Color.White, fontWeight = FontWeight.Bold)
-                            Row {
-                                listOf("Fit", "Fill", "Original").forEach { mode ->
-                                    TextButton(onClick = { scaleMode = mode; resetTransforms() }) {
-                                        Text(mode, color = if (scaleMode == mode) MaterialTheme.colorScheme.primary else androidx.compose.ui.graphics.Color.White, style = MaterialTheme.typography.bodySmall)
+                    Box(
+                        modifier = Modifier
+                            .width(adjustedPhoneWidth)
+                            .height(phoneHeight)
+                            .clip(RoundedCornerShape(30.dp))
+                            .background(androidx.compose.ui.graphics.Color.Black)
+                            .border(
+                                width = 1.5.dp,
+                                color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.25f),
+                                shape = RoundedCornerShape(30.dp)
+                            )
+                            .onSizeChanged { size ->
+                                viewModel.setPreviewSize(size.width, size.height)
+                            }
+                            .pointerInput(item.uri, item.isVideo) {
+                                if (!item.isVideo) {
+                                    detectTransformGestures { _, pan, zoom, _ ->
+                                        viewModel.applyGesture(
+                                            zoom = zoom,
+                                            panX = pan.x,
+                                            panY = pan.y
+                                        )
                                     }
                                 }
+                            }
+                            .pointerInput(item.uri, item.isVideo) {
+                                if (!item.isVideo) {
+                                    detectTapGestures(
+                                        onDoubleTap = {
+                                            viewModel.resetTransform()
+                                        }
+                                    )
+                                }
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (item.isVideo) {
+                            var playerError by remember { mutableStateOf(false) }
+                            val player = remember(item.uri) {
+                                ExoPlayer.Builder(context).build().apply {
+                                    setMediaItem(ExoMediaItem.fromUri(item.uri))
+                                    playWhenReady = true
+                                    videoScalingMode = C.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING
+                                    volume = if (uiState.playAudio) 1f else 0f
+                                    repeatMode = if (uiState.loopVideo) {
+                                        Player.REPEAT_MODE_ONE
+                                    } else {
+                                        Player.REPEAT_MODE_OFF
+                                    }
+                                    addListener(object : Player.Listener {
+                                        override fun onPlayerError(error: PlaybackException) {
+                                            playerError = true
+                                        }
+                                    })
+                                    prepare()
+                                }
+                            }
+
+                            LaunchedEffect(uiState.loopVideo) {
+                                player.repeatMode = if (uiState.loopVideo) {
+                                    Player.REPEAT_MODE_ONE
+                                } else {
+                                    Player.REPEAT_MODE_OFF
+                                }
+                            }
+                            LaunchedEffect(uiState.playAudio) {
+                                player.volume = if (uiState.playAudio) 1f else 0f
+                            }
+
+                            DisposableEffect(item.uri) {
+                                onDispose { player.release() }
+                            }
+
+                            if (playerError) {
+                                Text(
+                                    "Failed to load video",
+                                    color = androidx.compose.ui.graphics.Color.White
+                                )
+                            } else {
+                                VideoPreview(player = player)
+                            }
+                        } else {
+                            if (imageLoadFailed) {
+                                Text(
+                                    "Failed to load image",
+                                    color = androidx.compose.ui.graphics.Color.White
+                                )
+                            } else if (previewBitmap != null) {
+                                PhotoPreview(
+                                    bitmap = previewBitmap!!,
+                                    state = uiState
+                                )
+                            } else {
+                                CircularProgressIndicator(color = androidx.compose.ui.graphics.Color.White)
                             }
                         }
 
+                        if (!item.isVideo && uiState.dimLevel > 0f) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(
+                                        androidx.compose.ui.graphics.Color.Black.copy(alpha = uiState.dimLevel)
+                                    )
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Adjustments Menu
+            AnimatedVisibility(
+                visible = showAdjustments,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 100.dp)
+            ) {
+                val menuWidth = if (adaptiveState.widthSize == WindowWidthSize.EXPANDED) {
+                    Modifier.width(400.dp)
+                } else {
+                    Modifier.fillMaxWidth(0.9f)
+                }
+
+                Surface(
+                    color = androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.78f),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = menuWidth
+                ) {
+                    Column(Modifier.padding(16.dp)) {
                         if (item.isVideo) {
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                Text("Loop Video", color = androidx.compose.ui.graphics.Color.White, fontWeight = FontWeight.Bold)
-                                Switch(checked = loopVideo, onCheckedChange = { loopVideo = it })
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    "Loop Video",
+                                    color = androidx.compose.ui.graphics.Color.White,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Switch(
+                                    checked = uiState.loopVideo,
+                                    onCheckedChange = { viewModel.setLoopVideo(it) }
+                                )
                             }
                         } else {
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                Text("Rotation", color = androidx.compose.ui.graphics.Color.White, fontWeight = FontWeight.Bold)
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    "Rotation",
+                                    color = androidx.compose.ui.graphics.Color.White,
+                                    fontWeight = FontWeight.Bold
+                                )
                                 Row {
-                                    IconButton(onClick = { scope.launch { rotationAnim.animateTo(rotationAnim.value - 90f) } }) {
-                                        Icon(Icons.Filled.RotateLeft, "Rotate Left", tint = androidx.compose.ui.graphics.Color.White)
+                                    IconButton(onClick = { viewModel.rotateLeft() }) {
+                                        Icon(
+                                            Icons.Filled.RotateLeft,
+                                            contentDescription = "Rotate Left",
+                                            tint = androidx.compose.ui.graphics.Color.White
+                                        )
                                     }
-                                    IconButton(onClick = { scope.launch { rotationAnim.animateTo(rotationAnim.value + 90f) } }) {
-                                        Icon(Icons.Filled.RotateRight, "Rotate Right", tint = androidx.compose.ui.graphics.Color.White)
+                                    IconButton(onClick = { viewModel.rotateRight() }) {
+                                        Icon(
+                                            Icons.Filled.RotateRight,
+                                            contentDescription = "Rotate Right",
+                                            tint = androidx.compose.ui.graphics.Color.White
+                                        )
                                     }
                                 }
                             }
-                            Text("Dimming", color = androidx.compose.ui.graphics.Color.White, fontWeight = FontWeight.Bold)
-                            Slider(value = dimLevel, onValueChange = { dimLevel = it }, valueRange = 0f..0.8f)
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                TextButton(onClick = {
-                                    resetTransforms()
-                                    dimLevel = 0f
-                                }) { Text("Reset All") }
+
+                            Text(
+                                "Dimming",
+                                color = androidx.compose.ui.graphics.Color.White,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Slider(
+                                value = uiState.dimLevel,
+                                onValueChange = { viewModel.setDimLevel(it) },
+                                valueRange = 0f..0.8f
+                            )
+
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.End
+                            ) {
+                                TextButton(onClick = { viewModel.resetTransform() }) {
+                                    Text("Reset All")
+                                }
                             }
                         }
                     }
                 }
             }
 
-            // Loading circle while the Heavy background workers apply the wallpaper
             if (isApplying) {
                 Box(
-                    modifier = Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.6f)),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.6f)),
                     contentAlignment = Alignment.Center
                 ) {
                     CircularProgressIndicator(color = androidx.compose.ui.graphics.Color.White)
@@ -954,33 +1285,20 @@ fun WallpaperScreen(item: MediaItem, onBack: () -> Unit) {
         }
     }
 
-    // --- FINAL APPLY DIALOG ---
-    // Asks the user: "Do you want this on your Home Screen, Lock Screen, or Both?"
     if (showTargetDialog) {
         var applyTo by remember { mutableIntStateOf(WallpaperManager.FLAG_SYSTEM) }
 
         AlertDialog(
             onDismissRequest = { if (!isApplying) showTargetDialog = false },
-            title = { Text("Set Wallpaper", fontSize = (20 * adaptiveState.textScaleFactor).sp) },
+            title = {
+                Text(
+                    "Set Wallpaper",
+                    fontSize = (20 * adaptiveState.textScaleFactor).sp
+                )
+            },
             text = {
                 Column {
                     if (item.isVideo) {
-                        Text("Play Sound?", fontWeight = FontWeight.Bold)
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.fillMaxWidth().clickable(enabled = !isApplying) { playAudio = true }
-                        ) {
-                            RadioButton(selected = playAudio, onClick = { playAudio = true }, enabled = !isApplying)
-                            Text("Yes")
-                        }
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.fillMaxWidth().clickable(enabled = !isApplying) { playAudio = false }
-                        ) {
-                            RadioButton(selected = !playAudio, onClick = { playAudio = false }, enabled = !isApplying)
-                            Text("No")
-                        }
-                        Spacer(Modifier.height(8.dp))
                         Text(
                             "Note: Live wallpapers are handled by the system picker. Target screens (Home/Lock) will be chosen there.",
                             style = MaterialTheme.typography.bodySmall,
@@ -989,25 +1307,47 @@ fun WallpaperScreen(item: MediaItem, onBack: () -> Unit) {
                     } else {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.fillMaxWidth().clickable(enabled = !isApplying) { applyTo = WallpaperManager.FLAG_SYSTEM }
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = !isApplying) {
+                                    applyTo = WallpaperManager.FLAG_SYSTEM
+                                }
                         ) {
-                            RadioButton(selected = applyTo == WallpaperManager.FLAG_SYSTEM, onClick = { applyTo = WallpaperManager.FLAG_SYSTEM }, enabled = !isApplying)
+                            RadioButton(
+                                selected = applyTo == WallpaperManager.FLAG_SYSTEM,
+                                onClick = { applyTo = WallpaperManager.FLAG_SYSTEM },
+                                enabled = !isApplying
+                            )
                             Text("Home Screen")
                         }
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.fillMaxWidth().clickable(enabled = !isApplying) { applyTo = WallpaperManager.FLAG_LOCK }
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = !isApplying) {
+                                    applyTo = WallpaperManager.FLAG_LOCK
+                                }
                         ) {
-                            RadioButton(selected = applyTo == WallpaperManager.FLAG_LOCK, onClick = { applyTo = WallpaperManager.FLAG_LOCK }, enabled = !isApplying)
+                            RadioButton(
+                                selected = applyTo == WallpaperManager.FLAG_LOCK,
+                                onClick = { applyTo = WallpaperManager.FLAG_LOCK },
+                                enabled = !isApplying
+                            )
                             Text("Lock Screen")
                         }
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.fillMaxWidth().clickable(enabled = !isApplying) { applyTo = (WallpaperManager.FLAG_SYSTEM or WallpaperManager.FLAG_LOCK) }
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = !isApplying) {
+                                    applyTo = WallpaperManager.FLAG_SYSTEM or WallpaperManager.FLAG_LOCK
+                                }
                         ) {
                             RadioButton(
                                 selected = applyTo == (WallpaperManager.FLAG_SYSTEM or WallpaperManager.FLAG_LOCK),
-                                onClick = { applyTo = (WallpaperManager.FLAG_SYSTEM or WallpaperManager.FLAG_LOCK) },
+                                onClick = {
+                                    applyTo = WallpaperManager.FLAG_SYSTEM or WallpaperManager.FLAG_LOCK
+                                },
                                 enabled = !isApplying
                             )
                             Text("Both Screens")
@@ -1020,16 +1360,31 @@ fun WallpaperScreen(item: MediaItem, onBack: () -> Unit) {
                     enabled = !isApplying,
                     onClick = {
                         isApplying = true
+                        val snapshot = uiState
                         scope.launch {
                             try {
                                 if (item.isVideo) {
-                                    // Send the video to the Movie Director (Background Worker)
-                                    VideoEngine.setVideoWallpaper(context, item, playAudio, loopVideo, scaleMode) {
+                                    VideoEngine.setVideoWallpaper(
+                                        context = context,
+                                        item = item,
+                                        playAudio = snapshot.playAudio,
+                                        loop = snapshot.loopVideo
+                                    ) {
                                         onBack()
                                     }
                                 } else {
-                                    // Send the photo to the Interior Decorator (Background Worker)
-                                    StaticEngine.apply(context, item, applyTo, scaleMode, currentScale, currentOffsetX, currentOffsetY, currentRotation, dimLevel) {
+                                    StaticEngine.apply(
+                                        context = context,
+                                        item = item,
+                                        flags = applyTo,
+                                        previewWidth = snapshot.previewWidth,
+                                        previewHeight = snapshot.previewHeight,
+                                        scale = snapshot.scale,
+                                        offsetX = snapshot.offsetX,
+                                        offsetY = snapshot.offsetY,
+                                        rotation = snapshot.rotation,
+                                        dimLevel = snapshot.dimLevel
+                                    ) {
                                         onBack()
                                     }
                                 }

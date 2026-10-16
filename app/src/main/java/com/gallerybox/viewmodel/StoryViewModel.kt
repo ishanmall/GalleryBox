@@ -1,17 +1,13 @@
-// These annotations tell the Android compiler to ignore certain warnings.
-// Think of it as telling a strict spell-checker to ignore specific words because we know what we are doing.
-@file:Suppress("unused", "MemberVisibilityCanBePrivate")
+@file:Suppress("unused", "MemberVisibilityCanBePrivate", "DEPRECATION")
 
 package com.gallerybox.viewmodel
 
-// --- IMPORTS ---
-// This is the "toolbox" area. We are fetching all the tools we need to build this file.
-// We are bringing in tools for databases, background tasks (Coroutines), file reading, and time math.
 import android.app.Application
-import android.content.Context
 import android.content.ContentUris
+import android.content.Context
 import android.content.SharedPreferences
 import android.net.Uri
+import android.os.Build
 import android.provider.MediaStore
 import androidx.core.content.edit
 import androidx.core.net.toUri
@@ -28,190 +24,174 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.yield
+import java.text.SimpleDateFormat
 import java.util.Calendar
+import java.util.Date
+import java.util.Locale
 import java.util.UUID
 import javax.inject.Inject
-import kotlin.math.*
+import kotlin.math.abs
+import kotlin.math.min
 
 /**
- * --- THE SCRAPBOOK CREATOR (StoryViewModel) ---
- * The ViewModel is the "Brain" or "Manager" of the Memories/Stories screen.
- * Its job is to look at thousands of loose photos, group them by time and date,
- * and stitch them together into neat little "Scrapbooks" (Stories) that the user can watch.
- *
- * `@HiltViewModel` tells a factory tool called 'Hilt' to automatically build this manager
- * and hand it the tools it needs (like the Application context and the `GalleryDao` database tool).
+ * =========================================================================================
+ * 📖 THE OFFLINE SCRAPBOOK CREATOR (StoryViewModel)
+ * =========================================================================================
+ * Purely offline, deterministic rule-based engine that groups photos and videos by
+ * calendar events, time-of-day, weekends, and folder metadata into curated Stories.
+ * No AI, no ML, and no cloud services are used.
  */
 @HiltViewModel
 class StoryViewModel @Inject constructor(
     application: Application,
-    private val dao: GalleryDao // Our local database to save the stories we build
+    private val dao: GalleryDao
 ) : AndroidViewModel(application) {
 
-    // A "Channel" is like a Walkie-Talkie. The Manager can use it to send a quick, one-time message
-    // (like "Show a Toast saying 'Memory Created!'") to the screen.
     private val _events = Channel<GalleryEvent>(Channel.BUFFERED)
     val events = _events.receiveAsFlow()
 
-    // A digital notebook (SharedPreferences) to remember small settings, like which albums the user wants to hide.
     private val enginePrefs = application.getSharedPreferences("gallery_engine_prefs", Context.MODE_PRIVATE)
 
-    // A "Scoreboard" that constantly shows a list of the folder IDs the user has hidden (like the "Screenshots" folder).
     private val _hiddenAlbums = MutableStateFlow(loadHiddenAlbumsFromPrefs())
     val hiddenAlbums = _hiddenAlbums.asStateFlow()
 
-    // A sensor that listens to the digital notebook. If the user hides a new album, it updates the scoreboard instantly.
+    private val _hiddenItems = MutableStateFlow(loadHiddenItemsFromPrefs())
+
     private val prefsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-        if (key == "hidden_albums") {
-            _hiddenAlbums.value = loadHiddenAlbumsFromPrefs()
+        when (key) {
+            "hidden_albums" -> _hiddenAlbums.value = loadHiddenAlbumsFromPrefs()
+            "hidden_items" -> _hiddenItems.value = loadHiddenItemsFromPrefs()
         }
     }
 
-    // Helper function to read the notebook.
     private fun loadHiddenAlbumsFromPrefs(): Set<String> =
         enginePrefs.getStringSet("hidden_albums", emptySet()) ?: emptySet()
 
-    // A massive internal dictionary holding every single photo/video on the phone so we can quickly look them up by their ID number.
+    private fun loadHiddenItemsFromPrefs(): Set<String> =
+        enginePrefs.getStringSet("hidden_items", emptySet()) ?: emptySet()
+
     private val _mediaMap = MutableStateFlow<Map<Long, MediaItem>>(emptyMap())
 
-    // Scoreboards to track the progress when the app is actively building scrapbooks.
-    private val _isGenerating = MutableStateFlow(false) // "Is the factory running?"
+    private val _isGenerating = MutableStateFlow(false)
     val isGenerating = _isGenerating.asStateFlow()
 
-    private val _generationProgress = MutableStateFlow(0) // "How many photos have we sorted?"
+    private val _generationProgress = MutableStateFlow(0)
     val generationProgress = _generationProgress.asStateFlow()
 
-    private val _generationTotal = MutableStateFlow(0) // "How many total photos do we have to sort?"
+    private val _generationTotal = MutableStateFlow(0)
     val generationTotal = _generationTotal.asStateFlow()
 
     /**
-     * THE FINAL PRODUCT (stories)
-     * This takes the raw story outlines from our database, grabs the actual photos from our dictionary,
-     * strips out anything the user hid, and packages them into clean `UiStory` boxes that the screen can easily display.
+     * Streams curated UiStory objects to the UI, filtering out hidden albums/items
+     * and automatically repairing the cover URI if the original cover photo was removed.
      */
     val stories: StateFlow<List<UiStory>> =
-        // We combine three things: The raw database outlines, the massive photo dictionary, and the list of hidden albums.
-        combine(dao.getStories(), _mediaMap, _hiddenAlbums) { entities, map, hidden ->
+        combine(dao.getStories(), _mediaMap, _hiddenAlbums, _hiddenItems) { entities, map, hiddenBuckets, hiddenItemIds ->
             entities
                 .mapNotNull { entity ->
-                    // The database saves photo IDs as a text list like "[101, 102, 103]".
-                    // This math turns that text back into real numbers.
-                    val ids = try {
-                        entity.mediaIdsJson
-                            .removePrefix("[")
-                            .removeSuffix("]")
-                            .split(",")
-                            .mapNotNull { it.trim().toLongOrNull() }
-                            .distinct()
-                    } catch (_: Exception) {
-                        emptyList()
-                    }
+                    val ids = parseMediaIdsJson(entity.mediaIdsJson)
 
-                    // Grab the actual photo files from the dictionary and remove any hidden ones.
                     val items = ids
                         .mapNotNull { map[it] }
-                        .filterNot { hidden.contains(it.bucketId) }
-                        .sortedBy { it.dateAdded } // Sort oldest to newest
+                        .filterNot { item ->
+                            hiddenBuckets.contains(item.bucketId) || hiddenItemIds.contains(item.id.toString())
+                        }
+                        .sortedBy { it.dateAdded }
 
-                    // If all the photos in the story were deleted or hidden, throw the story away.
                     if (items.isEmpty()) {
                         null
                     } else {
-                        // Otherwise, build the final Scrapbook!
+                        val savedCoverUri = entity.coverUri.takeIf { it.isNotBlank() }?.toUri()
+                        val coverStillValid = savedCoverUri != null && items.any { it.uri == savedCoverUri }
+                        val resolvedCoverUri = if (coverStillValid && savedCoverUri != null) {
+                            savedCoverUri
+                        } else {
+                            selectBestCover(items)?.uri ?: items.first().uri
+                        }
+
+                        val resolvedSubtitle = entity.subtitle?.takeIf { it.isNotBlank() }
+                            ?: buildDateRangeSubtitle(items)
+
                         UiStory(
                             entity.id,
                             entity.title,
-                            entity.subtitle ?: "",
-                            entity.coverUri.toUri(),
+                            resolvedSubtitle,
+                            resolvedCoverUri,
                             items
                         )
                     }
                 }
-                // Sort the scrapbooks themselves so the newest ones are at the top of the screen.
-                .sortedByDescending { story ->
-                    story.items.maxOfOrNull { it.dateAdded } ?: 0L
-                }
+                .sortedWith(
+                    compareByDescending<UiStory> { story ->
+                        story.items.maxOfOrNull { it.dateAdded } ?: 0L
+                    }.thenByDescending { it.items.size }
+                )
         }
             .distinctUntilChanged()
-            .flowOn(Dispatchers.Default) // Do all this heavy math in the background warehouse
+            .flowOn(Dispatchers.Default)
             .stateIn(
                 viewModelScope,
                 SharingStarted.WhileSubscribed(5000),
                 emptyList()
             )
 
-    /**
-     * THE MORNING ROUTINE (`init`)
-     * This runs exactly once when the Manager wakes up.
-     */
     init {
-        // Start listening to the digital notebook for hidden albums.
         enginePrefs.registerOnSharedPreferenceChangeListener(prefsListener)
-
-        // Go scan the entire phone to build our dictionary of photos.
         loadStoryMedia()
-
-        // Start a ticking clock to rebuild the scrapbooks every 24 hours.
         startPeriodicMemoryWatcher()
     }
 
-    /**
-     * Taking out the trash when the app shuts down.
-     */
     override fun onCleared() {
         super.onCleared()
         enginePrefs.unregisterOnSharedPreferenceChangeListener(prefsListener)
     }
 
-    /** Helper to filter out any photos that belong to albums the user chose to hide. */
-    private fun excludeHidden(items: List<MediaItem>): List<MediaItem> {
-        val hidden = _hiddenAlbums.value
-        if (hidden.isEmpty()) return items
-        return items.filterNot { hidden.contains(it.bucketId) }
+    private fun parseMediaIdsJson(json: String): List<Long> {
+        return try {
+            json.removePrefix("[")
+                .removeSuffix("]")
+                .split(",")
+                .mapNotNull { it.trim().toLongOrNull() }
+                .distinct()
+        } catch (_: Exception) {
+            emptyList()
+        }
     }
 
-    /**
-     * Background worker that searches the phone, builds the dictionary, and starts
-     * generating stories if the user has more than 20 photos.
-     */
+    private fun excludeHidden(items: List<MediaItem>): List<MediaItem> {
+        val hiddenBuckets = _hiddenAlbums.value
+        val hiddenIds = _hiddenItems.value
+        if (hiddenBuckets.isEmpty() && hiddenIds.isEmpty()) return items
+        return items.filterNot { item ->
+            hiddenBuckets.contains(item.bucketId) || hiddenIds.contains(item.id.toString())
+        }
+    }
+
     private fun loadStoryMedia() {
         viewModelScope.launch(Dispatchers.IO) {
             val items = excludeHidden(scanMediaStoreMetadata())
             _mediaMap.value = items.associateBy { it.id }
 
-            // If they have enough photos, start building scrapbooks!
-            if (items.size > 20) {
+            if (items.size >= MIN_ITEMS_PER_STORY) {
                 triggerOfflineStoryGeneration(items, force = false)
             }
         }
     }
 
-    /**
-     * A ticking clock that wakes up every hour to check if 24 hours have passed since we last built scrapbooks.
-     * If 24 hours *have* passed, it triggers a completely fresh build to include any photos taken today.
-     */
     private fun startPeriodicMemoryWatcher() {
         viewModelScope.launch(Dispatchers.IO) {
             while (true) {
-                delay(PERIODIC_CHECK_MS) // Sleep for 1 hour
+                delay(PERIODIC_CHECK_MS)
 
-                // If the factory isn't currently running...
                 if (!_isGenerating.value) {
-                    val prefs = getApplication<Application>()
-                        .getSharedPreferences(
-                            "gallery_engine_prefs",
-                            Context.MODE_PRIVATE
-                        )
+                    val lastScanned = enginePrefs.getLong("last_memory_scan_time", 0L)
 
-                    val lastScanned = prefs.getLong("last_memory_scan_time", 0L)
-
-                    // If it's been more than 24 hours (DAILY_REFRESH_MS)...
                     if (System.currentTimeMillis() - lastScanned >= DAILY_REFRESH_MS) {
-                        // Rescan the phone to find new photos...
                         val items = excludeHidden(scanMediaStoreMetadata())
                         _mediaMap.value = items.associateBy { it.id }
-                        // ...and force the factory to build new stories.
-                        triggerOfflineStoryGeneration(items, force = true)
+                        if (items.size >= MIN_ITEMS_PER_STORY) {
+                            triggerOfflineStoryGeneration(items, force = true)
+                        }
                     }
                 }
             }
@@ -219,18 +199,24 @@ class StoryViewModel @Inject constructor(
     }
 
     /**
-     * THE DETECTIVE (`scanMediaStoreMetadata`)
-     * Looks through the deep Android database (`MediaStore`) to find every single image and video file on the phone.
-     * We don't load the actual image pixels (which would crash the phone), just the text data (date, size, name).
+     * Queries MediaStore for image and video metadata without decoding bitmaps.
+     * Cross-references local Room favorites so user-favorited photos get prioritized.
      */
-    private fun scanMediaStoreMetadata(): List<MediaItem> {
+    private suspend fun scanMediaStoreMetadata(): List<MediaItem> {
         val items = mutableListOf<MediaItem>()
         val context = getApplication<Application>()
 
-        val uri = MediaStore.Files.getContentUri("external") // Look at external storage
+        val localFavoriteIds = runCatching { dao.getFavoriteIds().first().toHashSet() }.getOrDefault(emptySet())
+        val secureVaultIds = runCatching { dao.getSecureMediaIds().first().toHashSet() }.getOrDefault(emptySet())
+        val trashUris = runCatching { dao.getTrash().first().map { it.contentUri }.toHashSet() }.getOrDefault(emptySet())
 
-        // The specific pieces of information we want Android to tell us about each file.
-        val projection = arrayOf(
+        val uri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL)
+        } else {
+            MediaStore.Files.getContentUri("external")
+        }
+
+        val projection = mutableListOf(
             MediaStore.Files.FileColumns._ID,
             MediaStore.Files.FileColumns.DATA,
             MediaStore.Files.FileColumns.DISPLAY_NAME,
@@ -241,66 +227,103 @@ class StoryViewModel @Inject constructor(
             MediaStore.Files.FileColumns.SIZE,
             MediaStore.Files.FileColumns.BUCKET_ID,
             MediaStore.Files.FileColumns.BUCKET_DISPLAY_NAME,
-            MediaStore.MediaColumns.RELATIVE_PATH,
-            MediaStore.MediaColumns.DURATION,
-            MediaStore.MediaColumns.IS_FAVORITE
-        )
+            MediaStore.MediaColumns.DURATION
+        ).apply {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                add(MediaStore.MediaColumns.RELATIVE_PATH)
+                add(MediaStore.MediaColumns.VOLUME_NAME)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                add(MediaStore.MediaColumns.IS_FAVORITE)
+                add(MediaStore.MediaColumns.IS_TRASHED)
+            }
+        }
 
-        // The filter: "Only give us files that are either an IMAGE or a VIDEO."
         val selection = "${MediaStore.Files.FileColumns.MEDIA_TYPE} = ? OR ${MediaStore.Files.FileColumns.MEDIA_TYPE} = ?"
         val selectionArgs = arrayOf(
             MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE.toString(),
             MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO.toString()
         )
-        val sortOrder = "${MediaStore.Files.FileColumns.DATE_ADDED} DESC" // Newest first
+        val sortOrder = "${MediaStore.Files.FileColumns.DATE_ADDED} DESC"
 
         try {
-            // Execute the query!
-            context.contentResolver.query(uri, projection, selection, selectionArgs, sortOrder)?.use { cursor ->
-
-                // Find out which column holds which piece of data
+            context.contentResolver.query(uri, projection.toTypedArray(), selection, selectionArgs, sortOrder)?.use { cursor ->
                 val idCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns._ID)
-                val dataCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DATA)
+                val dataCol = cursor.getColumnIndex(MediaStore.Files.FileColumns.DATA)
                 val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DISPLAY_NAME)
                 val mimeCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.MIME_TYPE)
                 val dateAddedCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DATE_ADDED)
-                val widthCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.WIDTH)
-                val heightCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.HEIGHT)
+                val widthCol = cursor.getColumnIndex(MediaStore.Files.FileColumns.WIDTH)
+                val heightCol = cursor.getColumnIndex(MediaStore.Files.FileColumns.HEIGHT)
                 val sizeCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.SIZE)
                 val bucketIdCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.BUCKET_ID)
                 val bucketNameCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.BUCKET_DISPLAY_NAME)
-                val relPathCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.RELATIVE_PATH)
-                val durationCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DURATION)
-                val favCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.IS_FAVORITE)
+                val relPathCol = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) cursor.getColumnIndex(MediaStore.MediaColumns.RELATIVE_PATH) else -1
+                val volCol = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) cursor.getColumnIndex(MediaStore.MediaColumns.VOLUME_NAME) else -1
+                val durationCol = cursor.getColumnIndex(MediaStore.MediaColumns.DURATION)
+                val favCol = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) cursor.getColumnIndex(MediaStore.MediaColumns.IS_FAVORITE) else -1
+                val trashCol = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) cursor.getColumnIndex(MediaStore.MediaColumns.IS_TRASHED) else -1
 
-                // Go through the results row by row and pack the data into our clean `MediaItem` boxes.
                 while (cursor.moveToNext()) {
+                    if (trashCol != -1 && cursor.getInt(trashCol) == 1) continue
+
                     val id = cursor.getLong(idCol)
+                    if (secureVaultIds.contains(id)) continue
+
+                    val name = cursor.getString(nameCol) ?: ""
+                    val path = if (dataCol != -1) cursor.getString(dataCol) ?: "" else ""
+                    val relPath = if (relPathCol != -1) cursor.getString(relPathCol) ?: "" else path.substringBeforeLast('/', "")
+
+                    if (name.startsWith(".") || relPath.split("/").any { it.startsWith(".") }) continue
+
+                    val width = if (widthCol != -1) cursor.getInt(widthCol) else 0
+                    val height = if (heightCol != -1) cursor.getInt(heightCol) else 0
+                    val size = cursor.getLong(sizeCol)
+
+                    // Skip tiny cached icons/thumbnails so they don't pollute user stories
+                    if (size < 10_240L || (width in 1..199 && height in 1..199)) continue
+
                     val mimeType = cursor.getString(mimeCol) ?: ""
                     val isVideo = mimeType.startsWith("video")
-                    val contentUri = if (isVideo) {
-                        ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, id)
+                    val volumeName = if (volCol != -1) cursor.getString(volCol) ?: "" else ""
+
+                    val baseUri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && volumeName.isNotBlank()) {
+                        if (isVideo) MediaStore.Video.Media.getContentUri(volumeName)
+                        else MediaStore.Images.Media.getContentUri(volumeName)
                     } else {
-                        ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
+                        if (isVideo) MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+                        else MediaStore.Images.Media.EXTERNAL_CONTENT_URI
                     }
+                    val contentUri = ContentUris.withAppendedId(baseUri, id)
+                    if (trashUris.contains(contentUri.toString())) continue
+
+                    val rawDate = cursor.getLong(dateAddedCol)
+                    val normalizedDateSec = when {
+                        rawDate > 1_000_000_000_000L -> rawDate / 1000L
+                        rawDate > 0L -> rawDate
+                        else -> System.currentTimeMillis() / 1000L
+                    }
+
+                    val isFav = localFavoriteIds.contains(id) || (favCol != -1 && cursor.getInt(favCol) == 1)
 
                     items.add(
                         MediaItem(
                             id = id,
                             uri = contentUri,
-                            path = cursor.getString(dataCol) ?: "",
-                            name = cursor.getString(nameCol) ?: "",
+                            path = path,
+                            name = name,
                             bucketId = cursor.getString(bucketIdCol) ?: "",
                             bucketName = cursor.getString(bucketNameCol) ?: "",
                             mimeType = mimeType,
-                            dateAdded = cursor.getLong(dateAddedCol),
-                            width = cursor.getInt(widthCol),
-                            height = cursor.getInt(heightCol),
-                            size = cursor.getLong(sizeCol),
-                            duration = cursor.getLong(durationCol),
+                            dateAdded = normalizedDateSec,
+                            width = width,
+                            height = height,
+                            size = size,
+                            duration = if (durationCol != -1) cursor.getLong(durationCol) else 0L,
                             isVideo = isVideo,
-                            isFavorite = cursor.getInt(favCol) == 1,
-                            relativePath = cursor.getString(relPathCol) ?: ""
+                            isFavorite = isFav,
+                            relativePath = relPath,
+                            volumeName = volumeName
                         )
                     )
                 }
@@ -312,61 +335,56 @@ class StoryViewModel @Inject constructor(
     }
 
     /**
-     * Creates a custom scrapbook when the user manually selects photos and clicks "Create Memory".
+     * Creates a custom manual story from user-selected media items.
      */
     fun createManualStory(
         mediaIds: List<Long>,
         title: String
     ) {
-        val distinctIds = mediaIds.distinct() // Remove accidental duplicates
+        val distinctIds = mediaIds.distinct()
+        val cleanTitle = title.trim()
 
-        if (distinctIds.isEmpty() || title.isBlank()) {
+        if (distinctIds.isEmpty() || cleanTitle.isBlank()) {
             return
         }
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                // Find the actual files for the IDs they selected
-                val items = distinctIds.mapNotNull {
-                    _mediaMap.value[it]
+                if (_mediaMap.value.isEmpty()) {
+                    val fresh = excludeHidden(scanMediaStoreMetadata())
+                    _mediaMap.value = fresh.associateBy { it.id }
                 }
 
+                val items = distinctIds.mapNotNull { _mediaMap.value[it] }
                 if (items.isEmpty()) {
+                    _events.trySend(GalleryEvent.ShowToast("Selected photos are still loading"))
                     return@launch
                 }
 
-                // Pick the prettiest photo to act as the cover image
                 val bestCover = selectBestCover(items)
-
                 val coverUri = bestCover?.uri?.toString()
-                    ?: ContentUris
-                        .withAppendedId(
-                            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                            distinctIds.first()
-                        )
-                        .toString()
+                    ?: items.first().uri.toString()
 
-                // Create the outline for our database
+                val subtitle = buildDateRangeSubtitle(items)
+
                 val entity = StoryEntity(
                     id = "manual_${System.currentTimeMillis()}_${UUID.randomUUID()}",
-                    title = title,
-                    subtitle = "${distinctIds.size} selected items",
+                    title = cleanTitle,
+                    subtitle = subtitle,
                     coverUri = coverUri,
                     mediaIdsJson = distinctIds.joinToString(",", "[", "]"),
                     createdAt = System.currentTimeMillis(),
                     storyType = "MANUAL"
                 )
 
-                dao.insertStory(entity) // Save it!
-
-                _events.trySend(GalleryEvent.ShowToast("Memory created successfully!"))
+                dao.insertStory(entity)
+                _events.trySend(GalleryEvent.ShowToast("Memory '$cleanTitle' created!"))
             } catch (_: Exception) {
                 _events.trySend(GalleryEvent.ShowToast("Failed to create memory"))
             }
         }
     }
 
-    // Deletes a specific story from the database. It DOES NOT delete the actual photos!
     fun deleteStory(storyId: String) =
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -375,74 +393,72 @@ class StoryViewModel @Inject constructor(
             } catch (_: Exception) {}
         }
 
-    // Forces the factory to rebuild everything right now.
     fun refreshMemories() =
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val prefs = getApplication<Application>()
-                    .getSharedPreferences("gallery_engine_prefs", Context.MODE_PRIVATE)
-
-                // Trick the app into thinking it's been a long time since we last built stories
-                prefs.edit { putLong("last_memory_scan_time", 0L) }
-
+                enginePrefs.edit { putLong("last_memory_scan_time", 0L) }
                 val items = excludeHidden(scanMediaStoreMetadata())
                 _mediaMap.value = items.associateBy { it.id }
-
                 triggerOfflineStoryGeneration(items, force = true)
             } catch (_: Exception) {}
         }
 
     /**
-     * THE FACTORY (`triggerOfflineStoryGeneration`).
-     * This is the complex algorithm that looks at all the photos, groups them by date,
-     * and decides which ones should become Stories.
+     * =========================================================================================
+     * 🏭 THE OFFLINE STORY FACTORY (`triggerOfflineStoryGeneration`)
+     * =========================================================================================
+     * 1. Excludes screenshots and items already assigned to manual stories.
+     * 2. Collapses rapid burst shots (taken within 3 seconds of each other) to keep the best shot.
+     * 3. Groups chronological media into natural event clusters (same day, within 1 hour).
+     * 4. Merges nearby small clusters (within 3 days) and slices large events into 10..50 item stories.
+     * 5. Generates descriptive, rule-based titles and date-range subtitles without AI/ML.
      */
     private fun triggerOfflineStoryGeneration(
         mediaList: List<MediaItem>,
         force: Boolean = false
     ) {
-        if (_isGenerating.value) return // Don't start a second factory line if one is already running.
+        if (_isGenerating.value) return
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val prefs = getApplication<Application>()
-                    .getSharedPreferences("gallery_engine_prefs", Context.MODE_PRIVATE)
-
-                val lastScanned = prefs.getLong("last_memory_scan_time", 0L)
-
-                // If it hasn't been 24 hours, don't run the heavy math (unless forced)
+                val lastScanned = enginePrefs.getLong("last_memory_scan_time", 0L)
                 if (!force && System.currentTimeMillis() - lastScanned < DAILY_REFRESH_MS) {
                     return@launch
                 }
 
-                _isGenerating.value = true // Turn on the factory lights
+                _isGenerating.value = true
                 _generationProgress.value = 0
                 _generationTotal.value = mediaList.size
 
-                // We don't want to use photos that the user already put into a "Manual" story.
                 val manualMediaIds = dao.getStoriesSync()
                     .filter { it.storyType == "MANUAL" }
-                    .flatMap { entity ->
-                        entity.mediaIdsJson.removePrefix("[").removeSuffix("]")
-                            .split(",").mapNotNull { it.trim().toLongOrNull() }
-                    }
+                    .flatMap { entity -> parseMediaIdsJson(entity.mediaIdsJson) }
                     .toSet()
 
-                // Filter out manual photos and bad data.
-                val uniqueMedia = mediaList
-                    .filter { it.id > 0 && it.id !in manualMediaIds }
+                // Filter out manual-story items and pure screenshot folders for cleaner memories
+                val candidateMedia = mediaList
+                    .filter { item ->
+                        item.id > 0 &&
+                                item.id !in manualMediaIds &&
+                                !item.bucketName.equals("Screenshots", ignoreCase = true) &&
+                                !item.name.startsWith("Screenshot_", ignoreCase = true)
+                    }
                     .distinctBy { it.id }
+                    .ifEmpty {
+                        // Fallback if the user's library is mostly screenshots
+                        mediaList.filter { it.id > 0 && it.id !in manualMediaIds }.distinctBy { it.id }
+                    }
 
-                if (uniqueMedia.isEmpty()) {
-                    _generationProgress.value = 0
+                if (candidateMedia.size < MIN_ITEMS_PER_STORY) {
+                    _generationProgress.value = mediaList.size
                     return@launch
                 }
 
-                // Sort everything from oldest to newest so we can track events over time.
-                val chronologicalMedia = uniqueMedia.sortedBy { it.dateAdded }
+                val chronologicalMedia = deduplicateRapidBursts(candidateMedia.sortedBy { it.dateAdded })
+                _generationTotal.value = chronologicalMedia.size
 
-                val naturalClusters = mutableListOf<List<MediaItem>>() // The piles of photos grouped by event
-                var currentCluster = mutableListOf<MediaItem>() // The pile we are currently adding to
+                val naturalClusters = mutableListOf<List<MediaItem>>()
+                var currentCluster = mutableListOf<MediaItem>()
 
                 var lastItemTime = 0L
                 var lastItemDay = -1
@@ -450,8 +466,12 @@ class StoryViewModel @Inject constructor(
 
                 val calendar = Calendar.getInstance()
 
-                // PHASE 1: Group photos that were taken on the same day and within an hour of each other.
-                for (item in chronologicalMedia) {
+                // PHASE 1: Natural Event Clustering
+                for ((idx, item) in chronologicalMedia.withIndex()) {
+                    if (idx % 100 == 0) {
+                        _generationProgress.value = (idx * 0.6f).toInt()
+                        yield()
+                    }
 
                     val timeMs = item.dateAdded * 1000L
                     calendar.timeInMillis = timeMs
@@ -459,7 +479,6 @@ class StoryViewModel @Inject constructor(
                     val currentDay = calendar.get(Calendar.DAY_OF_YEAR)
                     val currentYear = calendar.get(Calendar.YEAR)
 
-                    // If the pile is empty, just add the photo.
                     if (currentCluster.isEmpty()) {
                         currentCluster.add(item)
                         lastItemTime = timeMs
@@ -471,18 +490,13 @@ class StoryViewModel @Inject constructor(
                     val timeDiff = abs(timeMs - lastItemTime)
                     val sameDay = currentDay == lastItemDay && currentYear == lastItemYear
 
-                    // If this photo was taken on the exact same day, and within 1 hour (EVENT_THRESHOLD_MS)
-                    // of the previous photo, it belongs to the same event/pile!
                     if (sameDay && timeDiff <= EVENT_THRESHOLD_MS) {
                         currentCluster.add(item)
                         lastItemTime = timeMs
                     } else {
-                        // Too much time passed. This is a new event.
-                        // Put the finished pile on the shelf, and start a new pile.
                         if (currentCluster.isNotEmpty()) {
                             naturalClusters.add(currentCluster.distinctBy { it.id })
                         }
-
                         currentCluster = mutableListOf(item)
                         lastItemTime = timeMs
                         lastItemDay = currentDay
@@ -490,187 +504,320 @@ class StoryViewModel @Inject constructor(
                     }
                 }
 
-                // Put the very last pile on the shelf
                 if (currentCluster.isNotEmpty()) {
                     naturalClusters.add(currentCluster.distinctBy { it.id })
                 }
 
-                // ---------------------------------------------------------
-                // PHASE 2: Sizing the Scrapbooks.
-                // We don't want a scrapbook with only 2 photos, and we don't want one with 200 photos.
-                // Every automatic Story must be between 10 and 50 photos.
-                // ---------------------------------------------------------
-                val storyClusters = mutableListOf<List<MediaItem>>() // The final, perfectly sized piles
-                var pendingSmall = mutableListOf<MediaItem>() // A waiting room for tiny piles of photos
+                // PHASE 2: Sizing Scrapbooks into 10..50 item stories
+                val storyClusters = mutableListOf<List<MediaItem>>()
+                var pendingSmall = mutableListOf<MediaItem>()
 
-                for (naturalCluster in naturalClusters) {
-                    val items = naturalCluster.distinctBy { it.id }
-
-                    if (items.isEmpty()) {
-                        continue
+                for ((clusterIdx, naturalCluster) in naturalClusters.withIndex()) {
+                    if (clusterIdx % 20 == 0) {
+                        _generationProgress.value =
+                            (chronologicalMedia.size * 0.6f + (clusterIdx.toFloat() / naturalClusters.size.coerceAtLeast(1)) * chronologicalMedia.size * 0.3f).toInt()
+                        yield()
                     }
 
-                    // If we have tiny piles waiting, check if they are too old.
-                    // We don't want to stitch photos from January with photos from August.
+                    val items = naturalCluster.distinctBy { it.id }
+                    if (items.isEmpty()) continue
+
                     if (pendingSmall.isNotEmpty()) {
-                        val gapMs = abs((items.first().dateAdded - pendingSmall.last().dateAdded)) * 1000L
-                        if (gapMs > MAX_MERGE_GAP_MS) { // If it's been more than 3 days, throw the tiny pile away.
+                        val gapMs = abs(items.first().dateAdded - pendingSmall.last().dateAdded) * 1000L
+                        if (gapMs > MAX_MERGE_GAP_MS) {
                             pendingSmall = mutableListOf()
                         }
                     }
 
-                    /*
-                     * If this pile has fewer than 10 photos, put it in the waiting room
-                     * until we find more photos from the next few days to combine it with.
-                     */
                     if (items.size < MIN_ITEMS_PER_STORY) {
                         pendingSmall.addAll(items)
-                        continue
-                    }
-
-                    /*
-                     * If we found a big pile, let's mix the waiting room photos into it first.
-                     */
-                    if (pendingSmall.isNotEmpty()) {
-                        val combined = pendingSmall + items
-
-                        if (combined.size >= MIN_ITEMS_PER_STORY) {
-                            var offset = 0
-
-                            // Slice the giant combined pile into 50-photo chunks.
-                            while (combined.size - offset >= MIN_ITEMS_PER_STORY) {
-                                val remaining = combined.size - offset
-
-                                val chunkSize = when {
-                                    remaining >= MAX_ITEMS_PER_STORY -> MAX_ITEMS_PER_STORY // Take exactly 50
-                                    remaining >= MIN_ITEMS_PER_STORY -> remaining // Take the rest
-                                    else -> break
-                                }
-
-                                val chunk = combined.subList(offset, offset + chunkSize)
-
-                                storyClusters.add(chunk.distinctBy { it.id })
-                                offset += chunkSize
+                        if (pendingSmall.size >= MIN_ITEMS_PER_STORY) {
+                            while (pendingSmall.size >= MIN_ITEMS_PER_STORY) {
+                                val takeCount = min(MAX_ITEMS_PER_STORY, pendingSmall.size)
+                                storyClusters.add(pendingSmall.subList(0, takeCount).distinctBy { it.id })
+                                pendingSmall = pendingSmall.subList(takeCount, pendingSmall.size).toMutableList()
                             }
-
-                            // Put any leftovers back in the waiting room
-                            pendingSmall = if (offset < combined.size) {
-                                combined.subList(offset, combined.size).toMutableList()
-                            } else {
-                                mutableListOf()
-                            }
-
-                        } else {
-                            pendingSmall = combined.toMutableList()
                         }
-
                         continue
                     }
 
-                    /*
-                     * If the waiting room was empty, just slice up the big pile into 50-photo chunks.
-                     */
-                    var offset = 0
+                    if (pendingSmall.isNotEmpty()) {
+                        val combined = (pendingSmall + items).distinctBy { it.id }
+                        var offset = 0
+                        while (combined.size - offset >= MIN_ITEMS_PER_STORY) {
+                            val remaining = combined.size - offset
+                            val chunkSize = min(MAX_ITEMS_PER_STORY, remaining)
+                            storyClusters.add(combined.subList(offset, offset + chunkSize))
+                            offset += chunkSize
+                        }
+                        pendingSmall = if (offset < combined.size) {
+                            combined.subList(offset, combined.size).toMutableList()
+                        } else {
+                            mutableListOf()
+                        }
+                        continue
+                    }
 
+                    var offset = 0
                     while (offset < items.size) {
                         val remaining = items.size - offset
-
                         if (remaining < MIN_ITEMS_PER_STORY) {
                             pendingSmall.addAll(items.subList(offset, items.size))
                             break
                         }
-
                         val chunkSize = min(MAX_ITEMS_PER_STORY, remaining)
-
-                        storyClusters.add(
-                            items
-                                .subList(offset, offset + chunkSize)
-                                .distinctBy { it.id }
-                        )
-
+                        storyClusters.add(items.subList(offset, offset + chunkSize).distinctBy { it.id })
                         offset += chunkSize
                     }
                 }
 
-                /*
-                 * Try to make one final Story from whatever is left in the waiting room.
-                 */
                 if (pendingSmall.size >= MIN_ITEMS_PER_STORY) {
                     var offset = 0
-
                     while (pendingSmall.size - offset >= MIN_ITEMS_PER_STORY) {
                         val remaining = pendingSmall.size - offset
                         val chunkSize = min(MAX_ITEMS_PER_STORY, remaining)
-
-                        storyClusters.add(
-                            pendingSmall
-                                .subList(offset, offset + chunkSize)
-                                .distinctBy { it.id }
-                        )
-
+                        storyClusters.add(pendingSmall.subList(offset, offset + chunkSize).distinctBy { it.id })
                         offset += chunkSize
                     }
                 }
 
-                /*
-                 * Do a final safety check to ensure every pile is strictly between 10 and 50 photos.
-                 */
+                // PHASE 3: Add deterministic special collections ("Throwback / On This Day" & "Favorite Moments")
+                val specialEntities = mutableListOf<StoryEntity>()
+                val generationId = System.currentTimeMillis()
+
+                // A. "On This Day / Throwback" (photos taken within +/- 3 days of today's date in previous years)
+                val throwbackItems = findOnThisDayMedia(chronologicalMedia)
+                if (throwbackItems.size >= MIN_ITEMS_PER_STORY) {
+                    val slicedThrowback = throwbackItems.take(MAX_ITEMS_PER_STORY)
+                    specialEntities.add(
+                        buildEntity(
+                            idString = "auto_throwback_$generationId",
+                            title = "On This Week",
+                            subtitle = buildDateRangeSubtitle(slicedThrowback),
+                            items = slicedThrowback,
+                            isManual = false
+                        )
+                    )
+                }
+
+                // B. "Favorite Highlights" (if the user has >= 10 favorited items)
+                val favoriteItems = chronologicalMedia.filter { it.isFavorite }.takeLast(MAX_ITEMS_PER_STORY)
+                if (favoriteItems.size >= MIN_ITEMS_PER_STORY) {
+                    specialEntities.add(
+                        buildEntity(
+                            idString = "auto_favorites_$generationId",
+                            title = "Favorite Highlights",
+                            subtitle = buildDateRangeSubtitle(favoriteItems),
+                            items = favoriteItems,
+                            isManual = false
+                        )
+                    )
+                }
+
                 val validClusters = storyClusters
                     .map { it.distinctBy { item -> item.id } }
                     .filter { it.size in MIN_ITEMS_PER_STORY..MAX_ITEMS_PER_STORY }
 
-                _generationProgress.value = uniqueMedia.size
-                yield() // Give the phone's processor a tiny break to catch its breath
-
-                // Sort the perfectly sized piles so the newest ones are first, and only keep the top 30.
+                val maxEventCount = (MAX_AUTO_STORIES - specialEntities.size).coerceAtLeast(1)
                 val finalClustersToSave = validClusters
                     .sortedByDescending { cluster -> cluster.maxOfOrNull { it.dateAdded } ?: 0L }
-                    .take(MAX_AUTO_STORIES)
+                    .take(maxEventCount)
 
-                val generationId = System.currentTimeMillis()
+                val usedTitlesCount = mutableMapOf<String, Int>()
+                val generatedEventStories = finalClustersToSave.mapIndexed { index, cluster ->
+                    val (rawTitle, smartSubtitle) = generateSmartTitleAndSubtitle(cluster)
+                    val occurrence = (usedTitlesCount[rawTitle] ?: 0) + 1
+                    usedTitlesCount[rawTitle] = occurrence
+                    val uniqueTitle = if (occurrence == 1) rawTitle else "$rawTitle #$occurrence"
 
-                // Turn the piles into Database entries
-                val generatedStories = finalClustersToSave
-                    .mapIndexed { index, cluster ->
-                        buildEntity(
-                            idString = "auto_event_${generationId}_$index",
-                            title = "Memory ${index + 1}",
-                            subtitle = "",
-                            items = cluster,
-                            isManual = false
-                        )
-                    }
+                    buildEntity(
+                        idString = "auto_event_${generationId}_$index",
+                        title = uniqueTitle,
+                        subtitle = smartSubtitle,
+                        items = cluster,
+                        isManual = false
+                    )
+                }
 
-                // Delete all the old automatic stories from the database to make room for these fresh ones.
+                _generationProgress.value = chronologicalMedia.size
+                yield()
+
+                val allNewAutoStories = specialEntities + generatedEventStories
+
                 val existing = dao.getStoriesSync()
-
                 existing
                     .filter { it.storyType != "MANUAL" }
                     .forEach { dao.deleteStory(it.id) }
 
-                // Save the new stories!
-                generatedStories.forEach { entity ->
+                allNewAutoStories.forEach { entity ->
                     try {
                         dao.insertStory(entity)
                     } catch (_: Exception) {}
                 }
 
-                // Update the digital notebook to remember exactly when we finished building.
-                prefs.edit {
+                enginePrefs.edit {
                     putLong("last_memory_scan_time", System.currentTimeMillis())
                 }
-
             } catch (e: Exception) {
                 e.printStackTrace()
             } finally {
-                _isGenerating.value = false // Turn off the factory lights
+                _isGenerating.value = false
             }
         }
     }
 
     /**
-     * Packages a raw pile of photos into a structured box (`StoryEntity`) ready for the database.
+     * Collapses rapid-fire camera bursts (3+ photos taken within 2 seconds) by keeping
+     * the highest-scored frame so stories don't show 15 identical frames in a row.
      */
+    private fun deduplicateRapidBursts(sortedItems: List<MediaItem>): List<MediaItem> {
+        if (sortedItems.size <= MIN_ITEMS_PER_STORY * 2) return sortedItems
+        val result = mutableListOf<MediaItem>()
+        var burstGroup = mutableListOf<MediaItem>()
+
+        for (item in sortedItems) {
+            if (burstGroup.isEmpty()) {
+                burstGroup.add(item)
+                continue
+            }
+            val prev = burstGroup.last()
+            val timeDiffSec = abs(item.dateAdded - prev.dateAdded)
+            if (!item.isVideo && !prev.isVideo && timeDiffSec <= 2L && item.bucketId == prev.bucketId) {
+                burstGroup.add(item)
+            } else {
+                if (burstGroup.size <= 2) {
+                    result.addAll(burstGroup)
+                } else {
+                    // Keep the best 2 frames from a rapid burst
+                    val bestTwo = burstGroup.sortedByDescending { scoreMediaQuality(it) }.take(2).sortedBy { it.dateAdded }
+                    result.addAll(bestTwo)
+                }
+                burstGroup = mutableListOf(item)
+            }
+        }
+        if (burstGroup.isNotEmpty()) {
+            if (burstGroup.size <= 2) {
+                result.addAll(burstGroup)
+            } else {
+                result.addAll(burstGroup.sortedByDescending { scoreMediaQuality(it) }.take(2).sortedBy { it.dateAdded })
+            }
+        }
+        return if (result.size >= MIN_ITEMS_PER_STORY) result else sortedItems
+    }
+
+    /**
+     * Finds media items captured within +/- 3 days of the current calendar day in previous years.
+     */
+    private fun findOnThisDayMedia(items: List<MediaItem>): List<MediaItem> {
+        val nowCal = Calendar.getInstance()
+        val currentYear = nowCal.get(Calendar.YEAR)
+        val currentDayOfYear = nowCal.get(Calendar.DAY_OF_YEAR)
+
+        val itemCal = Calendar.getInstance()
+        return items.filter { item ->
+            itemCal.timeInMillis = item.dateAdded * 1000L
+            val yr = itemCal.get(Calendar.YEAR)
+            val doy = itemCal.get(Calendar.DAY_OF_YEAR)
+            yr < currentYear && abs(doy - currentDayOfYear) <= 3
+        }
+    }
+
+    /**
+     * Purely offline, rule-based title and subtitle generator using Calendar math and folder names.
+     */
+    private fun generateSmartTitleAndSubtitle(cluster: List<MediaItem>): Pair<String, String> {
+        val sorted = cluster.sortedBy { it.dateAdded }
+        val firstMs = (sorted.firstOrNull()?.dateAdded ?: 0L) * 1000L
+        val lastMs = (sorted.lastOrNull()?.dateAdded ?: 0L) * 1000L
+
+        val calStart = Calendar.getInstance().apply { timeInMillis = firstMs }
+        val calEnd = Calendar.getInstance().apply { timeInMillis = lastMs }
+        val nowYear = Calendar.getInstance().get(Calendar.YEAR)
+
+        val startDay = calStart.get(Calendar.DAY_OF_YEAR)
+        val endDay = calEnd.get(Calendar.DAY_OF_YEAR)
+        val year = calStart.get(Calendar.YEAR)
+        val spanDays = abs(endDay - startDay) + 1
+
+        val monthName = SimpleDateFormat("MMMM", Locale.getDefault()).format(Date(firstMs))
+        val shortMonthDay = SimpleDateFormat("MMM d", Locale.getDefault()).format(Date(firstMs))
+
+        // 1. Check if the cluster predominantly belongs to a custom user-named folder
+        val genericBuckets = setOf(
+            "camera", "dcim", "pictures", "0", "internal", "downloads", "download",
+            "whatsapp images", "whatsapp video", "whatsapp", "instagram", "screenshots",
+            "movies", "video", "videos", "bluetooth", "restored"
+        )
+        val dominantBucket = sorted
+            .map { it.bucketName.trim() }
+            .filter { it.isNotBlank() && it.lowercase(Locale.ROOT) !in genericBuckets && !it.matches(Regex("^\\d+$")) }
+            .groupingBy { it }
+            .eachCount()
+            .maxByOrNull { it.value }
+            ?.takeIf { it.value >= sorted.size / 2 }
+            ?.key
+
+        val title = when {
+            dominantBucket != null -> {
+                if (year < nowYear) "$dominantBucket • $year" else "$dominantBucket Highlights"
+            }
+            spanDays >= 2 -> {
+                val dayOfWeekStart = calStart.get(Calendar.DAY_OF_WEEK)
+                val isWeekendSpan = (dayOfWeekStart == Calendar.FRIDAY || dayOfWeekStart == Calendar.SATURDAY) && spanDays <= 3
+                if (isWeekendSpan) {
+                    "Weekend in $monthName"
+                } else {
+                    "$monthName Getaway"
+                }
+            }
+            else -> {
+                val dayOfWeek = calStart.get(Calendar.DAY_OF_WEEK)
+                val isWeekend = dayOfWeek == Calendar.SATURDAY || dayOfWeek == Calendar.SUNDAY
+                val avgHour = sorted.map {
+                    Calendar.getInstance().apply { timeInMillis = it.dateAdded * 1000L }.get(Calendar.HOUR_OF_DAY)
+                }.average()
+
+                when {
+                    isWeekend && avgHour >= 17 -> "Weekend Evening • $shortMonthDay"
+                    isWeekend -> "Weekend Moments • $shortMonthDay"
+                    avgHour < 11 -> "Morning Moments • $shortMonthDay"
+                    avgHour in 11.0..16.5 -> "Afternoon Highlights • $shortMonthDay"
+                    avgHour in 16.5..20.5 -> "Golden Hour • $shortMonthDay"
+                    else -> "Night Memories • $shortMonthDay"
+                }
+            }
+        }
+
+        val subtitle = buildDateRangeSubtitle(sorted)
+        return title to subtitle
+    }
+
+    private fun buildDateRangeSubtitle(items: List<MediaItem>): String {
+        if (items.isEmpty()) return ""
+        val sorted = items.sortedBy { it.dateAdded }
+        val firstDate = Date(sorted.first().dateAdded * 1000L)
+        val lastDate = Date(sorted.last().dateAdded * 1000L)
+
+        val dayFmt = SimpleDateFormat("MMM d, yyyy", Locale.getDefault())
+        val shortDayFmt = SimpleDateFormat("MMM d", Locale.getDefault())
+
+        val firstStr = dayFmt.format(firstDate)
+        val lastStr = dayFmt.format(lastDate)
+
+        val datePart = if (firstStr == lastStr) {
+            firstStr
+        } else {
+            val cal1 = Calendar.getInstance().apply { time = firstDate }
+            val cal2 = Calendar.getInstance().apply { time = lastDate }
+            if (cal1.get(Calendar.YEAR) == cal2.get(Calendar.YEAR)) {
+                "${shortDayFmt.format(firstDate)} –$lastStr"
+            } else {
+                "$firstStr –$lastStr"
+            }
+        }
+        return "$datePart • ${items.size} items"
+    }
+
     private fun buildEntity(
         idString: String,
         title: String,
@@ -682,9 +829,7 @@ class StoryViewModel @Inject constructor(
             .filter { it.id > 0 }
             .distinctBy { it.id }
 
-        // Find the absolute best photo to use as the cover image
         val bestCover = selectBestCover(validItems)
-
         val coverUri = bestCover?.uri?.toString()
             ?: validItems.firstOrNull()?.uri?.toString()
             ?: ""
@@ -700,49 +845,41 @@ class StoryViewModel @Inject constructor(
         )
     }
 
-    /**
-     * THE ART CRITIC.
-     * Looks at a pile of photos and assigns each one a "Score" based on how pretty it is.
-     * The photo with the highest score becomes the cover image for the Story.
-     */
-    private fun selectBestCover(items: List<MediaItem>): MediaItem? {
-        if (items.isEmpty()) {
-            return null
+    private fun scoreMediaQuality(item: MediaItem): Double {
+        var score = 0.0
+        if (item.isFavorite) score += 50.0
+        if (!item.mimeType.startsWith("video")) score += 20.0
+
+        val resolution = (item.width.toLong() * item.height.toLong()) / 100_000.0
+        score += min(resolution, 40.0)
+
+        val ratio = if (item.height > 0) {
+            item.width.toDouble() / item.height.toDouble()
+        } else {
+            1.0
         }
 
-        return items.maxByOrNull { item ->
-            var score = 0.0
-
-            if (item.isFavorite) score += 50.0 // The user favorited it, it must be good!
-            if (!item.mimeType.startsWith("video")) score += 20.0 // Videos make bad static covers, prefer photos.
-
-            // High-resolution (HD/4K) photos get more points than blurry, tiny photos.
-            val resolution = (item.width * item.height) / 100000.0
-            score += min(resolution, 40.0) // Cap the resolution bonus so 8K photos don't always win
-
-            val ratio = if (item.height > 0) {
-                item.width.toDouble() / item.height
-            } else {
-                1.0
-            }
-
-            // Normal portrait or landscape photos get a bonus. Extremely tall or wide panoramic photos do not.
-            if (ratio in 0.5..0.8 || ratio in 1.3..1.8) score += 15.0
-            // Screenshots are ugly. Heavily penalize them so they are almost never the cover.
-            if (item.path.lowercase().contains("screenshot")) score -= 50.0
-
-            score // Return the final score
+        if (ratio in 0.5..0.85 || ratio in 1.25..1.85) score += 15.0
+        if (item.path.lowercase(Locale.ROOT).contains("screenshot") ||
+            item.name.lowercase(Locale.ROOT).contains("screenshot")
+        ) {
+            score -= 60.0
         }
+        return score
     }
 
-    // Rules for the Factory
+    private fun selectBestCover(items: List<MediaItem>): MediaItem? {
+        if (items.isEmpty()) return null
+        return items.maxByOrNull { scoreMediaQuality(it) }
+    }
+
     companion object {
-        const val MAX_AUTO_STORIES = 30 // Don't build more than 30 automatic stories.
-        const val MIN_ITEMS_PER_STORY = 10 // A story must have at least 10 photos.
-        const val MAX_ITEMS_PER_STORY = 50 // A story can't have more than 50 photos.
-        const val EVENT_THRESHOLD_MS = 60L * 60L * 1000L // 1 hour (Determines if photos belong to the same event)
-        const val DAILY_REFRESH_MS = 24L * 60L * 60L * 1000L // 24 hours (How often to rebuild stories)
-        const val PERIODIC_CHECK_MS = 60L * 60L * 1000L // 1 hour (How often the ticking clock checks the time)
-        const val MAX_MERGE_GAP_MS = 3L * 24L * 60L * 60L * 1000L // 3 days (Max gap allowed when combining tiny piles)
+        const val MAX_AUTO_STORIES = 30
+        const val MIN_ITEMS_PER_STORY = 10
+        const val MAX_ITEMS_PER_STORY = 50
+        const val EVENT_THRESHOLD_MS = 60L * 60L * 1000L
+        const val DAILY_REFRESH_MS = 24L * 60L * 60L * 1000L
+        const val PERIODIC_CHECK_MS = 60L * 60L * 1000L
+        const val MAX_MERGE_GAP_MS = 3L * 24L * 60L * 60L * 1000L
     }
 }

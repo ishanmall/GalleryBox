@@ -1,5 +1,6 @@
 @file:Suppress("unused", "DEPRECATION", "UnstableApiUsage", "MemberVisibilityCanBePrivate")
 @file:OptIn(androidx.media3.common.util.UnstableApi::class)
+
 package com.gallerybox.engine
 
 import android.app.NotificationChannel
@@ -11,20 +12,22 @@ import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.IntentSender
-import android.content.SharedPreferences
+import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.provider.DocumentsContract
 import android.provider.MediaStore
+import android.webkit.MimeTypeMap
 import androidx.annotation.OptIn
 import androidx.core.app.NotificationCompat
 import androidx.core.content.edit
 import androidx.documentfile.provider.DocumentFile
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
-import androidx.media3.common.util.Log
 import androidx.media3.common.MediaItem as Media3Item
+import androidx.media3.common.util.Log
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
@@ -53,7 +56,9 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
+import java.io.InputStream
 import java.security.MessageDigest
+import java.util.Collections
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
@@ -62,9 +67,13 @@ import javax.inject.Singleton
 import kotlin.coroutines.coroutineContext
 import kotlin.math.floor
 import kotlin.math.log2
+import kotlin.math.max
+import kotlin.math.pow
 import kotlin.random.Random
-import com.gallerybox.viewmodel.PhotoSort
 
+// =========================================================================================
+// 🧠 CORE GALLERY ENGINE (MediaStore Indexing, Incremental Sync & Duplicate Hasher)
+// =========================================================================================
 @UnstableApi
 @Singleton
 class GalleryEngine @Inject constructor(@ApplicationContext private val context: Context) {
@@ -102,7 +111,12 @@ class GalleryEngine @Inject constructor(@ApplicationContext private val context:
         }
     }
 
-    suspend fun fetchMedia(minGeneration: Long?, afterDateAdded: Long?, afterId: Long?, limit: Int?): List<MediaItem> = withContext(Dispatchers.IO) {
+    suspend fun fetchMedia(
+        minGeneration: Long?,
+        afterDateAdded: Long?,
+        afterId: Long?,
+        limit: Int?
+    ): List<MediaItem> = withContext(Dispatchers.IO) {
         val mediaList = mutableListOf<MediaItem>()
         val resolver = context.contentResolver
 
@@ -121,9 +135,11 @@ class GalleryEngine @Inject constructor(@ApplicationContext private val context:
             MediaStore.Files.FileColumns.MEDIA_TYPE,
             MediaStore.Files.FileColumns.BUCKET_ID,
             MediaStore.Files.FileColumns.BUCKET_DISPLAY_NAME,
-            MediaStore.MediaColumns.DURATION
+            MediaStore.MediaColumns.DURATION,
+            MediaStore.MediaColumns.WIDTH,
+            MediaStore.MediaColumns.HEIGHT,
+            MediaStore.Files.FileColumns.DATA
         ).apply {
-            add(MediaStore.Files.FileColumns.DATA)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 add(MediaStore.MediaColumns.RELATIVE_PATH)
                 add(MediaStore.MediaColumns.VOLUME_NAME)
@@ -131,8 +147,6 @@ class GalleryEngine @Inject constructor(@ApplicationContext private val context:
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 add(MediaStore.MediaColumns.IS_FAVORITE)
                 add(MediaStore.MediaColumns.IS_TRASHED)
-                add(MediaStore.MediaColumns.WIDTH)
-                add(MediaStore.MediaColumns.HEIGHT)
             }
         }
 
@@ -141,7 +155,8 @@ class GalleryEngine @Inject constructor(@ApplicationContext private val context:
         val args = mutableListOf<String>()
 
         if (minGeneration != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            sel += " AND ${MediaStore.MediaColumns.GENERATION_ADDED} > ?"
+            sel += " AND (${MediaStore.MediaColumns.GENERATION_ADDED} > ? OR ${MediaStore.MediaColumns.GENERATION_MODIFIED} > ?)"
+            args.add(minGeneration.toString())
             args.add(minGeneration.toString())
         }
 
@@ -156,10 +171,17 @@ class GalleryEngine @Inject constructor(@ApplicationContext private val context:
         val cursor = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && limit != null) {
             val bundle = Bundle().apply {
                 putInt(android.content.ContentResolver.QUERY_ARG_LIMIT, limit)
-                putStringArray(android.content.ContentResolver.QUERY_ARG_SORT_COLUMNS, arrayOf(MediaStore.Files.FileColumns.DATE_ADDED, MediaStore.Files.FileColumns._ID))
-                putInt(android.content.ContentResolver.QUERY_ARG_SORT_DIRECTION, android.content.ContentResolver.QUERY_SORT_DIRECTION_DESCENDING)
+                putStringArray(
+                    android.content.ContentResolver.QUERY_ARG_SORT_COLUMNS,
+                    arrayOf(MediaStore.Files.FileColumns.DATE_ADDED, MediaStore.Files.FileColumns._ID)
+                )
+                putInt(
+                    android.content.ContentResolver.QUERY_ARG_SORT_DIRECTION,
+                    android.content.ContentResolver.QUERY_SORT_DIRECTION_DESCENDING
+                )
                 putString(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION, sel)
                 putStringArray(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, args.toTypedArray())
+                putInt(MediaStore.QUERY_ARG_MATCH_TRASHED, MediaStore.MATCH_EXCLUDE)
             }
             resolver.query(uri, proj.toTypedArray(), bundle, null)
         } else {
@@ -183,8 +205,8 @@ class GalleryEngine @Inject constructor(@ApplicationContext private val context:
             val dataC = c.getColumnIndex(MediaStore.Files.FileColumns.DATA)
             val trashC = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) c.getColumnIndex(MediaStore.MediaColumns.IS_TRASHED) else -1
             val favC = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) c.getColumnIndex(MediaStore.MediaColumns.IS_FAVORITE) else -1
-            val wC = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) c.getColumnIndex(MediaStore.MediaColumns.WIDTH) else -1
-            val hC = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) c.getColumnIndex(MediaStore.MediaColumns.HEIGHT) else -1
+            val wC = c.getColumnIndex(MediaStore.MediaColumns.WIDTH)
+            val hC = c.getColumnIndex(MediaStore.MediaColumns.HEIGHT)
 
             val hiddenItemsSet = getHiddenItems()
 
@@ -221,7 +243,18 @@ class GalleryEngine @Inject constructor(@ApplicationContext private val context:
                 }
 
                 val cUri = ContentUris.withAppendedId(baseUri, id)
-                val dSec = c.getLong(dateC)
+                val rawDate = c.getLong(dateC)
+                val normalizedDateSec = when {
+                    rawDate > 1_000_000_000_000L -> rawDate / 1000L
+                    rawDate > 0L -> rawDate
+                    else -> System.currentTimeMillis() / 1000L
+                }
+
+                val rawBucketName = c.getString(bNameC)
+                val resolvedBucketName = rawBucketName?.takeIf { it.isNotBlank() }
+                    ?: relP.trimEnd('/').substringAfterLast('/').takeIf { it.isNotBlank() }
+                    ?: File(path).parentFile?.name
+                    ?: "Internal"
 
                 mediaList.add(
                     MediaItem(
@@ -232,12 +265,12 @@ class GalleryEngine @Inject constructor(@ApplicationContext private val context:
                         name = name,
                         mimeType = mimeType,
                         size = c.getLong(sizeC),
-                        dateAdded = dSec,
+                        dateAdded = normalizedDateSec,
                         isVideo = isV,
                         isHidden = false,
                         isFavorite = if (favC != -1) c.getInt(favC) == 1 else false,
-                        bucketId = c.getString(bIdC) ?: "unknown",
-                        bucketName = c.getString(bNameC) ?: "Internal",
+                        bucketId = c.getString(bIdC) ?: resolvedBucketName.lowercase(Locale.ROOT).hashCode().toString(),
+                        bucketName = resolvedBucketName,
                         duration = if (isV && durC != -1) c.getLong(durC) else 0L,
                         width = if (wC != -1) c.getInt(wC) else 0,
                         height = if (hC != -1) c.getInt(hC) else 0,
@@ -253,27 +286,39 @@ class GalleryEngine @Inject constructor(@ApplicationContext private val context:
     fun getHiddenItems(): Set<String> = prefs.getStringSet("hidden_items", emptySet()) ?: emptySet()
     fun getHiddenAlbums(): Set<String> = prefs.getStringSet("hidden_albums", emptySet()) ?: emptySet()
 
+    fun setHiddenAlbums(ids: Set<String>) {
+        prefs.edit { putStringSet("hidden_albums", ids) }
+    }
+
     fun hideItems(ids: List<Long>) {
         prefs.edit { putStringSet("hidden_items", (getHiddenItems() + ids.map { it.toString() }).toSet()) }
+    }
+
+    fun unhideItems(ids: List<Long>) {
+        prefs.edit { putStringSet("hidden_items", (getHiddenItems() - ids.map { it.toString() }.toSet())) }
     }
 
     fun hideAlbums(ids: List<String>) {
         prefs.edit { putStringSet("hidden_albums", (getHiddenAlbums() + ids).toSet()) }
     }
 
+    fun unhideAlbums(ids: List<String>) {
+        prefs.edit { putStringSet("hidden_albums", (getHiddenAlbums() - ids.toSet())) }
+    }
+
     fun calculateInSampleSize(origW: Int, origH: Int, targetW: Int, targetH: Int): Int {
         if (origH <= targetH && origW <= targetW) return 1
-        val ratio = Math.max(origW.toFloat() / targetW, origH.toFloat() / targetH)
-        return Math.pow(2.0, floor(log2(ratio.toDouble()))).toInt().coerceAtLeast(1)
+        val ratio = max(origW.toFloat() / targetW, origH.toFloat() / targetH)
+        return 2.0.pow(floor(log2(ratio.toDouble()))).toInt().coerceAtLeast(1)
     }
 
     private fun getQuickHash(item: MediaItem): String {
         return try {
             val md = MessageDigest.getInstance("MD5")
             context.contentResolver.openInputStream(item.uri)?.use { inp ->
-                val buf = ByteArray(4096)
+                val buf = ByteArray(8192)
                 val read = inp.read(buf)
-                if (read != -1) md.update(buf, 0, read)
+                if (read > 0) md.update(buf, 0, read)
             }
             md.digest().joinToString("") { "%02x".format(it) }
         } catch (e: Exception) {
@@ -285,7 +330,7 @@ class GalleryEngine @Inject constructor(@ApplicationContext private val context:
         return try {
             val md = MessageDigest.getInstance("SHA-256")
             context.contentResolver.openInputStream(item.uri)?.use { inp ->
-                val buf = ByteArray(8192)
+                val buf = ByteArray(32 * 1024)
                 var read: Int
                 while (inp.read(buf).also { read = it } != -1) {
                     md.update(buf, 0, read)
@@ -299,7 +344,9 @@ class GalleryEngine @Inject constructor(@ApplicationContext private val context:
 
     suspend fun findDuplicates(media: List<MediaItem>): List<List<MediaItem>> = withContext(Dispatchers.IO) {
         val bySize = media.groupBy { it.size }.filter { it.value.size > 1 }.values
-        val byRes = bySize.flatMap { group -> group.groupBy { "${it.width}x${it.height}" }.filter { it.value.size > 1 }.values }
+        val byRes = bySize.flatMap { group ->
+            group.groupBy { "${it.width}x${it.height}" }.filter { it.value.size > 1 }.values
+        }
 
         val duplicates = mutableListOf<List<MediaItem>>()
         val cores = Runtime.getRuntime().availableProcessors()
@@ -313,7 +360,7 @@ class GalleryEngine @Inject constructor(@ApplicationContext private val context:
                     async {
                         val qHash = getQuickHash(item)
                         if (qHash.isNotEmpty()) {
-                            byQuickHash.getOrPut(qHash) { mutableListOf() }.add(item)
+                            byQuickHash.getOrPut(qHash) { Collections.synchronizedList(mutableListOf()) }.add(item)
                         }
                     }
                 }.awaitAll()
@@ -326,7 +373,7 @@ class GalleryEngine @Inject constructor(@ApplicationContext private val context:
                         async {
                             val hash = getFullHash(item)
                             if (hash.isNotEmpty()) {
-                                byFullHash.getOrPut(hash) { mutableListOf() }.add(item)
+                                byFullHash.getOrPut(hash) { Collections.synchronizedList(mutableListOf()) }.add(item)
                             }
                         }
                     }.awaitAll()
@@ -370,6 +417,9 @@ class GalleryPagingSource(
     override fun getRefreshKey(state: PagingState<Cursor, MediaItem>): Cursor? = null
 }
 
+// =========================================================================================
+// 🎬 BACKGROUND MEDIA3 PLAYBACK SERVICE
+// =========================================================================================
 class VideoPlaybackService : MediaSessionService() {
     private var mediaSession: MediaSession? = null
     private var player: ExoPlayer? = null
@@ -437,6 +487,9 @@ class VideoPlaybackService : MediaSessionService() {
     }
 }
 
+// =========================================================================================
+// 📦 FILE OPERATION MODELS & RESULTS
+// =========================================================================================
 sealed class MediaOpResult {
     data class Success(
         val uris: List<Uri> = emptyList(),
@@ -474,6 +527,9 @@ data class TargetAlbum(
     val isSdCard: Boolean = false
 )
 
+// =========================================================================================
+// 🚀 CROSS-STORAGE MEDIA OPERATION ENGINE (Phone↔Phone, Phone↔SD, SD↔Phone, SD↔SD)
+// =========================================================================================
 @Singleton
 class MediaOperationEngine @Inject constructor(@ApplicationContext private val context: Context) {
 
@@ -502,11 +558,13 @@ class MediaOperationEngine @Inject constructor(@ApplicationContext private val c
         }
 
         if (!persistedPermission) {
-            resolver.takePersistableUriPermission(
-                uri,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION or
-                        Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-            )
+            runCatching {
+                resolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                            Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                )
+            }
         }
 
         prefs.edit {
@@ -515,57 +573,113 @@ class MediaOperationEngine @Inject constructor(@ApplicationContext private val c
     }
 
     private fun getSafTreeUri(): Uri? {
-        val uriStr = prefs.getString("saf_tree_uri", null) ?: return null
-        return Uri.parse(uriStr)
+        val savedStr = prefs.getString("saf_tree_uri", null)
+        if (!savedStr.isNullOrBlank()) {
+            val parsed = Uri.parse(savedStr)
+            val hasPerm = context.contentResolver.persistedUriPermissions.any {
+                it.uri == parsed && it.isWritePermission
+            }
+            if (hasPerm) return parsed
+        }
+
+        val fallbackUri = context.contentResolver.persistedUriPermissions.firstOrNull { perm ->
+            perm.isWritePermission &&
+                    perm.uri.authority == "com.android.externalstorage.documents" &&
+                    !perm.uri.toString().contains("primary%3A", ignoreCase = true) &&
+                    !perm.uri.toString().contains("primary:", ignoreCase = true)
+        }?.uri
+
+        if (fallbackUri != null) {
+            prefs.edit { putString("saf_tree_uri", fallbackUri.toString()) }
+        }
+        return fallbackUri
     }
 
     private fun createSafIntent(): Intent {
         return Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+            addFlags(
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                        Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                        Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION or
+                        Intent.FLAG_GRANT_PREFIX_URI_PERMISSION
+            )
         }
     }
 
     private fun getOrCreateSafDirectory(relativePath: String): DocumentFile? {
         val treeUri = getSafTreeUri() ?: return null
         var currentDoc = DocumentFile.fromTreeUri(context, treeUri) ?: return null
+        if (!currentDoc.canWrite()) return null
 
-        val parts = relativePath.split("/").filter { it.isNotEmpty() }
+        val treeDocId = runCatching { DocumentsContract.getTreeDocumentId(treeUri) }.getOrDefault("")
+        val treeSubPath = treeDocId.substringAfter(':', "").trim('/')
+
+        var effectiveRelPath = relativePath.trim('/')
+        if (treeSubPath.isNotEmpty() && effectiveRelPath.startsWith(treeSubPath, ignoreCase = true)) {
+            effectiveRelPath = effectiveRelPath.substring(treeSubPath.length).trim('/')
+        }
+
+        val parts = effectiveRelPath.split("/").filter { it.isNotBlank() }
         for (part in parts) {
-            val existing = currentDoc.listFiles().firstOrNull { doc ->
-                doc.isDirectory && doc.name?.trim()?.equals(part.trim(), ignoreCase = true) == true
-            }
+            val cleanPart = part.trim()
+            val existing = currentDoc.findFile(cleanPart)?.takeIf { it.isDirectory }
+                ?: currentDoc.listFiles().firstOrNull { doc ->
+                    doc.isDirectory && doc.name?.trim()?.equals(cleanPart, ignoreCase = true) == true
+                }
 
-            val nextDoc = existing ?: currentDoc.createDirectory(part)
-            if (nextDoc == null) return null
+            val nextDoc = existing ?: currentDoc.createDirectory(cleanPart) ?: return null
             currentDoc = nextDoc
         }
         return currentDoc
     }
 
-    private fun fetchSafDirectoryNames(
-        relativePath: String
-    ): Set<String> {
-        val directory = getOrCreateSafDirectory(relativePath)
-            ?: return emptySet()
-
-        return directory.listFiles()
-            .mapNotNull { it.name }
-            .toSet()
+    private fun fetchSafDirectoryNames(relativePath: String): Set<String> {
+        val directory = getOrCreateSafDirectory(relativePath) ?: return emptySet()
+        return directory.listFiles().mapNotNull { it.name }.toSet()
     }
 
+    /**
+     * Resolves a physical File on an SD card to its corresponding SAF DocumentFile.
+     * Uses O(1) direct DocumentUri construction first, then falls back to directory traversal.
+     */
     private fun getSafDocumentFile(file: File): DocumentFile? {
         val treeUri = getSafTreeUri() ?: return null
-        val rootDoc = DocumentFile.fromTreeUri(context, treeUri) ?: return null
-        val treeDocId = android.provider.DocumentsContract.getTreeDocumentId(treeUri)
-        val treeRel = treeDocId.substringAfter(':', "")
+        val treeDocId = runCatching { DocumentsContract.getTreeDocumentId(treeUri) }.getOrDefault("")
+        val volumePrefix = treeDocId.substringBefore(':', "")
+        val treeRel = treeDocId.substringAfter(':', "").trim('/')
 
-        var rel = file.absolutePath.removePrefix("/storage/").substringAfter('/', "")
-        if (treeRel.isNotEmpty()) rel = rel.removePrefix("$treeRel/")
+        val fullRelFromStorageRoot = file.absolutePath
+            .removePrefix("/storage/")
+            .substringAfter('/', "")
+            .trim('/')
+
+        if (fullRelFromStorageRoot.isBlank()) return null
+
+        // 1. O(1) Direct DocumentUri lookup without calling listFiles()
+        if (volumePrefix.isNotEmpty()) {
+            val targetDocId = "$volumePrefix:$fullRelFromStorageRoot"
+            val directDoc = runCatching {
+                val docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, targetDocId)
+                DocumentFile.fromSingleUri(context, docUri)
+            }.getOrNull()
+            if (directDoc != null && directDoc.exists() && directDoc.isFile) {
+                return directDoc
+            }
+        }
+
+        // 2. Fallback traversal from rootDoc
+        val rootDoc = DocumentFile.fromTreeUri(context, treeUri) ?: return null
+        var rel = fullRelFromStorageRoot
+        if (treeRel.isNotEmpty() && rel.startsWith(treeRel, ignoreCase = true)) {
+            rel = rel.substring(treeRel.length).trim('/')
+        }
         if (rel.isBlank()) return null
 
         var cur: DocumentFile? = rootDoc
         for (part in rel.split("/").filter { it.isNotEmpty() }) {
-            cur = cur?.listFiles()?.firstOrNull { it.name?.equals(part, true) == true } ?: return null
+            cur = cur?.findFile(part)
+                ?: cur?.listFiles()?.firstOrNull { it.name?.equals(part, true) == true }
+                        ?: return null
         }
         return if (cur?.isFile == true) cur else null
     }
@@ -573,11 +687,98 @@ class MediaOperationEngine @Inject constructor(@ApplicationContext private val c
     private fun getResolvedRelativePath(targetAlbum: TargetAlbum, isVideo: Boolean): String {
         val path = targetAlbum.relativePath
         if (!path.isNullOrBlank()) return path.trim().trimEnd('/') + "/"
-        return "Pictures/${targetAlbum.name}/"
+        return "Pictures/${targetAlbum.name.trim()}/"
+    }
+
+    private fun resolveSafeMimeType(item: MediaItem, fileName: String): String {
+        val rawMime = item.mimeType.trim().lowercase(Locale.ROOT)
+        if (rawMime.startsWith("image/") || rawMime.startsWith("video/")) {
+            return rawMime
+        }
+        val ext = fileName.substringAfterLast('.', "").lowercase(Locale.ROOT)
+        if (ext.isNotEmpty()) {
+            val fromExt = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)
+            if (!fromExt.isNullOrBlank() && (fromExt.startsWith("image/") || fromExt.startsWith("video/"))) {
+                return fromExt
+            }
+        }
+        return if (item.isVideo) "video/mp4" else "image/jpeg"
+    }
+
+    private fun createSafFileSafely(safDir: DocumentFile, mimeType: String, uniqueName: String): DocumentFile? {
+        val created = safDir.createFile(mimeType, uniqueName) ?: return null
+        val actualName = created.name ?: return created
+        if (!actualName.equals(uniqueName, ignoreCase = true) &&
+            actualName.startsWith(uniqueName, ignoreCase = true)
+        ) {
+            runCatching { created.renameTo(uniqueName) }
+        }
+        return created
+    }
+
+    private fun openSourceInputStream(item: MediaItem): InputStream? {
+        val resolver = context.contentResolver
+        runCatching { resolver.openInputStream(item.uri) }.getOrNull()?.let { return it }
+
+        if (item.path.isNotBlank()) {
+            val file = File(item.path)
+            if (file.exists() && file.canRead()) {
+                runCatching { file.inputStream() }.getOrNull()?.let { return it }
+            }
+            val safDoc = getSafDocumentFile(file)
+            if (safDoc != null) {
+                runCatching { resolver.openInputStream(safDoc.uri) }.getOrNull()?.let { return it }
+            }
+        }
+        return null
+    }
+
+    private fun triggerMediaScannerForSafUris(uris: List<Uri>, mimeTypes: List<String>) {
+        if (uris.isEmpty()) return
+        val pathsToScan = mutableListOf<String>()
+        val mimesToScan = mutableListOf<String>()
+
+        for (i in uris.indices) {
+            val u = uris[i]
+            val docId = runCatching { DocumentsContract.getDocumentId(u) }.getOrNull() ?: continue
+            val volumeId = docId.substringBefore(':', "")
+            val relPath = docId.substringAfter(':', "")
+            if (volumeId.isNotEmpty() && relPath.isNotEmpty()) {
+                val physicalPath = if (volumeId.equals("primary", ignoreCase = true)) {
+                    "${Environment.getExternalStorageDirectory().absolutePath}/$relPath"
+                } else {
+                    "/storage/$volumeId/$relPath"
+                }
+                if (File(physicalPath).exists()) {
+                    pathsToScan.add(physicalPath)
+                    mimesToScan.add(mimeTypes.getOrElse(i) { "image/jpeg" })
+                }
+            }
+        }
+
+        if (pathsToScan.isNotEmpty()) {
+            runCatching {
+                MediaScannerConnection.scanFile(
+                    context,
+                    pathsToScan.toTypedArray(),
+                    mimesToScan.toTypedArray(),
+                    null
+                )
+            }
+        }
     }
 
     suspend fun createAlbum(targetAlbum: TargetAlbum): MediaOpResult = withContext(Dispatchers.IO) {
         val safePath = getResolvedRelativePath(targetAlbum, false)
+
+        if (targetAlbum.isSdCard || isSdCardAlbum(targetAlbum.bucketId, targetAlbum.volumeName)) {
+            if (getSafTreeUri() == null) {
+                return@withContext MediaOpResult.SafPermissionRequired(createSafIntent())
+            }
+            val safDir = getOrCreateSafDirectory(safePath)
+                ?: return@withContext MediaOpResult.Failed("Could not create folder on SD card.")
+            if (safDir.exists()) return@withContext MediaOpResult.Success()
+        }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             return@withContext MediaOpResult.Success()
@@ -589,8 +790,7 @@ class MediaOperationEngine @Inject constructor(@ApplicationContext private val c
         if (!albumDir.exists() && !albumDir.mkdirs()) {
             val safDir = getOrCreateSafDirectory(safePath)
             if (safDir == null) {
-                val safUri = getSafTreeUri()
-                if (safUri == null) {
+                if (getSafTreeUri() == null) {
                     return@withContext MediaOpResult.SafPermissionRequired(createSafIntent())
                 }
                 return@withContext MediaOpResult.Failed("Could not create physical directory on external storage.")
@@ -608,46 +808,56 @@ class MediaOperationEngine @Inject constructor(@ApplicationContext private val c
 
         val resolver = context.contentResolver
         val newUris = mutableListOf<Uri>()
+        val safCreatedUris = mutableListOf<Uri>()
+        val safCreatedMimes = mutableListOf<String>()
         val existingNames = fetchExistingItemNames(targetAlbum).toMutableSet()
         val skipped = 0
 
+        val isSdTarget = targetAlbum.isSdCard ||
+                isSdCardAlbum(targetAlbum.bucketId, targetAlbum.volumeName)
+
+        val preResolvedSafDir = if (isSdTarget) {
+            if (getSafTreeUri() == null) {
+                return@withContext MediaOpResult.SafPermissionRequired(createSafIntent(), emptyList())
+            }
+            val dir = getOrCreateSafDirectory(getResolvedRelativePath(targetAlbum, false))
+            if (dir == null) {
+                return@withContext MediaOpResult.Failed("Cannot access SD card folder: ${targetAlbum.name}")
+            }
+            dir
+        } else null
+
         try {
+            val copyBuffer = ByteArray(1024 * 1024)
+
             for ((index, item) in items.withIndex()) {
                 if (!isActive) throw CancellationException("Operation cancelled by user")
                 onProgress("Copying", index + 1, items.size)
 
-                val uniqueName = getUniqueName(item.name, existingNames)
+                val fallbackItemName = item.name.ifBlank {
+                    "media_${item.id}.${if (item.isVideo) "mp4" else "jpg"}"
+                }
+                val uniqueName = getUniqueName(fallbackItemName, existingNames)
                 existingNames.add(uniqueName)
                 val relativePath = getResolvedRelativePath(targetAlbum, item.isVideo)
+                val safeMimeType = resolveSafeMimeType(item, uniqueName)
 
                 var destUri: Uri? = null
 
-                val isSdTarget = targetAlbum.isSdCard ||
-                        isSdCardAlbum(targetAlbum.bucketId, targetAlbum.volumeName)
-
                 if (isSdTarget) {
-                    val safTreeUri = getSafTreeUri()
+                    val safDir = preResolvedSafDir
+                        ?: getOrCreateSafDirectory(relativePath)
+                        ?: run {
+                            rollback(newUris)
+                            return@withContext MediaOpResult.Failed("Cannot access SD card folder: ${targetAlbum.name}")
+                        }
 
-                    if (safTreeUri == null) {
-                        return@withContext MediaOpResult.SafPermissionRequired(
-                            createSafIntent(),
-                            newUris
-                        )
+                    val createdDoc = createSafFileSafely(safDir, safeMimeType, uniqueName)
+                    destUri = createdDoc?.uri
+                    if (destUri != null) {
+                        safCreatedUris.add(destUri)
+                        safCreatedMimes.add(safeMimeType)
                     }
-
-                    val safDir = getOrCreateSafDirectory(relativePath)
-
-                    if (safDir == null) {
-                        rollback(newUris)
-                        return@withContext MediaOpResult.Failed(
-                            "Cannot access SD-card folder: ${targetAlbum.name}"
-                        )
-                    }
-
-                    destUri = safDir.createFile(
-                        item.mimeType.ifBlank { "application/octet-stream" },
-                        uniqueName
-                    )?.uri
                 } else {
                     try {
                         val volumeName = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -677,10 +887,7 @@ class MediaOperationEngine @Inject constructor(@ApplicationContext private val c
 
                         val contentValues = ContentValues().apply {
                             put(MediaStore.MediaColumns.DISPLAY_NAME, uniqueName)
-                            put(
-                                MediaStore.MediaColumns.MIME_TYPE,
-                                item.mimeType.ifBlank { "application/octet-stream" }
-                            )
+                            put(MediaStore.MediaColumns.MIME_TYPE, safeMimeType)
 
                             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                                 put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath)
@@ -690,9 +897,7 @@ class MediaOperationEngine @Inject constructor(@ApplicationContext private val c
                                 val destDir = File(root, relativePath)
 
                                 if (!destDir.exists() && !destDir.mkdirs()) {
-                                    throw IOException(
-                                        "Could not create destination directory"
-                                    )
+                                    throw IOException("Could not create destination directory")
                                 }
 
                                 put(
@@ -717,62 +922,48 @@ class MediaOperationEngine @Inject constructor(@ApplicationContext private val c
 
                 newUris.add(destUri)
 
-                val inputStream = resolver.openInputStream(item.uri)
+                val inputStream = openSourceInputStream(item)
                     ?: throw IOException("Cannot read source: ${item.name}")
 
-                val outputStream = resolver.openOutputStream(destUri, "w")
+                val outputStream = resolver.openOutputStream(destUri)
                     ?: throw IOException("Cannot write destination: $uniqueName")
 
+                var bytesTransferred = 0L
                 inputStream.use { input ->
                     outputStream.use { output ->
-                        input.copyTo(output, 1024 * 1024)
+                        while (true) {
+                            if (!isActive) throw CancellationException("Operation cancelled by user")
+                            val read = input.read(copyBuffer)
+                            if (read < 0) break
+                            output.write(copyBuffer, 0, read)
+                            bytesTransferred += read
+                        }
                         output.flush()
                     }
                 }
 
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && destUri.scheme == "content" && destUri.authority == MediaStore.AUTHORITY) {
+                if (bytesTransferred == 0L && item.size > 0L) {
+                    throw IOException("Zero bytes written for ${item.name}")
+                }
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                    destUri.scheme == "content" &&
+                    destUri.authority == MediaStore.AUTHORITY
+                ) {
                     val updateValues = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }
                     resolver.update(destUri, updateValues, null, null)
                 }
             }
 
-            for ((index, destUri) in newUris.withIndex()) {
-                if (!isActive) {
-                    throw CancellationException("Operation cancelled by user")
+            if (safCreatedUris.isNotEmpty()) {
+                triggerMediaScannerForSafUris(safCreatedUris, safCreatedMimes)
+                if (targetAlbum.id.isNotBlank()) {
+                    markAlbumAsSdCard(targetAlbum.id)
                 }
-
-                onProgress("Verifying", index + 1, newUris.size)
-
-                val originalItem = items[index]
-                var copiedSize = 0L
-
-                resolver.openInputStream(destUri)?.use { input ->
-                    val buffer = ByteArray(64 * 1024)
-
-                    while (true) {
-                        if (!isActive) {
-                            throw CancellationException("Operation cancelled by user")
-                        }
-
-                        val bytesRead = input.read(buffer)
-                        if (bytesRead < 0) break
-
-                        copiedSize += bytesRead
-                    }
-                } ?: throw IOException(
-                    "Cannot read copied file for verification: ${originalItem.name}"
-                )
-
-                if (copiedSize == 0L ||
-                    (originalItem.size > 0L && copiedSize != originalItem.size)
-                ) {
-                    throw IOException(
-                        "Copied file size mismatch for ${originalItem.name}: " +
-                                "expected ${originalItem.size}, got $copiedSize"
-                    )
+                if (targetAlbum.bucketId.isNotBlank()) {
+                    markAlbumAsSdCard(targetAlbum.bucketId)
                 }
             }
-
         } catch (e: CancellationException) {
             rollback(newUris)
             return@withContext MediaOpResult.Cancelled
@@ -803,52 +994,88 @@ class MediaOperationEngine @Inject constructor(@ApplicationContext private val c
         if (copyResult !is MediaOpResult.Success) return@withContext copyResult
 
         val copiedUris = copyResult.uris
-        val originalUris = itemsToMove.map { it.uri }
         val resolver = context.contentResolver
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            val pendingIntent = MediaStore.createDeleteRequest(resolver, originalUris)
-            return@withContext MediaOpResult.PermissionRequired(pendingIntent.intentSender, copiedUris, autoDeleteHandledByOs = true)
-        } else {
-            var failureCount = 0
-            for ((index, item) in itemsToMove.withIndex()) {
-                onProgress("Deleting", index + 1, itemsToMove.size)
-                var deleted = false
+        val remainingUrisNeedOsConsent = mutableListOf<Uri>()
+        var silentlyDeletedCount = 0
 
-                try {
-                    val rows = resolver.delete(item.uri, null, null)
-                    if (rows > 0) deleted = true
-                } catch (e: RecoverableSecurityException) {
-                    if (Build.VERSION.SDK_INT == Build.VERSION_CODES.Q) {
-                        return@withContext MediaOpResult.PermissionRequired(e.userAction.actionIntent.intentSender, copiedUris)
-                    }
-                } catch (e: Exception) {
-                    e.printStackTrace()
+        for ((index, item) in itemsToMove.withIndex()) {
+            onProgress("Cleaning up", index + 1, itemsToMove.size)
+            var deleted = false
+
+            try {
+                if (resolver.delete(item.uri, null, null) > 0) {
+                    deleted = true
                 }
-
-                if (!deleted && item.path.isNotEmpty()) {
-                    val file = File(item.path)
-                    if (file.exists() && file.delete()) deleted = true
-
-                    if (!deleted) {
-                        val safDoc = getSafDocumentFile(file)
+            } catch (e: RecoverableSecurityException) {
+                if (Build.VERSION.SDK_INT == Build.VERSION_CODES.Q) {
+                    if (item.path.isNotBlank()) {
+                        val safDoc = getSafDocumentFile(File(item.path))
                         if (safDoc != null && safDoc.delete()) {
                             deleted = true
-                        } else if (getSafTreeUri() == null) {
-                            return@withContext MediaOpResult.SafPermissionRequired(createSafIntent(), copiedUris)
+                            runCatching { resolver.delete(item.uri, null, null) }
                         }
                     }
+                    if (!deleted) {
+                        return@withContext MediaOpResult.PermissionRequired(
+                            e.userAction.actionIntent.intentSender,
+                            copiedUris
+                        )
+                    }
                 }
+            } catch (_: SecurityException) {
+            } catch (_: Exception) {}
 
-                if (!deleted) failureCount++
+            if (!deleted && item.path.isNotEmpty()) {
+                val file = File(item.path)
+                if (file.exists() && file.delete()) {
+                    deleted = true
+                    runCatching { resolver.delete(item.uri, null, null) }
+                    runCatching { MediaScannerConnection.scanFile(context, arrayOf(file.absolutePath), null, null) }
+                } else {
+                    val safDoc = getSafDocumentFile(file)
+                    if (safDoc != null && safDoc.delete()) {
+                        deleted = true
+                        runCatching { resolver.delete(item.uri, null, null) }
+                        runCatching { MediaScannerConnection.scanFile(context, arrayOf(file.absolutePath), null, null) }
+                    }
+                }
             }
 
-            if (failureCount > 0) {
+            if (deleted) {
+                silentlyDeletedCount++
+            } else {
+                remainingUrisNeedOsConsent.add(item.uri)
+            }
+        }
+
+        if (remainingUrisNeedOsConsent.isEmpty()) {
+            return@withContext MediaOpResult.Success(
+                copiedUris,
+                copiedUris.size,
+                skippedSameAlbumCount,
+                silentlyDeletedCount
+            )
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            return@withContext try {
+                val pendingIntent = MediaStore.createDeleteRequest(resolver, remainingUrisNeedOsConsent)
+                MediaOpResult.PermissionRequired(
+                    pendingIntent.intentSender,
+                    copiedUris,
+                    autoDeleteHandledByOs = true
+                )
+            } catch (e: Exception) {
                 rollback(copiedUris)
-                return@withContext MediaOpResult.Failed("Failed to delete $failureCount original items. Move reverted.")
+                MediaOpResult.Failed("Could not request delete permission: ${e.localizedMessage}")
             }
-
-            return@withContext MediaOpResult.Success(copiedUris, copiedUris.size, skippedSameAlbumCount, originalUris.size)
+        } else {
+            if (getSafTreeUri() == null) {
+                return@withContext MediaOpResult.SafPermissionRequired(createSafIntent(), copiedUris)
+            }
+            rollback(copiedUris)
+            return@withContext MediaOpResult.Failed("Failed to delete ${remainingUrisNeedOsConsent.size} original items. Move reverted.")
         }
     }
 
@@ -875,12 +1102,18 @@ class MediaOperationEngine @Inject constructor(@ApplicationContext private val c
 
                 if (path.isNotEmpty()) {
                     val file = File(path)
-                    if (file.exists() && file.delete()) deleted = true
+                    if (file.exists() && file.delete()) {
+                        deleted = true
+                        runCatching { resolver.delete(uri, null, null) }
+                        runCatching { MediaScannerConnection.scanFile(context, arrayOf(path), null, null) }
+                    }
 
                     if (!deleted) {
                         val safDoc = getSafDocumentFile(file)
                         if (safDoc != null && safDoc.delete()) {
                             deleted = true
+                            runCatching { resolver.delete(uri, null, null) }
+                            runCatching { MediaScannerConnection.scanFile(context, arrayOf(path), null, null) }
                         }
                     }
                 }
@@ -899,7 +1132,8 @@ class MediaOperationEngine @Inject constructor(@ApplicationContext private val c
 
         for (uri in uris) {
             try {
-                if (resolver.delete(uri, null, null) == 0) {
+                val deletedRows = runCatching { resolver.delete(uri, null, null) }.getOrDefault(0)
+                if (deletedRows == 0) {
                     val docFile = DocumentFile.fromSingleUri(context, uri)
                     docFile?.delete()
                 }
@@ -938,7 +1172,9 @@ class MediaOperationEngine @Inject constructor(@ApplicationContext private val c
                 if (picPath != movPath) {
                     File(root, movPath).listFiles()?.forEach { file -> existingNames.add(file.name) }
                 }
-            } catch (e: Exception) { e.printStackTrace() }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
             return@withContext existingNames
         }
 
@@ -953,7 +1189,9 @@ class MediaOperationEngine @Inject constructor(@ApplicationContext private val c
                 val nameC = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
                 while (c.moveToNext()) c.getString(nameC)?.let { existingNames.add(it) }
             }
-        } catch (e: Exception) { e.printStackTrace() }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
 
         return@withContext existingNames
     }
@@ -961,8 +1199,9 @@ class MediaOperationEngine @Inject constructor(@ApplicationContext private val c
     private fun getUniqueName(originalName: String, existingNames: Set<String>): String {
         if (!existingNames.contains(originalName)) return originalName
 
-        val nameWithoutExt = originalName.substringBeforeLast(".")
-        val ext = originalName.substringAfterLast(".", "")
+        val hasDot = originalName.contains('.')
+        val nameWithoutExt = if (hasDot) originalName.substringBeforeLast(".") else originalName
+        val ext = if (hasDot) originalName.substringAfterLast(".", "") else ""
         val dotExt = if (ext.isNotEmpty()) ".$ext" else ""
 
         var counter = 1
@@ -975,7 +1214,9 @@ class MediaOperationEngine @Inject constructor(@ApplicationContext private val c
     }
 }
 
-
+// =========================================================================================
+// 🔔 DAILY MEMORY REMINDER WORKERS
+// =========================================================================================
 object NotificationHelper {
     const val WORK_NAME_SCHEDULER = "DailySchedulerWork"
     const val WORK_NAME_DISPLAY = "DisplayNotificationWork"

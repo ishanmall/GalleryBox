@@ -9,6 +9,19 @@
  * but we aren't turning it on right here. We will turn them on individually inside the
  * actual "app" folder when we need them.
  */
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        // --- LEGAL & COMPLIANCE ---
+        // The OSS Licenses plugin does not use the modern plugins{} portal marker,
+        // so it must be loaded via buildscript classpath using version 0.10.6.
+        classpath("com.google.android.gms:oss-licenses-plugin:0.10.6")
+    }
+}
+
 plugins {
 
     // --- ANDROID CORE TOOLS ---
@@ -40,16 +53,10 @@ plugins {
     // --- APP ARCHITECTURE & SERVICES ---
     // Hilt (Dependency Injection). This handles the complex "invisible wiring" of your app,
     // making sure different parts (like ViewModels and Databases) can talk to each other easily.
-    id("com.google.dagger.hilt.android") version "2.57" apply false
+    alias(libs.plugins.hilt) apply false
 
     // Google Services. This links your app to Google's backend servers, which is required
     // if you want to use Firebase, Google Analytics, or Crashlytics.
     id("com.google.gms.google-services") version "4.4.2" apply false
-
-
-    // --- LEGAL & COMPLIANCE ---
-    // A handy tool that automatically finds all the free/open-source libraries your app uses
-    // and generates a "Licenses" screen for you so you don't get sued or kicked off the Play Store.
-    id("com.google.android.gms.oss-licenses-plugin") version "0.13.0" apply false
 
 }

@@ -17,17 +17,21 @@ import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.RequiresApi
 import androidx.compose.animation.*
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.*
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -41,10 +45,10 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
@@ -71,6 +75,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.yield
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 // ---------------------------------------------------------------------------
 // 🖼️ APP DATA & VIEWMODELS
@@ -81,47 +88,39 @@ import com.gallerybox.viewmodel.*
 // ---------------------------------------------------------------------------
 // 🧠 ADAPTIVE LOGIC IMPORTS
 // ---------------------------------------------------------------------------
-import com.gallerybox.ui.screens.adaptive.AdaptiveState
-import com.gallerybox.ui.screens.adaptive.rememberAdaptiveState
 import com.gallerybox.ui.screens.adaptive.WindowWidthSize
+import com.gallerybox.ui.screens.adaptive.rememberAdaptiveState
 
 /**
  * =========================================================================================
  * 📦 TRASH DATA MODELS
  * =========================================================================================
- * These define the different types of files we can throw away and how to sort them.
  */
 enum class TrashMediaType { Image, Video, Audio, Story }
 
-// The basic "Box" holding the details about a file that was deleted.
 data class TrashUiItem(
     val id: Long,
-    val originalPath: String, // Where it used to live before it was deleted
+    val originalPath: String,
     val contentUri: Uri,
     val name: String,
     val size: Long,
     val type: TrashMediaType,
-    val deletedTimestamp: Long, // The exact millisecond it was deleted
-    val daysLeft: Int // Tells the user how many days before it's gone forever
+    val deletedTimestamp: Long,
+    val daysLeft: Int
 )
 
-// Used to show the "Expiring Soon" and "This Week" text headers in the scrolling grid
 sealed class TrashGridItem {
     data class Header(val title: String) : TrashGridItem()
     data class Media(val item: TrashUiItem) : TrashGridItem()
 }
 
-// How the user wants to sort the trash list
 enum class TrashSort { NewestDeleted, OldestDeleted }
-// Which type of files the user wants to look at right now
 enum class TrashFilter { All, Images, Videos, Audio, Stories }
 
 /**
  * =========================================================================================
- * 🗑️ THE MAIN TRASH SCREEN
+ * 🗑️ THE MAIN TRASH SCREEN (Samsung One UI 7 Style)
  * =========================================================================================
- * This screen shows all deleted files and tells the user how many days are left
- * until Android automatically destroys them forever.
  */
 @RequiresApi(Build.VERSION_CODES.ECLAIR)
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
@@ -142,7 +141,8 @@ fun TrashScreen(
 
     var gridColumns by remember {
         mutableIntStateOf(
-            prefs.getInt("trash_grid_columns",
+            prefs.getInt(
+                "trash_grid_columns",
                 when (adaptiveState.widthSize) {
                     WindowWidthSize.COMPACT -> 4
                     WindowWidthSize.MEDIUM -> 6
@@ -180,7 +180,9 @@ fun TrashScreen(
         trashEntities.mapNotNull { entity ->
             val uri = try {
                 Uri.parse(entity.contentUri)
-            } catch (_: Exception) { null } ?: return@mapNotNull null
+            } catch (_: Exception) {
+                null
+            } ?: return@mapNotNull null
 
             val type = when (entity.mediaType) {
                 "video" -> TrashMediaType.Video
@@ -202,13 +204,11 @@ fun TrashScreen(
         }
     }
 
-    // Local State Variables
     var isEditMode by remember { mutableStateOf(false) }
     var selectedIds by remember { mutableStateOf(emptySet<Long>()) }
     var currentSort by remember { mutableStateOf(TrashSort.NewestDeleted) }
     var currentFilter by remember { mutableStateOf(TrashFilter.All) }
 
-    // Full-Screen Dialog Overlay States
     var showEmptyScreen by remember { mutableStateOf(false) }
     var showDeleteScreen by remember { mutableStateOf(false) }
     var showGridScreen by remember { mutableStateOf(false) }
@@ -216,6 +216,16 @@ fun TrashScreen(
 
     LaunchedEffect(currentFilter) {
         if (isEditMode) selectedIds = emptySet()
+    }
+
+    val filterCounts = remember(trashUiItems) {
+        mapOf(
+            TrashFilter.All to trashUiItems.size,
+            TrashFilter.Images to trashUiItems.count { it.type == TrashMediaType.Image },
+            TrashFilter.Videos to trashUiItems.count { it.type == TrashMediaType.Video },
+            TrashFilter.Audio to trashUiItems.count { it.type == TrashMediaType.Audio },
+            TrashFilter.Stories to trashUiItems.count { it.type == TrashMediaType.Story }
+        )
     }
 
     val finalTrashItems = remember(trashUiItems, currentSort, currentFilter) {
@@ -233,8 +243,8 @@ fun TrashScreen(
         }
     }
 
-    val flattenedGridItems = remember(finalTrashItems) {
-        val grouped = finalTrashItems.groupBy {
+    val groupedByExpiry = remember(finalTrashItems) {
+        finalTrashItems.groupBy {
             when {
                 it.daysLeft <= 0 -> "Expired"
                 it.daysLeft <= 3 -> "Expiring Soon"
@@ -242,10 +252,12 @@ fun TrashScreen(
                 else -> "Later"
             }
         }
+    }
 
+    val flattenedGridItems = remember(groupedByExpiry) {
         val list = mutableListOf<TrashGridItem>()
         listOf("Expired", "Expiring Soon", "This Week", "Later").forEach { key ->
-            grouped[key]?.let { groupItems ->
+            groupedByExpiry[key]?.let { groupItems ->
                 if (groupItems.isNotEmpty()) {
                     list.add(TrashGridItem.Header(key))
                     groupItems.forEach { item ->
@@ -291,7 +303,6 @@ fun TrashScreen(
         }
     }
 
-    // Intercept physical Back button
     BackHandler {
         when {
             itemForDetails != null -> itemForDetails = null
@@ -310,13 +321,17 @@ fun TrashScreen(
     var showSortMenu by remember { mutableStateOf(false) }
     val scrollBehavior = TopAppBarDefaults.enterAlwaysScrollBehavior(rememberTopAppBarState())
 
+    val selectedSizeBytes = remember(selectedIds, finalTrashItems) {
+        finalTrashItems.filter { selectedIds.contains(it.id) }.sumOf { it.size }
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         Scaffold(
             modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
             snackbarHost = { SnackbarHost(snackbarHostState) },
             topBar = {
                 val elevation by animateDpAsState(
-                    targetValue = if (scrollBehavior.state.overlappedFraction > 0.01f) 4.dp else 0.dp,
+                    targetValue = if (scrollBehavior.state.overlappedFraction > 0.01f) 3.dp else 0.dp,
                     label = "topBarElevation"
                 )
 
@@ -326,22 +341,43 @@ fun TrashScreen(
                 ) {
                     Column {
                         if (isBusy && operationProgress == null) {
-                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.primary)
+                            LinearProgressIndicator(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(3.dp),
+                                color = MaterialTheme.colorScheme.primary
+                            )
                         }
                         TopAppBar(
                             title = {
                                 Column {
                                     if (isEditMode) {
-                                        Text("${selectedIds.size} Selected", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleLarge)
-                                    } else {
-                                        Text("Trash Bin", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleLarge)
-                                    }
-                                    if (!isEditMode && finalTrashItems.isNotEmpty()) {
                                         Text(
-                                            text = "${finalTrashItems.size} items • ${Formatter.formatShortFileSize(context, trashUiItems.sumOf { it.size })}",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            text = if (selectedIds.isEmpty()) "Select items" else "${selectedIds.size} selected",
+                                            fontWeight = FontWeight.Bold,
+                                            style = MaterialTheme.typography.titleLarge
                                         )
+                                        if (selectedIds.isNotEmpty()) {
+                                            Text(
+                                                text = Formatter.formatFileSize(context, selectedSizeBytes),
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    } else {
+                                        Text(
+                                            text = "Trash",
+                                            fontWeight = FontWeight.ExtraBold,
+                                            style = MaterialTheme.typography.headlineSmall,
+                                            letterSpacing = (-0.3).sp
+                                        )
+                                        if (finalTrashItems.isNotEmpty()) {
+                                            Text(
+                                                text = "${finalTrashItems.size} items • ${Formatter.formatShortFileSize(context, trashUiItems.sumOf { it.size })}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
                                     }
                                 }
                             },
@@ -356,60 +392,113 @@ fun TrashScreen(
                                         }
                                     }
                                 ) {
-                                    Icon(if (isEditMode) Icons.Default.Close else Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                                    Icon(
+                                        imageVector = if (isEditMode) Icons.Default.Close else Icons.AutoMirrored.Filled.ArrowBack,
+                                        contentDescription = "Back"
+                                    )
                                 }
                             },
                             actions = {
                                 if (isEditMode) {
                                     val allSelected = finalTrashItems.isNotEmpty() && selectedIds.size == finalTrashItems.size
-                                    IconButton(
+                                    Surface(
                                         onClick = {
-                                            if (allSelected) selectedIds = emptySet()
-                                            else selectedIds = finalTrashItems.map { it.id }.toSet()
+                                            selectedIds = if (allSelected) emptySet() else finalTrashItems.map { it.id }.toSet()
                                             haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                        }
+                                        },
+                                        shape = CircleShape,
+                                        color = if (allSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
+                                        modifier = Modifier.padding(end = 10.dp)
                                     ) {
-                                        Icon(
-                                            imageVector = if (allSelected) Icons.Default.CheckCircle else Icons.Default.SelectAll,
-                                            contentDescription = "Select All",
-                                            tint = if (allSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                                        )
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = if (allSelected) Icons.Rounded.CheckCircle else Icons.Outlined.RadioButtonUnchecked,
+                                                contentDescription = "Select All",
+                                                tint = if (allSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                            Spacer(Modifier.width(6.dp))
+                                            Text(
+                                                text = "All",
+                                                color = if (allSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 13.sp
+                                            )
+                                        }
                                     }
                                 } else if (finalTrashItems.isNotEmpty()) {
-                                    TextButton(onClick = { isEditMode = !isEditMode }) {
-                                        Text("Select", fontWeight = FontWeight.Bold)
+                                    FilledTonalButton(
+                                        onClick = { showEmptyScreen = true },
+                                        shape = CircleShape,
+                                        colors = ButtonDefaults.filledTonalButtonColors(
+                                            containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.7f),
+                                            contentColor = MaterialTheme.colorScheme.onErrorContainer
+                                        ),
+                                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                                        modifier = Modifier
+                                            .height(36.dp)
+                                            .padding(end = 4.dp)
+                                    ) {
+                                        Text("Empty", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                                     }
 
                                     Box {
                                         IconButton(onClick = { showSortMenu = true }) {
                                             Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = "Sort")
                                         }
-                                        DropdownMenu(expanded = showSortMenu, onDismissRequest = { showSortMenu = false }) {
+                                        DropdownMenu(
+                                            expanded = showSortMenu,
+                                            onDismissRequest = { showSortMenu = false },
+                                            shape = RoundedCornerShape(18.dp),
+                                            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+                                        ) {
                                             DropdownMenuItem(
-                                                text = { Text("Newest Deleted") },
-                                                trailingIcon = { if (currentSort == TrashSort.NewestDeleted) Icon(Icons.Default.Check, null) },
+                                                text = { Text("Newest Deleted", fontWeight = FontWeight.Medium) },
+                                                trailingIcon = {
+                                                    if (currentSort == TrashSort.NewestDeleted) {
+                                                        Icon(Icons.Default.Check, null, tint = MaterialTheme.colorScheme.primary)
+                                                    }
+                                                },
                                                 onClick = { currentSort = TrashSort.NewestDeleted; showSortMenu = false }
                                             )
                                             DropdownMenuItem(
-                                                text = { Text("Oldest Deleted") },
-                                                trailingIcon = { if (currentSort == TrashSort.OldestDeleted) Icon(Icons.Default.Check, null) },
+                                                text = { Text("Oldest Deleted", fontWeight = FontWeight.Medium) },
+                                                trailingIcon = {
+                                                    if (currentSort == TrashSort.OldestDeleted) {
+                                                        Icon(Icons.Default.Check, null, tint = MaterialTheme.colorScheme.primary)
+                                                    }
+                                                },
                                                 onClick = { currentSort = TrashSort.OldestDeleted; showSortMenu = false }
                                             )
                                         }
                                     }
 
-                                    Box {
+                                    Box(modifier = Modifier.padding(end = 4.dp)) {
                                         IconButton(onClick = { showMenu = true }) {
                                             Icon(Icons.Rounded.MoreVert, contentDescription = "More")
                                         }
-                                        DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                                        DropdownMenu(
+                                            expanded = showMenu,
+                                            onDismissRequest = { showMenu = false },
+                                            shape = RoundedCornerShape(18.dp),
+                                            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+                                        ) {
                                             DropdownMenuItem(
-                                                text = { Text("Grid Size") },
+                                                text = { Text("Select Items", fontWeight = FontWeight.Medium) },
+                                                leadingIcon = { Icon(Icons.Outlined.Checklist, contentDescription = null) },
+                                                onClick = { isEditMode = true; showMenu = false }
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text("Grid Size", fontWeight = FontWeight.Medium) },
                                                 leadingIcon = { Icon(Icons.Rounded.GridView, contentDescription = null) },
                                                 onClick = { showGridScreen = true; showMenu = false }
                                             )
+                                            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
                                             DropdownMenuItem(
-                                                text = { Text("Empty Trash", color = MaterialTheme.colorScheme.error) },
+                                                text = { Text("Empty Trash", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.SemiBold) },
                                                 leadingIcon = { Icon(Icons.Outlined.DeleteForever, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
                                                 onClick = { showEmptyScreen = true; showMenu = false }
                                             )
@@ -426,39 +515,82 @@ fun TrashScreen(
                 }
             }
         ) { paddingValues ->
-            Box(modifier = Modifier.fillMaxSize().padding(paddingValues).background(MaterialTheme.colorScheme.background)) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(paddingValues)
+                    .background(MaterialTheme.colorScheme.background)
+            ) {
                 Column(modifier = Modifier.fillMaxSize()) {
                     if (trashUiItems.isNotEmpty()) {
                         Surface(
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp).clip(RoundedCornerShape(12.dp))
+                            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)),
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 8.dp)
                         ) {
-                            Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Outlined.Info, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
+                            Row(
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.AutoDelete,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(20.dp)
+                                )
                                 Spacer(Modifier.width(12.dp))
-                                Text("Items are permanently deleted after 30 days.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(
+                                    text = "Items in Trash are permanently deleted after 30 days.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontWeight = FontWeight.Medium
+                                )
                             }
                         }
 
                         if (!isEditMode) {
-                            LazyRow(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            LazyRow(
+                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
                                 items(TrashFilter.entries) { filter ->
                                     val isSelected = currentFilter == filter
-                                    val bgColor = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
-                                    val contentColor = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
-
+                                    val count = filterCounts[filter] ?: 0
                                     Surface(
-                                        shape = RoundedCornerShape(20.dp),
-                                        color = bgColor,
-                                        modifier = Modifier
-                                            .height(36.dp)
-                                            .clickable {
-                                                currentFilter = filter
-                                                haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                            }
+                                        onClick = {
+                                            currentFilter = filter
+                                            haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        },
+                                        shape = CircleShape,
+                                        color = if (isSelected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.surfaceContainerHigh,
+                                        contentColor = if (isSelected) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.onSurface,
+                                        border = if (isSelected) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
                                     ) {
-                                        Row(modifier = Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
-                                            Text(text = filter.name, color = contentColor, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                text = filter.name,
+                                                style = MaterialTheme.typography.labelMedium,
+                                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                                            )
+                                            if (count > 0) {
+                                                Spacer(Modifier.width(6.dp))
+                                                Text(
+                                                    text = "$count",
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.ExtraBold,
+                                                    color = if (isSelected) {
+                                                        MaterialTheme.colorScheme.surface.copy(alpha = 0.75f)
+                                                    } else {
+                                                        MaterialTheme.colorScheme.primary
+                                                    }
+                                                )
+                                            }
                                         }
                                     }
                                 }
@@ -475,28 +607,69 @@ fun TrashScreen(
                             EmptyTrashView(currentFilter)
                         }
                     } else {
-                        // UNIFORM SQUARE GRID!
                         LazyVerticalGrid(
-                            columns = GridCells.Fixed(gridColumns),
-                            contentPadding = PaddingValues(start = 4.dp, end = 4.dp, bottom = 100.dp, top = 4.dp),
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                            columns = GridCells.Fixed(gridColumns.coerceAtLeast(1)),
+                            contentPadding = PaddingValues(start = 4.dp, end = 4.dp, bottom = 110.dp, top = 4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(3.dp),
+                            verticalArrangement = Arrangement.spacedBy(3.dp),
                             modifier = Modifier.fillMaxSize()
                         ) {
                             items(
                                 items = flattenedGridItems,
-                                span = { if (it is TrashGridItem.Header) GridItemSpan(gridColumns) else GridItemSpan(1) },
-                                key = { if (it is TrashGridItem.Header) "h_${it.title}" else (it as TrashGridItem.Media).item.id }
+                                span = {
+                                    if (it is TrashGridItem.Header) GridItemSpan(gridColumns.coerceAtLeast(1))
+                                    else GridItemSpan(1)
+                                },
+                                key = {
+                                    if (it is TrashGridItem.Header) "h_${it.title}"
+                                    else (it as TrashGridItem.Media).item.id
+                                }
                             ) { item ->
                                 when (item) {
                                     is TrashGridItem.Header -> {
-                                        Text(
-                                            text = item.title,
-                                            style = MaterialTheme.typography.labelLarge,
-                                            fontWeight = FontWeight.Bold,
-                                            color = if (item.title == "Expiring Soon" || item.title == "Expired") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
-                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 16.dp)
-                                        )
+                                        val isUrgent = item.title == "Expiring Soon" || item.title == "Expired"
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clip(RoundedCornerShape(12.dp))
+                                                .clickable {
+                                                    val groupIds = groupedByExpiry[item.title]?.map { it.id }?.toSet() ?: emptySet()
+                                                    if (groupIds.isNotEmpty()) {
+                                                        isEditMode = true
+                                                        selectedIds = if (selectedIds.containsAll(groupIds)) {
+                                                            selectedIds - groupIds
+                                                        } else {
+                                                            selectedIds + groupIds
+                                                        }
+                                                        if (selectedIds.isEmpty()) isEditMode = false
+                                                        haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                                    }
+                                                }
+                                                .padding(horizontal = 12.dp, vertical = 12.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Text(
+                                                text = item.title,
+                                                fontSize = 15.sp,
+                                                fontWeight = FontWeight.ExtraBold,
+                                                color = if (isUrgent) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
+                                            )
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(24.dp)
+                                                    .clip(CircleShape)
+                                                    .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Rounded.DoneAll,
+                                                    contentDescription = "Select Group",
+                                                    tint = if (isUrgent) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    modifier = Modifier.size(14.dp)
+                                                )
+                                            }
+                                        }
                                     }
                                     is TrashGridItem.Media -> {
                                         TrashSquareTile(
@@ -505,7 +678,11 @@ fun TrashScreen(
                                             isEditMode = isEditMode,
                                             onClick = {
                                                 if (isEditMode) {
-                                                    selectedIds = if (selectedIds.contains(item.item.id)) selectedIds - item.item.id else selectedIds + item.item.id
+                                                    selectedIds = if (selectedIds.contains(item.item.id)) {
+                                                        selectedIds - item.item.id
+                                                    } else {
+                                                        selectedIds + item.item.id
+                                                    }
                                                     haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                                 } else {
                                                     itemForDetails = item.item
@@ -526,77 +703,100 @@ fun TrashScreen(
                     }
                 }
 
-                // BOTTOM ACTION BAR
+                // --- SAMSUNG ONE UI 7 FLOATING SELECTION DOCK ---
                 AnimatedVisibility(
                     visible = isEditMode && operationProgress == null,
-                    enter = slideInVertically(tween(250)) { it } + fadeIn(),
-                    exit = slideOutVertically(tween(250)) { it } + fadeOut(),
+                    enter = slideInVertically(tween(220)) { it } + fadeIn(),
+                    exit = slideOutVertically(tween(180)) { it } + fadeOut(),
                     modifier = Modifier.align(Alignment.BottomCenter)
                 ) {
-                    val widthModifier = if (adaptiveState.widthSize == WindowWidthSize.EXPANDED) Modifier.width(600.dp) else Modifier.fillMaxWidth()
+                    val widthModifier = if (adaptiveState.widthSize == WindowWidthSize.EXPANDED) {
+                        Modifier.width(600.dp)
+                    } else {
+                        Modifier.fillMaxWidth()
+                    }
                     Surface(
                         color = MaterialTheme.colorScheme.surface,
-                        shadowElevation = 8.dp,
-                        modifier = Modifier.then(widthModifier)
+                        shape = RoundedCornerShape(28.dp),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
+                        shadowElevation = 12.dp,
+                        modifier = Modifier
+                            .then(widthModifier)
+                            .padding(horizontal = 14.dp, vertical = 10.dp)
+                            .navigationBarsPadding()
                     ) {
                         Row(
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp).navigationBarsPadding(),
-                            horizontalArrangement = Arrangement.spacedBy(16.dp)
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            Button(
+                            FilledTonalButton(
                                 onClick = {
                                     val itemsToRestore = trashEntities.filter { selectedIds.contains(it.id) }
                                     if (itemsToRestore.isNotEmpty()) trashViewModel.restoreTrashItems(itemsToRestore)
                                 },
-                                modifier = Modifier.weight(1f).height(48.dp),
-                                shape = RoundedCornerShape(12.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(50.dp),
+                                shape = RoundedCornerShape(18.dp),
                                 enabled = !isBusy && selectedIds.isNotEmpty()
                             ) {
-                                Text("Restore")
+                                Icon(Icons.Rounded.Restore, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text("Restore", fontWeight = FontWeight.Bold)
                             }
 
                             Button(
                                 onClick = { showDeleteScreen = true },
-                                modifier = Modifier.weight(1f).height(48.dp),
-                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(50.dp),
+                                shape = RoundedCornerShape(18.dp),
                                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
                                 enabled = !isBusy && selectedIds.isNotEmpty()
                             ) {
-                                Text("Delete", color = MaterialTheme.colorScheme.onError)
+                                Icon(Icons.Outlined.DeleteForever, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text("Delete", color = MaterialTheme.colorScheme.onError, fontWeight = FontWeight.Bold)
                             }
                         }
                     }
                 }
 
-                // PROGRESS OVERLAY
+                // --- PROGRESS OVERLAY ---
                 AnimatedVisibility(
                     visible = operationProgress != null,
                     enter = fadeIn(),
                     exit = fadeOut(),
-                    modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 32.dp).navigationBarsPadding()
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 32.dp)
+                        .navigationBarsPadding()
                 ) {
                     Surface(
-                        shape = RoundedCornerShape(16.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant,
-                        shadowElevation = 8.dp,
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
+                        shadowElevation = 10.dp,
                         modifier = Modifier.padding(horizontal = 32.dp)
                     ) {
-                        Row(modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 24.dp, vertical = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
                             CircularProgressIndicator(
                                 progress = { operationProgress ?: 0f },
-                                modifier = Modifier.size(24.dp),
+                                modifier = Modifier.size(22.dp),
                                 color = MaterialTheme.colorScheme.primary,
                                 trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f),
                                 strokeWidth = 3.dp
                             )
-                            Spacer(Modifier.width(16.dp))
-                            val percentage = ((operationProgress ?: 0f) * 100).toInt()
+                            Spacer(Modifier.width(14.dp))
+                            val percentage = ((operationProgress ?: 0f) * 100).toInt().coerceIn(0, 100)
                             Text(
                                 text = "Processing... $percentage%",
                                 style = MaterialTheme.typography.labelLarge,
                                 fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = MaterialTheme.colorScheme.onSurface
                             )
                         }
                     }
@@ -605,35 +805,64 @@ fun TrashScreen(
         }
 
         // ---------------------------------------------------------------------------
-        // FIXED FULL-PAGE SCREENS (Replacing Bottom Sheets)
+        // FULL-PAGE OVERLAYS (Grid Size, Empty Trash, Delete Selected, File Details)
         // ---------------------------------------------------------------------------
 
-        AnimatedVisibility(visible = showGridScreen, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.zIndex(10f)) {
+        AnimatedVisibility(
+            visible = showGridScreen,
+            enter = fadeIn(tween(180)) + slideInVertically { it / 8 },
+            exit = fadeOut(tween(150)) + slideOutVertically { it / 8 },
+            modifier = Modifier.zIndex(10f)
+        ) {
             FullscreenSettingsScreen(
-                title = "Grid Layout",
+                title = "Grid Density",
                 onDismiss = { showGridScreen = false }
             ) {
-                LazyVerticalGrid(
-                    columns = GridCells.Fixed(4),
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 24.dp, vertical = 16.dp)
                 ) {
-                    items(8) { index ->
-                        val col = index + 1
-                        val isSelected = gridColumns == col
-                        Surface(
-                            shape = RoundedCornerShape(16.dp),
-                            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
-                            contentColor = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.aspectRatio(1f).clickable {
-                                gridColumns = col
-                                prefs.edit().putInt("trash_grid_columns", col).apply()
-                                showGridScreen = false
-                            }
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Text(col.toString(), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Text(
+                        text = "Choose how many columns to display per row in Trash",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(20.dp))
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(4),
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        items(8) { index ->
+                            val col = index + 1
+                            val isSelected = gridColumns == col
+                            Surface(
+                                shape = RoundedCornerShape(18.dp),
+                                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerHigh,
+                                contentColor = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
+                                border = if (isSelected) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)),
+                                modifier = Modifier
+                                    .aspectRatio(1f)
+                                    .clip(RoundedCornerShape(18.dp))
+                                    .clickable {
+                                        gridColumns = col
+                                        prefs.edit().putInt("trash_grid_columns", col).apply()
+                                        showGridScreen = false
+                                    }
+                            ) {
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.Center
+                                ) {
+                                    Text(col.toString(), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.ExtraBold)
+                                    Text(
+                                        text = if (col == 1) "col" else "cols",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (isSelected) MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.8f) else MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                             }
                         }
                     }
@@ -641,113 +870,262 @@ fun TrashScreen(
             }
         }
 
-        AnimatedVisibility(visible = showEmptyScreen, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.zIndex(10f)) {
+        AnimatedVisibility(
+            visible = showEmptyScreen,
+            enter = fadeIn(tween(180)) + slideInVertically { it / 8 },
+            exit = fadeOut(tween(150)) + slideOutVertically { it / 8 },
+            modifier = Modifier.zIndex(10f)
+        ) {
             FullscreenSettingsScreen(
                 title = "Empty Trash",
                 onDismiss = { showEmptyScreen = false }
             ) {
-                Column(modifier = Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Spacer(Modifier.height(40.dp))
-                    Icon(Icons.Outlined.DeleteForever, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(64.dp))
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Spacer(Modifier.height(32.dp))
+                    Box(
+                        modifier = Modifier
+                            .size(96.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.45f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.DeleteForever,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(48.dp)
+                        )
+                    }
                     Spacer(Modifier.height(24.dp))
-                    Text("Permanently destroy all ${trashUiItems.size} items?", textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyLarge)
-                    Spacer(Modifier.height(40.dp))
+                    Text(
+                        text = "Empty Trash Permanently?",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = "All ${trashUiItems.size} items (${Formatter.formatShortFileSize(context, trashUiItems.sumOf { it.size })}) will be permanently erased. This action cannot be undone.",
+                        textAlign = TextAlign.Center,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                    Spacer(Modifier.height(36.dp))
                     Button(
                         onClick = {
                             trashViewModel.permanentlyDeleteTrash(trashEntities)
                             showEmptyScreen = false
                         },
-                        modifier = Modifier.fillMaxWidth().height(52.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(54.dp),
+                        shape = RoundedCornerShape(18.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
                     ) {
-                        Text("Empty Trash")
+                        Text("Empty Trash", fontWeight = FontWeight.Bold, fontSize = 15.sp)
                     }
                     Spacer(Modifier.height(12.dp))
-                    TextButton(onClick = { showEmptyScreen = false }, modifier = Modifier.fillMaxWidth().height(52.dp)) {
-                        Text("Cancel")
+                    FilledTonalButton(
+                        onClick = { showEmptyScreen = false },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(54.dp),
+                        shape = RoundedCornerShape(18.dp)
+                    ) {
+                        Text("Cancel", fontWeight = FontWeight.Bold, fontSize = 15.sp)
                     }
                 }
             }
         }
 
-        AnimatedVisibility(visible = showDeleteScreen, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.zIndex(10f)) {
+        AnimatedVisibility(
+            visible = showDeleteScreen,
+            enter = fadeIn(tween(180)) + slideInVertically { it / 8 },
+            exit = fadeOut(tween(150)) + slideOutVertically { it / 8 },
+            modifier = Modifier.zIndex(10f)
+        ) {
             FullscreenSettingsScreen(
                 title = "Delete Selected",
                 onDismiss = { showDeleteScreen = false }
             ) {
-                Column(modifier = Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Spacer(Modifier.height(40.dp))
-                    Icon(Icons.Outlined.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(64.dp))
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Spacer(Modifier.height(32.dp))
+                    Box(
+                        modifier = Modifier
+                            .size(96.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.45f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.WarningAmber,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(48.dp)
+                        )
+                    }
                     Spacer(Modifier.height(24.dp))
-                    Text("${selectedIds.size} selected items will be destroyed instantly.", textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyLarge)
-                    Spacer(Modifier.height(40.dp))
+                    Text(
+                        text = "Delete ${selectedIds.size} Item(s) Forever?",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = "Selected items (${Formatter.formatShortFileSize(context, selectedSizeBytes)}) will be permanently destroyed and cannot be recovered.",
+                        textAlign = TextAlign.Center,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                    Spacer(Modifier.height(36.dp))
                     Button(
                         onClick = {
                             val itemsToDel = trashEntities.filter { selectedIds.contains(it.id) }
                             if (itemsToDel.isNotEmpty()) trashViewModel.permanentlyDeleteTrash(itemsToDel)
                             showDeleteScreen = false
                         },
-                        modifier = Modifier.fillMaxWidth().height(52.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(54.dp),
+                        shape = RoundedCornerShape(18.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
                     ) {
-                        Text("Delete Permanently")
+                        Text("Delete Permanently", fontWeight = FontWeight.Bold, fontSize = 15.sp)
                     }
                     Spacer(Modifier.height(12.dp))
-                    TextButton(onClick = { showDeleteScreen = false }, modifier = Modifier.fillMaxWidth().height(52.dp)) {
-                        Text("Cancel")
+                    FilledTonalButton(
+                        onClick = { showDeleteScreen = false },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(54.dp),
+                        shape = RoundedCornerShape(18.dp)
+                    ) {
+                        Text("Cancel", fontWeight = FontWeight.Bold, fontSize = 15.sp)
                     }
                 }
             }
         }
 
-        AnimatedVisibility(visible = itemForDetails != null, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.zIndex(10f)) {
+        AnimatedVisibility(
+            visible = itemForDetails != null,
+            enter = fadeIn(tween(180)) + slideInVertically { it / 8 },
+            exit = fadeOut(tween(150)) + slideOutVertically { it / 8 },
+            modifier = Modifier.zIndex(10f)
+        ) {
             itemForDetails?.let { item ->
+                val deletedDateStr = remember(item.deletedTimestamp) {
+                    SimpleDateFormat("MMM dd, yyyy 'at' hh:mm a", Locale.getDefault()).format(Date(item.deletedTimestamp))
+                }
                 FullscreenSettingsScreen(
-                    title = "File Details",
+                    title = "Trash Item Details",
                     onDismiss = { itemForDetails = null }
                 ) {
                     Column(modifier = Modifier.fillMaxSize()) {
-                        Column(modifier = Modifier.weight(1f).padding(24.dp)) {
-                            Box(modifier = Modifier.fillMaxWidth().height(200.dp).clip(RoundedCornerShape(12.dp)).background(Color.Black), contentAlignment = Alignment.Center) {
-                                when (item.type) {
-                                    TrashMediaType.Image, TrashMediaType.Video -> {
-                                        AsyncImage(
-                                            model = ImageRequest.Builder(context).data(item.contentUri).size(600).crossfade(true).build(),
-                                            contentDescription = null,
-                                            contentScale = ContentScale.Fit,
-                                            modifier = Modifier.fillMaxSize()
-                                        )
-                                        if (item.type == TrashMediaType.Video) {
-                                            Icon(Icons.Default.PlayCircleOutline, contentDescription = null, tint = Color.White, modifier = Modifier.size(48.dp))
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(horizontal = 20.dp, vertical = 12.dp)
+                        ) {
+                            Surface(
+                                shape = RoundedCornerShape(22.dp),
+                                color = Color.Black,
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(220.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                                    when (item.type) {
+                                        TrashMediaType.Image, TrashMediaType.Video -> {
+                                            AsyncImage(
+                                                model = ImageRequest.Builder(context)
+                                                    .data(item.contentUri)
+                                                    .size(600)
+                                                    .crossfade(true)
+                                                    .build(),
+                                                contentDescription = null,
+                                                contentScale = ContentScale.Fit,
+                                                modifier = Modifier.fillMaxSize()
+                                            )
+                                            if (item.type == TrashMediaType.Video) {
+                                                Icon(
+                                                    imageVector = Icons.Default.PlayCircleOutline,
+                                                    contentDescription = null,
+                                                    tint = Color.White,
+                                                    modifier = Modifier.size(48.dp)
+                                                )
+                                            }
                                         }
+                                        TrashMediaType.Audio -> Icon(
+                                            imageVector = Icons.Rounded.MusicNote,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.secondary,
+                                            modifier = Modifier.size(56.dp)
+                                        )
+                                        TrashMediaType.Story -> Icon(
+                                            imageVector = Icons.Rounded.AutoStories,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(56.dp)
+                                        )
                                     }
-                                    TrashMediaType.Audio -> Icon(Icons.Rounded.MusicNote, contentDescription = null, tint = MaterialTheme.colorScheme.secondary, modifier = Modifier.size(56.dp))
-                                    TrashMediaType.Story -> Icon(Icons.Rounded.AutoStories, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(56.dp))
                                 }
                             }
-                            Spacer(Modifier.height(24.dp))
-                            MetadataRow("File Name", item.name)
-                            MetadataRow("Media Type", item.type.name)
-                            MetadataRow("Original Path", item.originalPath.ifBlank { "Virtual Source Stack" })
-                            MetadataRow("Size", Formatter.formatShortFileSize(context, item.size))
-                            MetadataRow("Expiry", if (item.daysLeft <= 0) "Expired" else "${item.daysLeft} days left")
+                            Spacer(Modifier.height(20.dp))
+                            Surface(
+                                shape = RoundedCornerShape(20.dp),
+                                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(16.dp)) {
+                                    MetadataRow("File Name", item.name)
+                                    MetadataRow("Media Type", item.type.name)
+                                    MetadataRow("Original Path", item.originalPath.ifBlank { "Gallery Storage" })
+                                    MetadataRow("Size", Formatter.formatFileSize(context, item.size))
+                                    MetadataRow("Deleted On", deletedDateStr)
+                                    MetadataRow("Auto-Delete", if (item.daysLeft <= 0) "Expired" else "${item.daysLeft} days remaining")
+                                }
+                            }
                         }
 
-                        // Bottom Actions for Metadata Details
-                        Surface(color = MaterialTheme.colorScheme.surface, shadowElevation = 8.dp) {
-                            Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp).navigationBarsPadding(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.surface,
+                            shadowElevation = 10.dp
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                                    .navigationBarsPadding(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
                                 val targetEntity = trashEntities.find { it.id == item.id }
-                                OutlinedButton(
+                                FilledTonalButton(
                                     onClick = {
                                         if (targetEntity != null) {
                                             itemForDetails = null
                                             trashViewModel.restoreTrashItems(listOf(targetEntity))
                                         }
                                     },
-                                    modifier = Modifier.weight(1f).height(48.dp),
-                                    shape = RoundedCornerShape(12.dp)
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(50.dp),
+                                    shape = RoundedCornerShape(16.dp)
                                 ) {
-                                    Text("Restore")
+                                    Icon(Icons.Rounded.Restore, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Restore", fontWeight = FontWeight.Bold)
                                 }
                                 Button(
                                     onClick = {
@@ -756,11 +1134,15 @@ fun TrashScreen(
                                             trashViewModel.permanentlyDeleteTrash(listOf(targetEntity))
                                         }
                                     },
-                                    modifier = Modifier.weight(1f).height(48.dp),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(50.dp),
                                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-                                    shape = RoundedCornerShape(12.dp)
+                                    shape = RoundedCornerShape(16.dp)
                                 ) {
-                                    Text("Delete Forever")
+                                    Icon(Icons.Outlined.DeleteForever, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Delete Forever", fontWeight = FontWeight.Bold)
                                 }
                             }
                         }
@@ -773,9 +1155,8 @@ fun TrashScreen(
 
 /**
  * =========================================================================================
- * 🔲 TRASH UNIFORM SQUARE TILE
+ * 🔲 TRASH UNIFORM SQUARE TILE (Spring-Animated One UI 7 Tile)
  * =========================================================================================
- * Uniform aspect ratio grid item for a clean gallery look.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -787,12 +1168,34 @@ fun TrashSquareTile(
     onClick: () -> Unit,
     onLongClick: () -> Unit
 ) {
+    val scale by animateFloatAsState(
+        targetValue = if (isSelected) 0.88f else 1f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium),
+        label = "trash_tile_scale"
+    )
+    val corner by animateDpAsState(
+        targetValue = if (isSelected) 16.dp else 10.dp,
+        animationSpec = tween(140),
+        label = "trash_tile_corner"
+    )
+
     Box(
         modifier = modifier
-            .aspectRatio(1f) // UNIFORM SQUARE!
-            .clip(RoundedCornerShape(8.dp))
+            .aspectRatio(1f)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
+            .clip(RoundedCornerShape(corner))
+            .then(
+                if (isSelected) {
+                    Modifier.border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(corner))
+                } else {
+                    Modifier
+                }
+            )
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .background(MaterialTheme.colorScheme.surfaceContainerHighest)
     ) {
         when (item.type) {
             TrashMediaType.Image, TrashMediaType.Video -> {
@@ -808,48 +1211,101 @@ fun TrashSquareTile(
                     modifier = Modifier.fillMaxSize()
                 )
                 if (item.type == TrashMediaType.Video) {
-                    Box(Modifier.fillMaxSize().background(Color.Black.copy(0.2f)))
-                    Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color.White, modifier = Modifier.align(Alignment.Center))
+                    Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.22f)))
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .size(30.dp)
+                            .clip(CircleShape)
+                            .background(Color.Black.copy(alpha = 0.55f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.PlayArrow,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
                 }
             }
             TrashMediaType.Audio, TrashMediaType.Story -> {
                 val iconRes = if (item.type == TrashMediaType.Audio) Icons.Rounded.MusicNote else Icons.Rounded.AutoStories
                 val iconTint = if (item.type == TrashMediaType.Audio) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.primary
 
-                Column(Modifier.fillMaxSize().padding(8.dp), Arrangement.Center, Alignment.CenterHorizontally) {
-                    Icon(iconRes, contentDescription = null, tint = iconTint, modifier = Modifier.size(24.dp))
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(8.dp),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Icon(iconRes, contentDescription = null, tint = iconTint, modifier = Modifier.size(26.dp))
                     Spacer(Modifier.height(4.dp))
-                    Text(item.name, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)
+                    Text(
+                        text = item.name,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        textAlign = TextAlign.Center
+                    )
                 }
             }
         }
 
-        // Bottom gradient and expiry label
+        // Bottom gradient and expiry capsule
         Box(
             Modifier
                 .fillMaxWidth()
                 .align(Alignment.BottomCenter)
-                .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(0.7f))))
+                .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.75f))))
                 .padding(6.dp)
         ) {
-            Text(
-                text = if (item.daysLeft <= 0) "Expired" else "${item.daysLeft}d left",
-                style = MaterialTheme.typography.labelSmall,
-                color = if (item.daysLeft <= 3) MaterialTheme.colorScheme.error else Color.White,
-                fontWeight = FontWeight.Bold,
+            val isUrgent = item.daysLeft <= 3
+            Surface(
+                shape = CircleShape,
+                color = if (isUrgent) MaterialTheme.colorScheme.error.copy(alpha = 0.85f) else Color.Black.copy(alpha = 0.55f),
                 modifier = Modifier.align(Alignment.BottomStart)
-            )
+            ) {
+                Text(
+                    text = if (item.daysLeft <= 0) "Expired" else "${item.daysLeft}d left",
+                    fontSize = 10.sp,
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                )
+            }
         }
 
-        // The Checkmark overlay
+        // Selection Checkmark Overlay
         if (isEditMode) {
-            Box(Modifier.fillMaxSize().background(Color.Black.copy(if (isSelected) 0.3f else 0f)))
+            Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = if (isSelected) 0.25f else 0.06f)))
             if (isSelected) {
-                Box(modifier = Modifier.align(Alignment.TopStart).padding(6.dp).background(Color.White, CircleShape)) {
-                    Icon(imageVector = Icons.Default.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(7.dp)
+                        .shadow(4.dp, CircleShape)
+                        .background(Color.White, CircleShape)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.CheckCircle,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(22.dp)
+                    )
                 }
             } else {
-                Icon(imageVector = Icons.Default.RadioButtonUnchecked, contentDescription = null, tint = Color.White.copy(0.8f), modifier = Modifier.align(Alignment.TopStart).padding(6.dp).size(20.dp))
+                Icon(
+                    imageVector = Icons.Default.RadioButtonUnchecked,
+                    contentDescription = null,
+                    tint = Color.White.copy(alpha = 0.9f),
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(7.dp)
+                        .size(22.dp)
+                )
             }
         }
     }
@@ -857,7 +1313,7 @@ fun TrashSquareTile(
 
 /**
  * =========================================================================================
- * 📄 FIXED FULL-PAGE OVERLAY HELPER
+ * 📄 FULL-PAGE OVERLAY HELPER
  * =========================================================================================
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -870,18 +1326,24 @@ fun FullscreenSettingsScreen(
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
-            TopAppBar(
-                title = { Text(title, fontWeight = FontWeight.SemiBold) },
-                navigationIcon = {
-                    IconButton(onClick = onDismiss) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)
-            )
+            Surface(shadowElevation = 2.dp, color = MaterialTheme.colorScheme.surface) {
+                TopAppBar(
+                    title = { Text(title, fontWeight = FontWeight.Bold) },
+                    navigationIcon = {
+                        IconButton(onClick = onDismiss) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)
+                )
+            }
         }
     ) { paddingValues ->
-        Box(modifier = Modifier.fillMaxSize().padding(paddingValues)) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
+        ) {
             content()
         }
     }
@@ -889,10 +1351,30 @@ fun FullscreenSettingsScreen(
 
 @Composable
 fun MetadataRow(label: String, value: String) {
-    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
-        Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
-        Text(value, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface, maxLines = 2, overflow = TextOverflow.Ellipsis)
-        HorizontalDivider(Modifier.padding(top = 8.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f))
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp)
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.primary,
+            fontWeight = FontWeight.Bold
+        )
+        Spacer(Modifier.height(2.dp))
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            fontWeight = FontWeight.Medium,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
+        HorizontalDivider(
+            Modifier.padding(top = 8.dp),
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f)
+        )
     }
 }
 
@@ -909,7 +1391,7 @@ class TrashCleanupWorker @AssistedInject constructor(
 ) : CoroutineWorker(appContext, workerParams) {
 
     companion object {
-        private const val TRASH_EXPIRY_MS = 30L * 24 * 60 * 60 * 1000L
+        private const val TRASH_EXPIRY_MS = 30L * 24L * 60L * 60L * 1000L
     }
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
@@ -958,12 +1440,25 @@ class TrashCleanupWorker @AssistedInject constructor(
 
     private fun mediaExists(uri: Uri): Boolean {
         return try {
-            applicationContext.contentResolver.query(
-                uri,
-                arrayOf(MediaStore.MediaColumns._ID),
-                Bundle().apply { putInt(MediaStore.QUERY_ARG_MATCH_TRASHED, MediaStore.MATCH_INCLUDE) },
-                null
-            )?.use { it.moveToFirst() } == true
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                val bundle = Bundle().apply {
+                    putInt(MediaStore.QUERY_ARG_MATCH_TRASHED, MediaStore.MATCH_INCLUDE)
+                }
+                applicationContext.contentResolver.query(
+                    uri,
+                    arrayOf(MediaStore.MediaColumns._ID),
+                    bundle,
+                    null
+                )?.use { it.moveToFirst() } == true
+            } else {
+                applicationContext.contentResolver.query(
+                    uri,
+                    arrayOf(MediaStore.MediaColumns._ID),
+                    null,
+                    null,
+                    null
+                )?.use { it.moveToFirst() } == true
+            }
         } catch (e: Exception) {
             false
         }
@@ -982,27 +1477,46 @@ fun EmptyTrashView(currentFilter: TrashFilter) {
 
     AnimatedVisibility(
         visible = isVisible,
-        enter = fadeIn(tween(800)) + scaleIn(initialScale = 0.95f)
+        enter = fadeIn(tween(500)) + scaleIn(initialScale = 0.94f)
     ) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surfaceVariant.copy(0.3f), modifier = Modifier.size(140.dp)) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(Icons.Outlined.DeleteOutline, contentDescription = null, modifier = Modifier.size(72.dp), tint = MaterialTheme.colorScheme.primary.copy(0.5f))
-                    }
+                Box(
+                    modifier = Modifier
+                        .size(116.dp)
+                        .clip(CircleShape)
+                        .background(
+                            Brush.linearGradient(
+                                listOf(
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.2f),
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.04f)
+                                )
+                            )
+                        )
+                        .border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.18f), CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.DeleteOutline,
+                        contentDescription = null,
+                        modifier = Modifier.size(54.dp),
+                        tint = MaterialTheme.colorScheme.primary
+                    )
                 }
-                Spacer(Modifier.height(32.dp))
+                Spacer(Modifier.height(26.dp))
                 Text(
-                    text = if (currentFilter == TrashFilter.All) "Your trash is empty" else "No deleted ${currentFilter.name.lowercase()}",
+                    text = if (currentFilter == TrashFilter.All) "Trash is Empty" else "No Deleted ${currentFilter.name}",
                     color = MaterialTheme.colorScheme.onSurface,
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.SemiBold
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold
                 )
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    text = "Deleted items will appear here.",
+                    text = "Items moved to Trash stay here for 30 days before permanent deletion.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.bodyMedium
+                    style = MaterialTheme.typography.bodyMedium,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(horizontal = 40.dp)
                 )
             }
         }

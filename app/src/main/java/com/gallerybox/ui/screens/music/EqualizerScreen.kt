@@ -10,6 +10,7 @@ package com.gallerybox.ui.screens.music
 import android.media.audiofx.PresetReverb
 import android.view.HapticFeedbackConstants
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
@@ -25,7 +26,7 @@ import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Save
-import androidx.compose.material.icons.rounded.WarningAmber
+import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -37,7 +38,9 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.*
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.*
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -58,7 +61,8 @@ import kotlinx.coroutines.launch
 import kotlin.math.*
 
 // A specific orange/yellow color used for the "Warning" banner
-private val WarningAmberColor = Color(0xFFFFA000)
+private val WarningAmberColor = Color(0xFFFFB300)
+private val StudioGreenColor = Color(0xFF00E676)
 
 /**
  * =========================================================================================
@@ -70,8 +74,9 @@ private val WarningAmberColor = Color(0xFFFFA000)
 @Composable
 fun EqualizerScreen(viewModel: MusicViewModel = hiltViewModel(), onBack: () -> Unit) {
 
-    // 🧠 1. Bring in the Adaptive Engine to know if this is a phone, tablet, or foldable!
+    // 1. 🧠 Bring in the Adaptive Engine to know if this is a phone, tablet, or foldable!
     val adaptiveState = rememberAdaptiveState()
+    val view = LocalView.current
 
     // Local memory for this screen: Should we show the popup asking the user to name their custom preset?
     var showSaveDialog by remember { mutableStateOf(false) }
@@ -85,26 +90,101 @@ fun EqualizerScreen(viewModel: MusicViewModel = hiltViewModel(), onBack: () -> U
     val scope = rememberCoroutineScope() // Tool for launching background tasks
     val colors = MaterialTheme.colorScheme // The app's color palette
 
+    BackHandler { onBack() }
+
     // Scaffold is a blank canvas with pre-marked zones for the Top Bar and the main Content
     Scaffold(
         containerColor = Color.Transparent,
         topBar = {
-            CenterAlignedTopAppBar(
-                title = { Text("Equalizer", fontWeight = FontWeight.Bold, fontSize = 20.sp, color = colors.onSurface) },
-                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = colors.onSurface) } },
-                actions = {
-                    // The "Save" icon button in the top right corner
-                    IconButton(onClick = { showSaveDialog = true }) {
-                        Icon(Icons.Default.Save, "Save Preset", tint = colors.onSurface)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .statusBarsPadding()
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Surface(
+                        onClick = {
+                            view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                            onBack()
+                        },
+                        modifier = Modifier.size(44.dp),
+                        shape = CircleShape,
+                        color = colors.surfaceContainerHigh,
+                        border = BorderStroke(1.dp, colors.outlineVariant.copy(alpha = 0.3f)),
+                        shadowElevation = 2.dp
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Back",
+                                tint = colors.onSurface,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
                     }
-                },
-                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = Color.Transparent)
-            )
+
+                    Spacer(Modifier.width(14.dp))
+
+                    Text(
+                        text = "Master Equalizer",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = colors.onSurface
+                    )
+                }
+
+                // The "Save Preset" pill button in the top right corner
+                Surface(
+                    onClick = {
+                        view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                        showSaveDialog = true
+                    },
+                    shape = CircleShape,
+                    color = colors.primaryContainer,
+                    border = BorderStroke(1.dp, colors.primary.copy(alpha = 0.35f)),
+                    shadowElevation = 2.dp
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Save,
+                            contentDescription = "Save Preset",
+                            tint = colors.onPrimaryContainer,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Text(
+                            text = "Save",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = colors.onPrimaryContainer
+                        )
+                    }
+                }
+            }
         }
     ) { paddingValues ->
-        // The background color with a faint gradient glow at the top
+        // The background color with an ambient radial studio glow at the top
         Box(Modifier.fillMaxSize().background(colors.background)) {
-            Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(colors.primary.copy(alpha = 0.05f), colors.background))))
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(340.dp)
+                    .background(
+                        Brush.radialGradient(
+                            colors = listOf(
+                                colors.primary.copy(alpha = if (enabled) 0.14f else 0.04f),
+                                Color.Transparent
+                            ),
+                            radius = 900f
+                        )
+                    )
+            )
 
             // Main Content Area
             Column(Modifier.fillMaxSize().padding(paddingValues)) {
@@ -114,11 +194,28 @@ fun EqualizerScreen(viewModel: MusicViewModel = hiltViewModel(), onBack: () -> U
                 if (adaptiveState.widthSize == WindowWidthSize.COMPACT) {
 
                     // 📱 PHONE MODE: Not enough room. We must use swiping Tabs.
-                    Box(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 16.dp)) {
-                        Surface(shape = RoundedCornerShape(20.dp), color = colors.surfaceContainerHigh, modifier = Modifier.fillMaxWidth()) {
-                            Row(Modifier.height(44.dp).padding(4.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                                TabPill("Equalizer", pagerState.currentPage == 0, Modifier.weight(1f)) { scope.launch { pagerState.animateScrollToPage(0) } }
-                                TabPill("Effects", pagerState.currentPage == 1, Modifier.weight(1f)) { scope.launch { pagerState.animateScrollToPage(1) } }
+                    Box(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp)) {
+                        Surface(
+                            shape = RoundedCornerShape(24.dp),
+                            color = colors.surfaceContainerHigh,
+                            border = BorderStroke(1.dp, colors.outlineVariant.copy(alpha = 0.25f)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                Modifier
+                                    .height(48.dp)
+                                    .padding(4.dp)
+                                    .fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                TabPill("Parametric EQ", pagerState.currentPage == 0, Modifier.weight(1f)) {
+                                    view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                    scope.launch { pagerState.animateScrollToPage(0) }
+                                }
+                                TabPill("Acoustics & Gain", pagerState.currentPage == 1, Modifier.weight(1f)) {
+                                    view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                    scope.launch { pagerState.animateScrollToPage(1) }
+                                }
                             }
                         }
                     }
@@ -133,8 +230,10 @@ fun EqualizerScreen(viewModel: MusicViewModel = hiltViewModel(), onBack: () -> U
                     // 🖥️ TABLET / FOLDABLE MODE: We have tons of space!
                     // Ditch the tabs completely. Draw BOTH the Equalizer and the Effects side-by-side in one giant row.
                     Row(
-                        modifier = Modifier.fillMaxSize().padding(top = 16.dp, start = 16.dp, end = 16.dp),
-                        horizontalArrangement = Arrangement.spacedBy(24.dp)
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(top = 12.dp, start = 16.dp, end = 16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(20.dp)
                     ) {
                         // The Sliders get 60% of the screen width (weight 1.5)
                         Box(Modifier.weight(1.5f).fillMaxHeight()) {
@@ -177,24 +276,37 @@ fun SavePresetDialog(onDismiss: () -> Unit, onSave: (String) -> Unit) {
         shape = RoundedCornerShape(28.dp),
         containerColor = colors.surfaceContainerHigh,
         onDismissRequest = onDismiss, // Close if they tap outside the box
-        title = { Text("Save Custom Preset", color = colors.onSurface, fontWeight = FontWeight.Bold) },
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Icon(Icons.Rounded.GraphicEq, contentDescription = null, tint = colors.primary)
+                Text("Save Custom Preset", color = colors.onSurface, fontWeight = FontWeight.ExtraBold)
+            }
+        },
         text = {
-            // The actual text input box
-            OutlinedTextField(
-                value = name,
-                onValueChange = { name = it }, // Update memory as they type
-                label = { Text("Preset Name", color = colors.onSurfaceVariant) },
-                singleLine = true,
-                shape = RoundedCornerShape(16.dp),
-                colors = TextFieldDefaults.colors(
-                    focusedTextColor = colors.onSurface,
-                    unfocusedTextColor = colors.onSurface,
-                    focusedContainerColor = Color.Transparent,
-                    unfocusedContainerColor = Color.Transparent,
-                    focusedIndicatorColor = colors.primary,
-                    unfocusedIndicatorColor = colors.onSurfaceVariant
+            Column {
+                Text(
+                    "Store your current multi-band curve and acoustic settings for quick recall.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.onSurfaceVariant
                 )
-            )
+                Spacer(Modifier.height(14.dp))
+                // The actual text input box
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it }, // Update memory as they type
+                    label = { Text("Preset Name (e.g. Late Night Bass)", color = colors.onSurfaceVariant) },
+                    singleLine = true,
+                    shape = RoundedCornerShape(18.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = colors.onSurface,
+                        unfocusedTextColor = colors.onSurface,
+                        focusedContainerColor = colors.surfaceContainerHighest,
+                        unfocusedContainerColor = colors.surfaceContainerHighest.copy(alpha = 0.6f),
+                        focusedBorderColor = colors.primary,
+                        unfocusedBorderColor = colors.outlineVariant.copy(alpha = 0.4f)
+                    )
+                )
+            }
         },
         confirmButton = {
             Button(
@@ -206,10 +318,11 @@ fun SavePresetDialog(onDismiss: () -> Unit, onSave: (String) -> Unit) {
                     }
                 },
                 enabled = name.isNotBlank(), // Disable the Save button if the text box is empty!
+                shape = RoundedCornerShape(16.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = colors.primary),
                 contentPadding = PaddingValues(horizontal = 24.dp, vertical = 12.dp)
             ) {
-                Text("Save", color = colors.onPrimary, fontWeight = FontWeight.Bold)
+                Text("Save Preset", color = colors.onPrimary, fontWeight = FontWeight.Bold)
             }
         },
         dismissButton = {
@@ -229,16 +342,16 @@ fun TabPill(text: String, isSelected: Boolean, modifier: Modifier = Modifier, on
     Box(
         modifier
             .fillMaxHeight()
-            .clip(RoundedCornerShape(16.dp))
-            .background(if (isSelected) colors.primary else Color.Transparent) // Color it blue if selected
+            .clip(RoundedCornerShape(20.dp))
+            .background(if (isSelected) colors.primary else Color.Transparent) // Color it primary if selected
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
         Text(
             text = text,
             color = if (isSelected) colors.onPrimary else colors.onSurfaceVariant,
-            fontWeight = FontWeight.Bold,
-            fontSize = 14.sp
+            fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold,
+            fontSize = 13.sp
         )
     }
 }
@@ -260,6 +373,7 @@ private fun Preset.displayName(): String =
 fun EqTab(viewModel: MusicViewModel, enabled: Boolean) {
     // Read the current slider positions from the Manager's scoreboard
     val bands by viewModel.eqBands1.collectAsState()
+    val view = LocalView.current
 
     // Most phones have 5 audio bands. Some expensive phones have 9. We need to know which one this is.
     val bandsSize by remember(bands) { derivedStateOf { bands.size } }
@@ -267,7 +381,7 @@ fun EqTab(viewModel: MusicViewModel, enabled: Boolean) {
     // Label the sliders with the actual audio frequencies (Bass on the left, Treble on the right)
     val freqs = remember(bandsSize) {
         when (bandsSize) {
-            5 -> listOf("60", "230", "910", "3.6k", "14k")
+            5 -> listOf("60Hz", "230Hz", "910Hz", "3.6k", "14k")
             9 -> listOf("32", "64", "125", "250", "500", "1k", "2k", "4k", "8k")
             10 -> listOf("31", "62", "125", "250", "500", "1k", "2k", "4k", "8k", "16k")
             else -> List(bandsSize) { "" }
@@ -292,77 +406,179 @@ fun EqTab(viewModel: MusicViewModel, enabled: Boolean) {
     var expandedPresetMenu by remember { mutableStateOf(false) } // Is the drop-down menu open?
     var presetPendingDelete by remember { mutableStateOf<String?>(null) } // Are they trying to delete a preset?
 
-    Column(Modifier.fillMaxSize().padding(horizontal = 24.dp).padding(bottom = 48.dp)) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp)
+            .padding(bottom = 32.dp)
+    ) {
 
         // --- TOP ROW: MASTER SWITCH AND PRESET DROP-DOWN ---
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
 
             // 1. The Master ON/OFF Switch
             Surface(
-                modifier = Modifier.weight(1f).height(80.dp),
-                shape = RoundedCornerShape(20.dp),
+                onClick = {
+                    view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                    viewModel.toggleEq(!enabled)
+                },
+                modifier = Modifier.weight(1f).height(76.dp),
+                shape = RoundedCornerShape(22.dp),
                 color = colors.surfaceContainerHigh,
+                border = BorderStroke(
+                    1.dp,
+                    if (enabled) colors.primary.copy(alpha = 0.45f)
+                    else colors.outlineVariant.copy(alpha = 0.25f)
+                ),
                 shadowElevation = 2.dp
             ) {
-                Row(Modifier.padding(horizontal = 16.dp).fillMaxSize(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                    Column {
-                        Text("Equalizer", color = colors.onSurface, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                        Text("Improve sound quality", color = colors.onSurfaceVariant, fontSize = 13.sp)
+                Row(
+                    Modifier.padding(horizontal = 16.dp).fillMaxSize(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Equalizer", color = colors.onSurface, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp)
+                        Text(
+                            if (enabled) "Active processing" else "Bypassed",
+                            color = if (enabled) colors.primary else colors.onSurfaceVariant,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium
+                        )
                     }
                     Switch(
                         checked = enabled,
-                        onCheckedChange = { viewModel.toggleEq(it) },
-                        colors = SwitchDefaults.colors(checkedTrackColor = colors.primary, uncheckedTrackColor = colors.onSurfaceVariant.copy(alpha = 0.3f))
+                        onCheckedChange = {
+                            view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                            viewModel.toggleEq(it)
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedTrackColor = colors.primary,
+                            uncheckedTrackColor = colors.onSurfaceVariant.copy(alpha = 0.3f)
+                        )
                     )
                 }
             }
 
             // 2. The Preset Drop-Down Menu
             Surface(
-                modifier = Modifier.weight(0.75f).height(80.dp),
-                shape = RoundedCornerShape(20.dp),
+                modifier = Modifier.weight(0.9f).height(76.dp),
+                shape = RoundedCornerShape(22.dp),
                 color = colors.surfaceContainerHigh,
+                border = BorderStroke(1.dp, colors.outlineVariant.copy(alpha = 0.25f)),
                 shadowElevation = 2.dp
             ) {
                 Box {
                     Column(
-                        Modifier.fillMaxSize().clickable { expandedPresetMenu = true }.padding(horizontal = 16.dp),
+                        Modifier
+                            .fillMaxSize()
+                            .clickable {
+                                view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                expandedPresetMenu = true
+                            }
+                            .padding(horizontal = 16.dp),
                         verticalArrangement = Arrangement.Center
                     ) {
-                        Text("Preset", color = colors.onSurfaceVariant, fontSize = 13.sp)
+                        Text(
+                            "SOUND PROFILE",
+                            color = colors.onSurfaceVariant,
+                            fontSize = 10.sp,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 0.7.sp
+                        )
+                        Spacer(Modifier.height(2.dp))
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
                                 // If they clicked a custom preset ("My Bass"), show that. Otherwise show the standard one ("Rock").
                                 text = activeCustomName ?: currentPreset.displayName(),
-                                color = colors.primary, fontWeight = FontWeight.Bold, fontSize = 16.sp,
-                                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false)
+                                color = colors.primary,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 15.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false)
                             )
                             Icon(Icons.Default.ArrowDropDown, null, tint = colors.primary)
                         }
                     }
 
                     // The actual list that drops down when clicked
-                    DropdownMenu(expanded = expandedPresetMenu, onDismissRequest = { expandedPresetMenu = false }, modifier = Modifier.background(colors.surfaceContainerHigh).clip(RoundedCornerShape(12.dp))) {
-                        Text("BUILT-IN", color = colors.onSurfaceVariant, fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp))
+                    DropdownMenu(
+                        expanded = expandedPresetMenu,
+                        onDismissRequest = { expandedPresetMenu = false },
+                        modifier = Modifier
+                            .background(colors.surfaceContainerHighest)
+                            .clip(RoundedCornerShape(16.dp))
+                    ) {
+                        Text(
+                            "STUDIO PRESETS",
+                            color = colors.primary,
+                            fontSize = 10.sp,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.ExtraBold,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+                        )
                         Preset.entries.forEach { p ->
+                            val isSelected = activeCustomName == null && currentPreset == p
                             DropdownMenuItem(
-                                text = { Text(p.displayName(), color = colors.onSurface) },
-                                onClick = { viewModel.applyPreset(p); expandedPresetMenu = false } // Tell Manager to change settings!
+                                text = {
+                                    Text(
+                                        p.displayName(),
+                                        color = if (isSelected) colors.primary else colors.onSurface,
+                                        fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.Medium
+                                    )
+                                },
+                                onClick = {
+                                    view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                    viewModel.applyPreset(p)
+                                    expandedPresetMenu = false
+                                }
                             )
                         }
 
                         // If they have created their own custom presets, show them at the bottom!
                         if (customPresets.isNotEmpty()) {
-                            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp), color = colors.background)
-                            Text("YOUR PRESETS", color = colors.onSurfaceVariant, fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp))
+                            HorizontalDivider(
+                                modifier = Modifier.padding(vertical = 4.dp),
+                                color = colors.outlineVariant.copy(alpha = 0.3f)
+                            )
+                            Text(
+                                "USER PRESETS",
+                                color = colors.primary,
+                                fontSize = 10.sp,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.ExtraBold,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+                            )
                             customPresets.keys.sorted().forEach { name ->
+                                val isSelected = activeCustomName == name
                                 DropdownMenuItem(
-                                    text = { Text(name, color = colors.onSurface) },
-                                    onClick = { viewModel.applyCustomPreset(name); expandedPresetMenu = false },
+                                    text = {
+                                        Text(
+                                            name,
+                                            color = if (isSelected) colors.primary else colors.onSurface,
+                                            fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.Medium
+                                        )
+                                    },
+                                    onClick = {
+                                        view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                        viewModel.applyCustomPreset(name)
+                                        expandedPresetMenu = false
+                                    },
                                     trailingIcon = {
                                         // The little trash can icon to delete their custom preset
-                                        IconButton(onClick = { presetPendingDelete = name; expandedPresetMenu = false }, modifier = Modifier.size(20.dp)) {
-                                            Icon(Icons.Default.Delete, "Delete $name", tint = colors.error, modifier = Modifier.size(18.dp))
+                                        IconButton(
+                                            onClick = { presetPendingDelete = name; expandedPresetMenu = false },
+                                            modifier = Modifier.size(24.dp)
+                                        ) {
+                                            Icon(
+                                                Icons.Default.Delete,
+                                                "Delete $name",
+                                                tint = colors.error,
+                                                modifier = Modifier.size(18.dp)
+                                            )
                                         }
                                     }
                                 )
@@ -373,13 +589,51 @@ fun EqTab(viewModel: MusicViewModel, enabled: Boolean) {
             }
         }
 
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(14.dp))
 
-        // Reset to Flat button
-        TextButton(onClick = { viewModel.applyPreset(Preset.FLAT) }, modifier = Modifier.align(Alignment.End)) {
-            Icon(Icons.Default.Refresh, null, tint = colors.onSurfaceVariant, modifier = Modifier.size(16.dp))
-            Spacer(Modifier.width(6.dp))
-            Text("Reset to Flat", color = colors.onSurfaceVariant, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+        // Header Row above Graph: Frequency Response Title + Reset to Flat Pill
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "FREQUENCY RESPONSE CURVE",
+                style = MaterialTheme.typography.labelSmall,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.ExtraBold,
+                color = colors.onSurfaceVariant,
+                letterSpacing = 0.8.sp
+            )
+
+            Surface(
+                onClick = {
+                    view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                    viewModel.applyPreset(Preset.FLAT)
+                },
+                shape = CircleShape,
+                color = colors.surfaceContainerHigh,
+                border = BorderStroke(1.dp, colors.outlineVariant.copy(alpha = 0.3f))
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Refresh,
+                        contentDescription = null,
+                        tint = colors.primary,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Text(
+                        "Flatten (0 dB)",
+                        color = colors.onSurface,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
         }
 
         Spacer(Modifier.height(8.dp))
@@ -388,63 +642,146 @@ fun EqTab(viewModel: MusicViewModel, enabled: Boolean) {
         EqCurveGraph(bands = bands, enabled = enabled, labels = freqs)
 
         // The Warning Banner that pops up if they push the sliders too high!
-        AnimatedVisibility(visible = isDistorting && enabled, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
-            Row(Modifier.fillMaxWidth().padding(top = 10.dp), horizontalArrangement = Arrangement.Center) {
-                Surface(shape = CircleShape, color = WarningAmberColor.copy(alpha = 0.15f)) {
-                    Row(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Rounded.WarningAmber, "Warning", tint = WarningAmberColor, modifier = Modifier.size(16.dp))
+        AnimatedVisibility(
+            visible = isDistorting && enabled,
+            enter = fadeIn() + expandVertically(),
+            exit = fadeOut() + shrinkVertically()
+        ) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 10.dp),
+                horizontalArrangement = Arrangement.Center
+            ) {
+                Surface(
+                    shape = CircleShape,
+                    color = WarningAmberColor.copy(alpha = 0.14f),
+                    border = BorderStroke(1.dp, WarningAmberColor.copy(alpha = 0.45f))
+                ) {
+                    Row(
+                        Modifier.padding(horizontal = 16.dp, vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Rounded.WarningAmber,
+                            contentDescription = "Warning",
+                            tint = WarningAmberColor,
+                            modifier = Modifier.size(16.dp)
+                        )
                         Spacer(Modifier.width(8.dp))
-                        Text("High gain may cause audio clipping", color = WarningAmberColor, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text(
+                            "High gain boost may introduce digital clipping",
+                            color = WarningAmberColor,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                 }
             }
         }
 
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(14.dp))
 
         // Faded text telling them to turn the master switch on if it's off.
         AnimatedVisibility(visible = !enabled) {
-            Text("Turn on Equalizer above to adjust bands", color = colors.onSurfaceVariant, fontSize = 12.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(bottom = 8.dp))
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = colors.surfaceContainerHigh,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 10.dp)
+            ) {
+                Text(
+                    "Enable the Equalizer switch above to unlock fader adjustments",
+                    color = colors.onSurfaceVariant,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(vertical = 8.dp, horizontal = 12.dp)
+                )
+            }
         }
 
-        // --- THE ACTUAL SLIDERS ---
-        // If disabled, make them 40% see-through (alpha).
-        Row(Modifier.weight(1f).fillMaxWidth().alpha(if (enabled) 1f else 0.4f)) {
-            // The "+15", "0", "-15" labels on the far left side
-            Column(Modifier.fillMaxHeight().padding(end = 12.dp, bottom = 24.dp, top = 14.dp), verticalArrangement = Arrangement.SpaceBetween, horizontalAlignment = Alignment.End) {
-                Text("+15", fontSize = 11.sp, color = colors.onSurfaceVariant, fontWeight = FontWeight.Medium)
-                Text("0", fontSize = 11.sp, color = colors.onSurfaceVariant, fontWeight = FontWeight.Medium)
-                Text("-15", fontSize = 11.sp, color = colors.onSurfaceVariant, fontWeight = FontWeight.Medium)
-            }
-            // Draw all 5 (or 9) sliders side-by-side
-            Row(Modifier.weight(1f), horizontalArrangement = Arrangement.SpaceBetween) {
-                for (i in 0 until bandsSize) {
-                    VerticalEqSlider(
-                        modifier = Modifier.weight(1f),
-                        levelProvider = { bands.getOrNull(i) ?: 0.5f },
-                        enabled = enabled,
-                        onValueChange = { viewModel.updateEq(i, it) }, // Send the new value to the Manager when they drag it
-                        label = freqs.getOrElse(i) { "" }
-                    )
+        // --- THE ACTUAL STUDIO FADER RACK ---
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(275.dp)
+                .alpha(if (enabled) 1f else 0.42f),
+            shape = RoundedCornerShape(26.dp),
+            color = colors.surfaceContainerHigh,
+            border = BorderStroke(1.dp, colors.outlineVariant.copy(alpha = 0.25f)),
+            shadowElevation = 3.dp
+        ) {
+            Column(Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 14.dp)) {
+                Row(Modifier.weight(1f).fillMaxWidth()) {
+                    // The "+15", "0", "-15" dB scale labels on the far left side
+                    Column(
+                        Modifier
+                            .fillMaxHeight()
+                            .padding(end = 6.dp, bottom = 22.dp, top = 24.dp),
+                        verticalArrangement = Arrangement.SpaceBetween,
+                        horizontalAlignment = Alignment.End
+                    ) {
+                        Text("+15", fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = colors.onSurfaceVariant, fontWeight = FontWeight.Bold)
+                        Text("+7", fontSize = 9.sp, fontFamily = FontFamily.Monospace, color = colors.onSurfaceVariant.copy(alpha = 0.5f))
+                        Text("0dB", fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = colors.primary, fontWeight = FontWeight.ExtraBold)
+                        Text("-7", fontSize = 9.sp, fontFamily = FontFamily.Monospace, color = colors.onSurfaceVariant.copy(alpha = 0.5f))
+                        Text("-15", fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = colors.onSurfaceVariant, fontWeight = FontWeight.Bold)
+                    }
+
+                    // Draw all 5 (or 9/10) sliders side-by-side
+                    Row(Modifier.weight(1f), horizontalArrangement = Arrangement.SpaceBetween) {
+                        for (i in 0 until bandsSize) {
+                            VerticalEqSlider(
+                                modifier = Modifier.weight(1f),
+                                levelProvider = { bands.getOrNull(i) ?: 0.5f },
+                                enabled = enabled,
+                                onValueChange = { viewModel.updateEq(i, it) }, // Send the new value to the Manager when they drag it
+                                label = freqs.getOrElse(i) { "" }
+                            )
+                        }
+                    }
                 }
+
+                Text(
+                    "Double-tap any fader to snap to 0 dB",
+                    color = colors.onSurfaceVariant.copy(alpha = 0.7f),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier
+                        .align(Alignment.CenterHorizontally)
+                        .padding(top = 4.dp)
+                )
             }
         }
 
-        Text(
-            "Double-tap a band to reset it",
-            color = colors.onSurfaceVariant.copy(alpha = if (enabled) 0.7f else 0.3f),
-            fontSize = 11.sp, fontWeight = FontWeight.Medium,
-            modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 4.dp)
-        )
-
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(18.dp))
 
         // --- THE ROTARY KNOBS ---
         // Bass Boost and Surround Sound controls
-        Row(Modifier.fillMaxWidth().alpha(if (enabled) 1f else 0.4f), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
-            KnobCard("Bass Boost", viewModel.bassBoost, enabled) { viewModel.updateBass(it) }
-            Spacer(Modifier.width(16.dp))
-            KnobCard("Surround", viewModel.virtualizer, enabled) { viewModel.updateVirtualizer(it) }
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .alpha(if (enabled) 1f else 0.42f),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            KnobCard(
+                title = "Sub-Bass Boost",
+                subtitle = "Low-end punch",
+                valueFlow = viewModel.bassBoost,
+                enabled = enabled,
+                modifier = Modifier.weight(1f)
+            ) { viewModel.updateBass(it) }
+
+            KnobCard(
+                title = "3D Spatializer",
+                subtitle = "Stereo width",
+                valueFlow = viewModel.virtualizer,
+                enabled = enabled,
+                modifier = Modifier.weight(1f)
+            ) { viewModel.updateVirtualizer(it) }
         }
     }
 
@@ -454,40 +791,84 @@ fun EqTab(viewModel: MusicViewModel, enabled: Boolean) {
             shape = RoundedCornerShape(24.dp),
             containerColor = colors.surfaceContainerHigh,
             onDismissRequest = { presetPendingDelete = null },
-            title = { Text("Delete Preset?", color = colors.onSurface, fontWeight = FontWeight.Bold) },
-            text = { Text("Delete '$name'? This can't be undone.", color = colors.onSurfaceVariant) },
+            title = { Text("Delete Preset?", color = colors.onSurface, fontWeight = FontWeight.ExtraBold) },
+            text = { Text("Remove custom profile '$name'? This action cannot be undone.", color = colors.onSurfaceVariant) },
             confirmButton = {
                 Button(
                     onClick = { viewModel.deleteCustomPreset(name); presetPendingDelete = null },
                     colors = ButtonDefaults.buttonColors(containerColor = colors.error)
                 ) { Text("Delete", color = colors.onError, fontWeight = FontWeight.Bold) }
             },
-            dismissButton = { TextButton(onClick = { presetPendingDelete = null }) { Text("Cancel", color = colors.onSurfaceVariant) } }
+            dismissButton = {
+                TextButton(onClick = { presetPendingDelete = null }) {
+                    Text("Cancel", color = colors.onSurfaceVariant)
+                }
+            }
         )
     }
 }
 
 /**
- * A blueprint for drawing the spinning Knobs (like Bass Boost).
+ * A blueprint for drawing the spinning Knobs (like Bass Boost & 3D Spatializer).
  */
 @Composable
-fun KnobCard(title: String, valueFlow: kotlinx.coroutines.flow.StateFlow<Float>, enabled: Boolean, onValueChange: (Float) -> Unit) {
+fun KnobCard(
+    title: String,
+    subtitle: String = "Drag to adjust",
+    valueFlow: kotlinx.coroutines.flow.StateFlow<Float>,
+    enabled: Boolean,
+    modifier: Modifier = Modifier,
+    onValueChange: (Float) -> Unit
+) {
     val colors = MaterialTheme.colorScheme
     val value by valueFlow.collectAsState()
+    val pct = (value * 100f).roundToInt().coerceIn(0, 100)
 
     Surface(
-        modifier = Modifier.width(140.dp),
-        shape = RoundedCornerShape(20.dp),
+        modifier = modifier,
+        shape = RoundedCornerShape(24.dp),
         color = colors.surfaceContainerHigh,
-        shadowElevation = 2.dp
+        border = BorderStroke(
+            1.dp,
+            if (enabled && pct > 0) colors.primary.copy(alpha = 0.4f)
+            else colors.outlineVariant.copy(alpha = 0.25f)
+        ),
+        shadowElevation = 3.dp
     ) {
-        Column(Modifier.padding(vertical = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Column(
+            Modifier.padding(vertical = 16.dp, horizontal = 12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
             RotaryKnob(enabled = enabled, value = value, onValueChange = onValueChange)
-            Spacer(Modifier.height(16.dp))
-            Text(title, color = if (enabled) colors.onSurface else colors.onSurfaceVariant, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(4.dp))
-            Text("${(value * 100).toInt()}%", color = colors.primary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-            Text("Drag to adjust", color = colors.onSurfaceVariant.copy(alpha = 0.6f), fontSize = 10.sp)
+            Spacer(Modifier.height(12.dp))
+            Text(
+                title,
+                color = if (enabled) colors.onSurface else colors.onSurfaceVariant,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.ExtraBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                subtitle,
+                color = colors.onSurfaceVariant,
+                fontSize = 11.sp
+            )
+            Spacer(Modifier.height(6.dp))
+            Surface(
+                shape = CircleShape,
+                color = if (pct > 0 && enabled) colors.primary.copy(alpha = 0.15f)
+                else colors.surfaceContainerHighest
+            ) {
+                Text(
+                    text = "$pct%",
+                    color = if (pct > 0 && enabled) colors.primary else colors.onSurfaceVariant,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                )
+            }
         }
     }
 }
@@ -503,33 +884,189 @@ fun VolTab(viewModel: MusicViewModel) {
     val vol by viewModel.volume1.collectAsState()
     val currentReverb by viewModel.reverbPreset.collectAsState() // E.g., does it sound like a bathroom or a concert hall?
 
-    val reverbNames = listOf("Off", "Small Room", "Med Room", "Large Room", "Med Hall", "Large Hall", "Plate")
-    val reverbMap = remember { listOf(PresetReverb.PRESET_NONE, PresetReverb.PRESET_SMALLROOM, PresetReverb.PRESET_MEDIUMROOM, PresetReverb.PRESET_LARGEROOM, PresetReverb.PRESET_MEDIUMHALL, PresetReverb.PRESET_LARGEHALL, PresetReverb.PRESET_PLATE) }
+    val reverbNames = listOf("Studio Dry (Off)", "Small Room", "Medium Room", "Large Room", "Medium Hall", "Concert Hall", "Vintage Plate")
+    val reverbMap = remember {
+        listOf(
+            PresetReverb.PRESET_NONE,
+            PresetReverb.PRESET_SMALLROOM,
+            PresetReverb.PRESET_MEDIUMROOM,
+            PresetReverb.PRESET_LARGEROOM,
+            PresetReverb.PRESET_MEDIUMHALL,
+            PresetReverb.PRESET_LARGEHALL,
+            PresetReverb.PRESET_PLATE
+        )
+    }
     val colors = MaterialTheme.colorScheme
+    val view = LocalView.current
 
-    Column(Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 8.dp).verticalScroll(rememberScrollState())) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .padding(horizontal = 20.dp, vertical = 8.dp)
+            .verticalScroll(rememberScrollState())
+    ) {
 
-        // Master Volume Slider
-        Surface(shape = RoundedCornerShape(20.dp), color = colors.surfaceContainerHigh, shadowElevation = 2.dp, modifier = Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(24.dp)) {
-                Text("Master Volume", color = colors.onSurface, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(24.dp))
+        // Master Volume & Output Level Meter Card
+        Surface(
+            shape = RoundedCornerShape(26.dp),
+            color = colors.surfaceContainerHigh,
+            border = BorderStroke(1.dp, colors.outlineVariant.copy(alpha = 0.25f)),
+            shadowElevation = 3.dp,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(Modifier.padding(22.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text(
+                            "OUTPUT GAINSTAGE",
+                            color = colors.primary,
+                            fontSize = 10.sp,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.ExtraBold,
+                            letterSpacing = 0.8.sp
+                        )
+                        Text(
+                            "Master Volume",
+                            color = colors.onSurface,
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                    }
+
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = colors.primary.copy(alpha = 0.14f)
+                    ) {
+                        Text(
+                            text = "${(vol * 100f).roundToInt()}%",
+                            color = colors.primary,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 15.sp,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(18.dp))
+
+                // 16-Segment Studio LED VU Bar
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    val totalSegments = 16
+                    val activeSegments = (vol * totalSegments).roundToInt()
+                    for (seg in 1..totalSegments) {
+                        val isLit = seg <= activeSegments
+                        val segColor = when {
+                            !isLit -> colors.surfaceContainerHighest
+                            seg > 13 -> WarningAmberColor
+                            seg > 9 -> colors.primary
+                            else -> StudioGreenColor
+                        }
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .clip(RoundedCornerShape(3.dp))
+                                .background(segColor)
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(16.dp))
+
                 CustomSlider(vol) { viewModel.updateVolume(it) }
+
+                Spacer(Modifier.height(12.dp))
+
+                // Quick Gain Stepper Presets (25%, 50%, 75%, 100%)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    listOf(0.25f to "25%", 0.5f to "50%", 0.75f to "75%", 1.0f to "MAX").forEach { (presetVol, label) ->
+                        val isCurrent = abs(vol - presetVol) < 0.03f
+                        Surface(
+                            onClick = {
+                                view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                viewModel.updateVolume(presetVol)
+                            },
+                            modifier = Modifier.weight(1f).height(34.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (isCurrent) colors.primary else colors.surfaceContainerHighest
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text(
+                                    text = label,
+                                    fontSize = 11.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = if (isCurrent) colors.onPrimary else colors.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
 
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(20.dp))
 
         // Reverb selection buttons
-        Surface(shape = RoundedCornerShape(20.dp), color = colors.surfaceContainerHigh, shadowElevation = 2.dp, modifier = Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(24.dp)) {
-                Text("Environment (Reverb)", color = colors.onSurface, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(24.dp))
+        Surface(
+            shape = RoundedCornerShape(26.dp),
+            color = colors.surfaceContainerHigh,
+            border = BorderStroke(1.dp, colors.outlineVariant.copy(alpha = 0.25f)),
+            shadowElevation = 3.dp,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(Modifier.padding(22.dp)) {
+                Text(
+                    "SPATIAL ACOUSTICS",
+                    color = colors.primary,
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.ExtraBold,
+                    letterSpacing = 0.8.sp
+                )
+                Text(
+                    "Room & Hall Reverb",
+                    color = colors.onSurface,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.ExtraBold
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Simulate acoustic reflections from intimate studio rooms to expansive concert halls.",
+                    color = colors.onSurfaceVariant,
+                    fontSize = 12.sp
+                )
+                Spacer(Modifier.height(18.dp))
+
                 // FlowRow automatically wraps buttons to the next line if they run out of space!
-                FlowRow(Modifier.fillMaxWidth(), maxItemsInEachRow = 3, horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                FlowRow(
+                    Modifier.fillMaxWidth(),
+                    maxItemsInEachRow = 2,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
                     reverbNames.forEachIndexed { i, name ->
                         val presetConst = reverbMap.getOrElse(i) { PresetReverb.PRESET_NONE }
-                        ReverbChip(name, currentReverb == presetConst) { viewModel.setReverb(presetConst) }
+                        ReverbChip(
+                            text = name,
+                            active = currentReverb == presetConst,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            viewModel.setReverb(presetConst)
+                        }
                     }
                 }
             }
@@ -548,40 +1085,69 @@ fun VolTab(viewModel: MusicViewModel) {
 @Composable
 fun EqCurveGraph(bands: List<Float>, enabled: Boolean, labels: List<String>) {
     val colors = MaterialTheme.colorScheme
-    val grad = Brush.verticalGradient(listOf(colors.primary.copy(alpha = 0.6f), Color.Transparent)) // Blue fading to invisible
+    val grad = Brush.verticalGradient(
+        listOf(
+            colors.primary.copy(alpha = 0.42f),
+            colors.primary.copy(alpha = 0.08f),
+            Color.Transparent
+        )
+    )
 
     Column {
-        Box(Modifier.fillMaxWidth().height(140.dp).alpha(if (enabled) 1f else 0.4f).clip(RoundedCornerShape(20.dp))) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(148.dp)
+                .alpha(if (enabled) 1f else 0.42f),
+            shape = RoundedCornerShape(24.dp),
+            color = colors.surfaceContainerHigh,
+            border = BorderStroke(1.dp, colors.outlineVariant.copy(alpha = 0.28f)),
+            shadowElevation = 3.dp
+        ) {
             // A Canvas gives us direct, pixel-perfect control over drawing shapes and lines
-            Canvas(Modifier.fillMaxSize()) {
-                drawRoundRect(color = colors.surfaceContainerHigh, cornerRadius = CornerRadius(20.dp.toPx()))
+            Canvas(Modifier.fillMaxSize().padding(horizontal = 18.dp, vertical = 14.dp)) {
                 if (bands.size < 2) return@Canvas
 
                 val path = Path() // The invisible mathematical line we are going to draw
                 val spacing = size.width / (bands.size - 1).coerceAtLeast(1)
 
-                bands.forEachIndexed { i, lvl ->
+                // Draw the faint dotted reference lines in the background (+7.5dB, 0dB, -7.5dB)
+                val dash = PathEffect.dashPathEffect(floatArrayOf(8f, 8f))
+                val lineCol = colors.onSurfaceVariant.copy(alpha = 0.18f)
+                val zeroDbCol = colors.primary.copy(alpha = 0.35f)
+
+                drawLine(zeroDbCol, Offset(0f, size.height / 2f), Offset(size.width, size.height / 2f), 1.5.dp.toPx(), pathEffect = dash)
+                drawLine(lineCol, Offset(0f, size.height / 4f), Offset(size.width, size.height / 4f), 1.dp.toPx(), pathEffect = dash)
+                drawLine(lineCol, Offset(0f, size.height - size.height / 4f), Offset(size.width, size.height - size.height / 4f), 1.dp.toPx(), pathEffect = dash)
+
+                // Draw vertical frequency grid lines
+                bands.indices.forEach { i ->
                     val x = i * spacing
-                    val y = size.height - (lvl * size.height)
-                    if (i == 0) path.moveTo(x, y) // Start the line at the first slider
-                    else {
+                    drawLine(
+                        color = lineCol.copy(alpha = 0.1f),
+                        start = Offset(x, 0f),
+                        end = Offset(x, size.height),
+                        strokeWidth = 1.dp.toPx()
+                    )
+                }
+
+                // Construct smooth cubic Bezier curve through all band points
+                bands.forEachIndexed { i, lvl ->
+                    val clampedLvl = lvl.coerceIn(0f, 1f)
+                    val x = i * spacing
+                    val y = size.height - (clampedLvl * size.height)
+                    if (i == 0) {
+                        path.moveTo(x, y) // Start the line at the first slider
+                    } else {
                         val pX = (i - 1) * spacing
-                        val pY = size.height - (bands[i - 1] * size.height)
-                        val cX = pX + spacing / 2
+                        val pY = size.height - (bands[i - 1].coerceIn(0f, 1f) * size.height)
+                        val cX = pX + spacing / 2f
                         // cubicTo creates a smooth, swooping curve instead of a harsh zig-zag line.
                         path.cubicTo(cX, pY, cX, y, x, y)
                     }
                 }
 
-                // Draw the faint dotted lines in the background
-                val dash = PathEffect.dashPathEffect(floatArrayOf(10f, 10f))
-                val lineCol = colors.onSurfaceVariant.copy(alpha = 0.2f)
-
-                drawLine(lineCol, Offset(0f, size.height / 2), Offset(size.width, size.height / 2), 1.dp.toPx(), pathEffect = dash)
-                drawLine(lineCol, Offset(0f, size.height / 4), Offset(size.width, size.height / 4), 1.dp.toPx(), pathEffect = dash)
-                drawLine(lineCol, Offset(0f, size.height - size.height / 4), Offset(size.width, size.height - size.height / 4), 1.dp.toPx(), pathEffect = dash)
-
-                // Fill the area underneath the curve with the blue gradient
+                // Fill the area underneath the curve with the gradient
                 val fillPath = Path().apply {
                     addPath(path)
                     lineTo(size.width, size.height)
@@ -590,14 +1156,35 @@ fun EqCurveGraph(bands: List<Float>, enabled: Boolean, labels: List<String>) {
                 }
                 drawPath(fillPath, grad)
 
-                // Finally, draw the thick blue line itself!
-                drawPath(path, color = colors.primary, style = Stroke(4.dp.toPx(), cap = StrokeCap.Round))
-            }
-        }
-        // Draw the text labels under the graph
-        Row(Modifier.fillMaxWidth().padding(top = 12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-            labels.forEach { label ->
-                Text(label, fontSize = 11.sp, color = colors.onSurfaceVariant, fontWeight = FontWeight.Medium)
+                // Draw soft outer neon bloom stroke
+                drawPath(
+                    path = path,
+                    color = colors.primary.copy(alpha = 0.25f),
+                    style = Stroke(9.dp.toPx(), cap = StrokeCap.Round)
+                )
+
+                // Draw the crisp primary spline curve
+                drawPath(
+                    path = path,
+                    color = colors.primary,
+                    style = Stroke(3.dp.toPx(), cap = StrokeCap.Round)
+                )
+
+                // Draw glowing control nodes at each frequency point
+                bands.forEachIndexed { i, lvl ->
+                    val x = i * spacing
+                    val y = size.height - (lvl.coerceIn(0f, 1f) * size.height)
+                    drawCircle(
+                        color = colors.surfaceContainerHigh,
+                        radius = 5.5.dp.toPx(),
+                        center = Offset(x, y)
+                    )
+                    drawCircle(
+                        color = colors.primary,
+                        radius = 4.dp.toPx(),
+                        center = Offset(x, y)
+                    )
+                }
             }
         }
     }
@@ -608,9 +1195,16 @@ fun EqCurveGraph(bands: List<Float>, enabled: Boolean, labels: List<String>) {
  * 🎚️ THE VERTICAL FADER (VerticalEqSlider)
  * =========================================================================================
  * A custom-built vertical slider that looks like professional audio mixing hardware.
+ * Upgraded with Bi-Directional Center-Zero (0 dB) illumination and a sculpted studio fader cap.
  */
 @Composable
-fun VerticalEqSlider(modifier: Modifier, levelProvider: () -> Float, enabled: Boolean, onValueChange: (Float) -> Unit, label: String) {
+fun VerticalEqSlider(
+    modifier: Modifier,
+    levelProvider: () -> Float,
+    enabled: Boolean,
+    onValueChange: (Float) -> Unit,
+    label: String
+) {
     val colors = MaterialTheme.colorScheme
     val density = LocalDensity.current
     val view = LocalView.current // Used to trigger physical vibrations (haptics)
@@ -639,7 +1233,25 @@ fun VerticalEqSlider(modifier: Modifier, levelProvider: () -> Float, enabled: Bo
     // Convert 0.0-1.0 scale to -15dB to +15dB scale for the UI
     val dbValue = ((displayLevel - 0.5f) * 30f).roundToInt()
 
-    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = modifier) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = modifier.fillMaxHeight()
+    ) {
+        // Live Monospace dB Readout Badge at the top of each channel strip
+        Text(
+            text = "${if (dbValue > 0) "+" else ""}$dbValue",
+            fontSize = 10.sp,
+            fontFamily = FontFamily.Monospace,
+            fontWeight = FontWeight.ExtraBold,
+            color = when {
+                isDragging -> colors.primary
+                dbValue != 0 -> colors.onSurface
+                else -> colors.onSurfaceVariant.copy(alpha = 0.6f)
+            }
+        )
+
+        Spacer(Modifier.height(4.dp))
+
         Box(
             Modifier
                 .weight(1f)
@@ -672,13 +1284,14 @@ fun VerticalEqSlider(modifier: Modifier, levelProvider: () -> Float, enabled: Bo
                         }
                     ) { c, d ->
                         c.consume() // Tell Android we handled this touch, do not scroll the whole page!
+                        if (height <= 0f) return@detectVerticalDragGestures
                         var next = (dragLevel - d / height).coerceIn(0f, 1f)
                         // If they get really close to the middle (0 dB), snap it perfectly to the middle.
-                        if (abs(next - 0.5f) < 0.05f) next = 0.5f
+                        if (abs(next - 0.5f) < 0.035f) next = 0.5f
                         dragLevel = next
 
                         // To prevent flooding the Manager with 1000 messages a second, only send updates if it moved significantly.
-                        if (abs(next - lastSent) > 0.02f) {
+                        if (abs(next - lastSent) > 0.015f) {
                             // Give a tiny "tick" vibration if they drag it exactly through the middle point
                             if (next == 0.5f && lastSent != 0.5f) {
                                 view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
@@ -690,56 +1303,94 @@ fun VerticalEqSlider(modifier: Modifier, levelProvider: () -> Float, enabled: Bo
                 },
             contentAlignment = Alignment.TopCenter
         ) {
-            // Draw the track
+            // Draw the studio slot track & bipolar 0dB illumination
             Canvas(Modifier.fillMaxSize()) {
                 val tW = 6.dp.toPx()
-                val cX = size.width / 2
-                val grad = Brush.verticalGradient(listOf(colors.primary, colors.secondary))
+                val cX = size.width / 2f
+                val centerY = size.height / 2f
+                val currentY = size.height * (1f - displayLevel)
 
-                // The empty grey background track
-                drawRoundRect(colors.onSurfaceVariant.copy(alpha = 0.2f), Offset(cX - tW / 2, 0f), Size(tW, size.height), CornerRadius(10f))
-                // A tiny horizontal line marking the exact center (0 dB)
-                drawLine(colors.onSurfaceVariant.copy(alpha = 0.4f), Offset(cX - 12f, size.height / 2), Offset(cX + 12f, size.height / 2), 3f)
+                // Subtle horizontal tick marks along the fader slot
+                for (tick in 1..9) {
+                    val tickY = size.height * (tick / 10f)
+                    val tickHalfW = if (tick == 5) 11.dp.toPx() else 6.dp.toPx()
+                    drawLine(
+                        color = colors.onSurfaceVariant.copy(alpha = if (tick == 5) 0.45f else 0.16f),
+                        start = Offset(cX - tickHalfW, tickY),
+                        end = Offset(cX + tickHalfW, tickY),
+                        strokeWidth = if (tick == 5) 2.dp.toPx() else 1.dp.toPx()
+                    )
+                }
 
-                // The filled blue color for the track below the knob
+                // The recessed dark fader slot
+                drawRoundRect(
+                    color = colors.surfaceContainerHighest,
+                    topLeft = Offset(cX - tW / 2f, 0f),
+                    size = Size(tW, size.height),
+                    cornerRadius = CornerRadius(tW / 2f)
+                )
+
+                // Bipolar active illumination from 0 dB center line to the current fader position
                 if (enabled) {
-                    drawRoundRect(grad, Offset(cX - tW / 2, size.height * (1f - displayLevel)), Size(tW, size.height * displayLevel), CornerRadius(10f))
+                    val topY = min(centerY, currentY)
+                    val barH = abs(currentY - centerY).coerceAtLeast(2.dp.toPx())
+                    drawRoundRect(
+                        brush = Brush.verticalGradient(listOf(colors.primary, colors.tertiary)),
+                        topLeft = Offset(cX - tW / 2f, topY),
+                        size = Size(tW, barH),
+                        cornerRadius = CornerRadius(tW / 2f)
+                    )
                 }
             }
 
-            // The physical knob you grab
-            val handleH = 28.dp
-            val handleY = if (height > 0) (height - with(density) { handleH.toPx() }) * (1f - displayLevel) else 0f
+            // The physical sculpted studio fader cap you grab
+            val handleH = 26.dp
+            val handleY = if (height > 0f) {
+                (height - with(density) { handleH.toPx() }) * (1f - displayLevel)
+            } else 0f
 
-            Box(
-                Modifier
-                    .offset { IntOffset(0, handleY.toInt()) }
-                    .size(28.dp, handleH)
-                    .background(colors.primary, CircleShape)
-                    .border(2.dp, colors.surface, CircleShape) // Add a white border so it pops out
-            )
-
-            // A tiny floating tooltip that appears ABOVE the user's thumb while dragging, showing the exact number!
-            this@Column.AnimatedVisibility(
-                visible = isDragging,
-                modifier = Modifier.align(Alignment.TopCenter).offset { IntOffset(0, handleY.toInt() - 36) },
-                enter = fadeIn(), exit = fadeOut()
+            Surface(
+                modifier = Modifier
+                    .offset { IntOffset(0, handleY.roundToInt()) }
+                    .size(width = 30.dp, height = handleH),
+                shape = RoundedCornerShape(8.dp),
+                color = if (isDragging) colors.primary else colors.surfaceContainerHighest,
+                border = BorderStroke(
+                    1.5.dp,
+                    if (isDragging) Color.White else colors.primary.copy(alpha = 0.7f)
+                ),
+                shadowElevation = if (isDragging) 8.dp else 4.dp
             ) {
-                Surface(shape = RoundedCornerShape(8.dp), color = colors.primary) {
-                    Text(
-                        text = "${if (dbValue > 0) "+" else ""}$dbValue dB", // e.g. "+5 dB"
-                        color = colors.onPrimary, fontSize = 11.sp, fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                // Center horizontal grip line on the fader cap
+                Box(contentAlignment = Alignment.Center) {
+                    Box(
+                        modifier = Modifier
+                            .width(16.dp)
+                            .height(2.dp)
+                            .clip(CircleShape)
+                            .background(if (isDragging) Color.White else colors.primary)
                     )
                 }
             }
         }
+
+        Spacer(Modifier.height(6.dp))
+
+        // Frequency label at the bottom of the fader strip (e.g., 60Hz, 3.6k)
+        Text(
+            text = label,
+            fontSize = 10.sp,
+            fontFamily = FontFamily.Monospace,
+            color = colors.onSurfaceVariant,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1
+        )
     }
 }
 
 /**
  * =========================================================================================
- * 🎛️ THE ROTARY KNOB (Spinning dial for Bass Boost)
+ * 🎛️ THE ROTARY KNOB (Spinning dial for Bass Boost & Spatializer)
  * =========================================================================================
  * Instead of sliding up and down, the user puts their thumb on it and drags up/down to SPIN the dial.
  */
@@ -748,7 +1399,7 @@ fun RotaryKnob(enabled: Boolean = true, value: Float, onValueChange: (Float) -> 
     val view = LocalView.current
     val density = LocalDensity.current
     val colors = MaterialTheme.colorScheme
-    val scale = remember(density) { with(density) { 200.dp.toPx() } }
+    val scale = remember(density) { with(density) { 180.dp.toPx() } }
 
     var internalValue by remember { mutableFloatStateOf(value) } // 0.0 to 1.0
     var isDragging by remember { mutableStateOf(false) }
@@ -763,7 +1414,18 @@ fun RotaryKnob(enabled: Boolean = true, value: Float, onValueChange: (Float) -> 
 
     Box(
         Modifier
-            .size(72.dp)
+            .size(84.dp)
+            .pointerInput(enabled) {
+                if (!enabled) return@pointerInput
+                detectTapGestures(
+                    onDoubleTap = {
+                        view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                        internalValue = 0f
+                        lastSent = 0f
+                        onValueChange(0f)
+                    }
+                )
+            }
             .pointerInput(enabled) {
                 if (!enabled) return@pointerInput
                 detectVerticalDragGestures(
@@ -779,6 +1441,7 @@ fun RotaryKnob(enabled: Boolean = true, value: Float, onValueChange: (Float) -> 
                     val n = (internalValue - d / scale).coerceIn(0f, 1f)
                     internalValue = n
                     if (abs(n - lastSent) > 0.02f) {
+                        view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
                         lastSent = n
                         onValueChange(n) // Send update to manager
                     }
@@ -787,47 +1450,103 @@ fun RotaryKnob(enabled: Boolean = true, value: Float, onValueChange: (Float) -> 
         contentAlignment = Alignment.Center
     ) {
         // Calculate the exact angle to spin the circle
-        val animatedRotation by animateFloatAsState(targetValue = internalValue * 270f, label = "knobRotation")
+        val animatedRotation by animateFloatAsState(
+            targetValue = internalValue * 270f,
+            animationSpec = if (isDragging) snap() else tween(250),
+            label = "knobRotation"
+        )
 
         Canvas(Modifier.fillMaxSize()) {
-            val r = size.minDimension / 2.5f
+            val r = size.minDimension / 2.6f
 
-            // Draw the 15 tiny indicator dots in an arc around the dial
+            // Draw the 15 tiny LED indicator dots in an arc around the dial
             for (i in 0..15) {
-                val dA = (135f + i * (270f / 15)) * (PI / 180f)
+                val dA = (135f + i * (270f / 15f)) * (PI / 180f)
                 val act = (i / 15f) <= internalValue && enabled
-                drawCircle(if (act) colors.primary else colors.onSurfaceVariant.copy(alpha = 0.3f), 4f, Offset(center.x + (r + 14f) * cos(dA).toFloat(), center.y + (r + 14f) * sin(dA).toFloat()))
+                drawCircle(
+                    color = if (act) colors.primary else colors.onSurfaceVariant.copy(alpha = 0.25f),
+                    radius = if (act) 3.dp.toPx() else 2.dp.toPx(),
+                    center = Offset(
+                        center.x + (r + 12.dp.toPx()) * cos(dA).toFloat(),
+                        center.y + (r + 12.dp.toPx()) * sin(dA).toFloat()
+                    )
+                )
             }
 
-            // Draw the actual physical dial
+            // Draw the metallic outer bevel and inner dial cap
             drawCircle(colors.surfaceContainerHighest, r)
-            drawCircle(colors.primaryContainer, r, style = Stroke(3f))
+            drawCircle(
+                color = if (isDragging) colors.primary else colors.outlineVariant.copy(alpha = 0.5f),
+                radius = r,
+                style = Stroke(2.5.dp.toPx())
+            )
 
-            // Draw the tiny blue dot ON the dial that shows where it is pointing
+            // Draw the glowing pointer line & tip on the dial that shows where it is pointing
             val iA = (135f + animatedRotation) * (PI / 180f)
-            drawCircle(if (enabled) colors.primary else colors.onSurfaceVariant, 6f, Offset(center.x + (r * 0.7f) * cos(iA).toFloat(), center.y + (r * 0.7f) * sin(iA).toFloat()))
+            val innerStart = Offset(
+                center.x + (r * 0.28f) * cos(iA).toFloat(),
+                center.y + (r * 0.28f) * sin(iA).toFloat()
+            )
+            val outerTip = Offset(
+                center.x + (r * 0.76f) * cos(iA).toFloat(),
+                center.y + (r * 0.76f) * sin(iA).toFloat()
+            )
+            drawLine(
+                color = if (enabled) colors.primary else colors.onSurfaceVariant,
+                start = innerStart,
+                end = outerTip,
+                strokeWidth = 3.dp.toPx(),
+                cap = StrokeCap.Round
+            )
         }
     }
 }
 
 // A blueprint for drawing the little "Small Room", "Concert Hall" buttons
 @Composable
-fun ReverbChip(text: String, active: Boolean, onClick: () -> Unit) {
+fun ReverbChip(
+    text: String,
+    active: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
     val view = LocalView.current
     val colors = MaterialTheme.colorScheme
 
     Surface(
         onClick = {
-            onClick()
             view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK) // Tiny click feeling
+            onClick()
         },
-        shape = CircleShape,
+        shape = RoundedCornerShape(16.dp),
         color = if (active) colors.primary else colors.surfaceContainerHighest,
         contentColor = if (active) colors.onPrimary else colors.onSurface,
-        modifier = Modifier.height(36.dp)
+        border = BorderStroke(
+            1.dp,
+            if (active) colors.primary else colors.outlineVariant.copy(alpha = 0.25f)
+        ),
+        shadowElevation = if (active) 4.dp else 0.dp,
+        modifier = modifier.height(44.dp)
     ) {
-        Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 16.dp)) {
-            Text(text = text, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center,
+            modifier = Modifier.padding(horizontal = 14.dp)
+        ) {
+            Icon(
+                imageVector = if (active) Icons.Rounded.SpatialAudioOff else Icons.Rounded.SurroundSound,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+                tint = if (active) colors.onPrimary else colors.primary
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = text,
+                fontSize = 12.sp,
+                fontWeight = if (active) FontWeight.ExtraBold else FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }
@@ -839,19 +1558,38 @@ fun CustomSlider(value: Float, onValueChange: (Float) -> Unit) {
     val colors = MaterialTheme.colorScheme
 
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Icon(Icons.AutoMirrored.Rounded.VolumeUp, "Volume", tint = colors.onSurfaceVariant, modifier = Modifier.size(24.dp))
-        Spacer(Modifier.width(16.dp))
+        Icon(
+            Icons.AutoMirrored.Rounded.VolumeUp,
+            contentDescription = "Volume",
+            tint = colors.primary,
+            modifier = Modifier.size(24.dp)
+        )
+        Spacer(Modifier.width(14.dp))
 
         // Uses the standard Android Material Slider tool
         Slider(
             value = temp,
-            onValueChange = { temp = it },
-            onValueChangeFinished = { onValueChange(temp) }, // Only send to manager when they LET GO of the slider
+            onValueChange = {
+                temp = it
+                onValueChange(it) // Live smooth volume adjustment
+            },
+            onValueChangeFinished = { onValueChange(temp) },
             modifier = Modifier.weight(1f),
-            colors = SliderDefaults.colors(thumbColor = colors.primary, activeTrackColor = colors.primary, inactiveTrackColor = colors.onSurfaceVariant.copy(alpha = 0.3f))
+            colors = SliderDefaults.colors(
+                thumbColor = colors.primary,
+                activeTrackColor = colors.primary,
+                inactiveTrackColor = colors.onSurfaceVariant.copy(alpha = 0.25f)
+            )
         )
 
-        Spacer(Modifier.width(16.dp))
-        Text("${(temp * 100).toInt()}%", color = colors.onBackground, fontSize = 14.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(48.dp))
+        Spacer(Modifier.width(12.dp))
+        Text(
+            text = "${(temp * 100f).roundToInt()}%",
+            color = colors.onBackground,
+            fontFamily = FontFamily.Monospace,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.ExtraBold,
+            modifier = Modifier.width(44.dp)
+        )
     }
 }
