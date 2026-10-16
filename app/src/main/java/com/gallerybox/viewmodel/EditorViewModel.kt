@@ -60,7 +60,7 @@ import javax.inject.Inject
 import kotlin.math.roundToInt
 
 /**
- * Container holding metadata and optional preview thumbnail for a `.cube` LUT filter.
+ * Container holding metadata and optional preview thumbnail for a .cube LUT filter.
  */
 data class LutItem(
     val name: String,
@@ -657,7 +657,41 @@ class EditorViewModel @Inject constructor(
         )
     }
 
-    fun setAspectRatio(ratio: Float?) = updateEditState { it.copy(aspectRatio = ratio) }
+    // UPDATED FUNCTION: Replaces the previous `setAspectRatio` function
+    fun setAspectRatio(
+        ratio: Float?,
+        mediaWidth: Float = 1f,
+        mediaHeight: Float = 1f
+    ) = updateEditState { state ->
+        if (ratio == null) {
+            state.copy(aspectRatio = null)
+        } else {
+            val safeW = mediaWidth.coerceAtLeast(1f)
+            val safeH = mediaHeight.coerceAtLeast(1f)
+            val mediaAspect = safeW / safeH
+            val targetRelRatio = ratio / mediaAspect
+
+            val maxFraction = 0.88f
+            var newW = maxFraction
+            var newH = newW / targetRelRatio
+
+            if (newH > maxFraction) {
+                newH = maxFraction
+                newW = newH * targetRelRatio
+            }
+
+            newW = newW.coerceIn(0.1f, 1f)
+            newH = newH.coerceIn(0.1f, 1f)
+
+            val left = (1f - newW) / 2f
+            val top = (1f - newH) / 2f
+
+            state.copy(
+                aspectRatio = ratio,
+                cropRect = RectF(left, top, left + newW, top + newH)
+            )
+        }
+    }
 
     fun updateCropRect(rect: RectF) {
         beginGesture()
