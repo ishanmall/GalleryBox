@@ -236,7 +236,7 @@ class GalleryViewModel @Inject constructor(
         }
     }
 
-    // Shared Wallpaper Transform State
+    // --- SHARED WALLPAPER TRANSFORM STATE ---
     private val _transform = MutableStateFlow(WallpaperTransform())
     val transform: StateFlow<WallpaperTransform> = _transform.asStateFlow()
 
@@ -256,6 +256,38 @@ class GalleryViewModel @Inject constructor(
 
     fun resetTransform() {
         _transform.value = WallpaperTransform()
+    }
+
+    // --- LINKED EDITOR STATE ---
+    private val _activeEditingMedia = MutableStateFlow<MediaItem?>(null)
+    val activeEditingMedia: StateFlow<MediaItem?> = _activeEditingMedia.asStateFlow()
+
+    /**
+     * Opens a [MediaItem] (photo or video) for editing and links it directly with [EditorViewModel].
+     */
+    fun openEditor(item: MediaItem, editorViewModel: EditorViewModel? = null) {
+        if (sharedPlayer?.isPlaying == true) {
+            sharedPlayer?.pause()
+        }
+        _activeEditingMedia.value = item
+        editorViewModel?.updateThermalLevel(_thermalState.value)
+        editorViewModel?.initializeEditor(item)
+    }
+
+    /**
+     * Opens a media item by its `mediaId` for editing and links it with [EditorViewModel].
+     */
+    fun openEditorById(mediaId: Long, editorViewModel: EditorViewModel? = null) {
+        val item = getMediaItemById(mediaId) ?: _rawMedia.value.firstOrNull { it.id == mediaId }
+        if (item != null) {
+            openEditor(item, editorViewModel)
+        } else {
+            _events.tryEmit(GalleryEvent.ShowToast("Media item not found"))
+        }
+    }
+
+    fun closeEditor() {
+        _activeEditingMedia.value = null
     }
 
     private val _events = MutableSharedFlow<GalleryEvent>(extraBufferCapacity = 64)
@@ -290,6 +322,7 @@ class GalleryViewModel @Inject constructor(
     @Volatile private var pendingInternalTrashIds: Set<Long> = emptySet()
 
     private val _thermalState = MutableStateFlow(PowerManager.THERMAL_STATUS_NONE)
+    val thermalState: StateFlow<Int> = _thermalState.asStateFlow()
 
     private var lastMediaStoreGeneration = 0L
     @Volatile private var lastSyncTime = 0L
@@ -1436,7 +1469,7 @@ class GalleryViewModel @Inject constructor(
         exportAsSticker: Boolean = false
     ) {
         if (!tryBeginFileOperation()) return
-        val item = getMediaItemById(originalMediaId)
+        val item = getMediaItemById(originalMediaId) ?: _rawMedia.value.firstOrNull { it.id == originalMediaId }
         if (item == null) {
             _events.tryEmit(GalleryEvent.ShowToast("Error: Cannot find original media"))
             endFileOperation()
@@ -1483,14 +1516,19 @@ class GalleryViewModel @Inject constructor(
         MediaScannerConnection.scanFile(
             getApplication<Application>(),
             arrayOf(newFile.absolutePath),
-            null,
             null
-        )
+        ) { _, _ ->
+            refreshAfterFileOperation()
+        }
         viewModelScope.launch(Dispatchers.Main) {
             _events.emit(GalleryEvent.ShowToast(customMessage))
             if (originalMediaId != null) {
-                _mediaMap.value[originalMediaId]?.let { originalItem ->
+                val originalItem = _mediaMap.value[originalMediaId]
+                    ?: _rawMedia.value.firstOrNull { it.id == originalMediaId }
+                if (originalItem != null) {
                     moveToTrashInternal(listOf(originalItem))
+                } else {
+                    refreshAfterFileOperation()
                 }
             } else {
                 refreshAfterFileOperation()
@@ -1818,7 +1856,9 @@ class GalleryViewModel @Inject constructor(
         if (i != -1 && i < a.lastIndex) reorderAlbums(id, a[i + 1].id)
     }
 
-    fun getMediaItemById(id: Long): MediaItem? = _mediaMap.value[id]
+    fun getMediaItemById(id: Long): MediaItem? = _mediaMap.value[id] ?: _rawMedia.value.firstOrNull { it.id == id }
+
+    fun getMediaItemByUri(uri: Uri): MediaItem? = _rawMedia.value.firstOrNull { it.uri == uri }
 
     fun closeViewer() {
         _viewerState.value = GalleryViewerState.Closed
@@ -2031,7 +2071,7 @@ class GalleryViewModel @Inject constructor(
     }
 
     fun openViewer(mediaId: Long) {
-        val item = _mediaMap.value[mediaId]
+        val item = getMediaItemById(mediaId)
         if (item == null) {
             _events.tryEmit(GalleryEvent.ShowToast("Media item is not loaded."))
             return
