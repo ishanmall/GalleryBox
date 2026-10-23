@@ -5,11 +5,13 @@ package com.gallerybox.ui.screens.music
 import android.app.Activity
 import android.content.ContentUris
 import android.net.Uri
+import android.os.Build
 import android.view.HapticFeedbackConstants
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.RequiresApi
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
@@ -62,8 +64,6 @@ import com.gallerybox.ui.screens.adaptive.WindowWidthSize
 sealed class MusicRoute(val route: String) {
     data object Dashboard : MusicRoute("dashboard")
     data object Library : MusicRoute("library")
-    data object DigitalRadio : MusicRoute("digital_radio")
-    data object OnlineFinder : MusicRoute("online_finder")
 }
 
 @androidx.media3.common.util.UnstableApi
@@ -76,7 +76,9 @@ fun MusicScreen(
     onViewerStateChanged: (Boolean) -> Unit = {},
     onNavigateToEqualizer: () -> Unit,
     onNavigateToRadio: () -> Unit,
-    onNavigateToDuoPlayer: () -> Unit
+    onNavigateToDuoPlayer: () -> Unit,
+    onNavigateToDigitalRadio: () -> Unit,
+    onNavigateToOnlineFinder: () -> Unit
 ) {
     val navController = rememberNavController()
     val currentRoute = navController.currentBackStackEntryAsState().value?.destination?.route
@@ -95,9 +97,6 @@ fun MusicScreen(
 
     var loadedSongs by remember { mutableStateOf<ImmutableList<AudioTrack>>(persistentListOf()) }
     var displaySongs by remember { mutableStateOf<ImmutableList<AudioTrack>>(persistentListOf()) }
-
-    val isSelfHeaderRoute = currentRoute == MusicRoute.DigitalRadio.route ||
-            currentRoute == MusicRoute.OnlineFinder.route
 
     // Direct single-track playback using the working DuoTrack engine path (no full player screen)
     val playSelectedSong: (AudioTrack) -> Unit = { song ->
@@ -203,28 +202,26 @@ fun MusicScreen(
                 .systemBarsPadding()
                 .imePadding(),
             topBar = {
-                if (!isSelfHeaderRoute) {
-                    MusicTopAppBar(
-                        currentRoute = currentRoute,
-                        isSearchActive = isSearchActive,
-                        searchQuery = searchQuery,
-                        adaptiveState = adaptiveState,
-                        onSearchChange = viewModel::setSearchQuery,
-                        onToggleSearch = {
-                            isSearchActive = it
-                            if (!it) viewModel.setSearchQuery("")
-                        },
-                        onNavigateBack = {
-                            navController.popBackStack()
-                        },
-                        onNavigateToEqualizer = onNavigateToEqualizer,
-                        onOpenSpeedPitch = { showSpeedPitchDialog = true }
-                    )
-                }
+                MusicTopAppBar(
+                    currentRoute = currentRoute,
+                    isSearchActive = isSearchActive,
+                    searchQuery = searchQuery,
+                    adaptiveState = adaptiveState,
+                    onSearchChange = viewModel::setSearchQuery,
+                    onToggleSearch = {
+                        isSearchActive = it
+                        if (!it) viewModel.setSearchQuery("")
+                    },
+                    onNavigateBack = {
+                        navController.popBackStack()
+                    },
+                    onNavigateToEqualizer = onNavigateToEqualizer,
+                    onOpenSpeedPitch = { showSpeedPitchDialog = true }
+                )
             },
             bottomBar = {
                 AnimatedVisibility(
-                    visible = currentTrack != null && currentRoute != MusicRoute.DigitalRadio.route,
+                    visible = currentTrack != null,
                     enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
                     exit = slideOutVertically(targetOffsetY = { it }) + fadeOut()
                 ) {
@@ -270,22 +267,20 @@ fun MusicScreen(
             }
         ) { padding ->
             Box(Modifier.padding(padding).fillMaxSize()) {
-                if (!isSelfHeaderRoute) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(300.dp)
-                            .background(
-                                Brush.radialGradient(
-                                    colors = listOf(
-                                        MaterialTheme.colorScheme.primary.copy(alpha = if (isPlaying) 0.14f else 0.06f),
-                                        Color.Transparent
-                                    ),
-                                    radius = 900f
-                                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(300.dp)
+                        .background(
+                            Brush.radialGradient(
+                                colors = listOf(
+                                    MaterialTheme.colorScheme.primary.copy(alpha = if (isPlaying) 0.14f else 0.06f),
+                                    Color.Transparent
+                                ),
+                                radius = 900f
                             )
-                    )
-                }
+                        )
+                )
 
                 NavHost(
                     navController = navController,
@@ -305,8 +300,8 @@ fun MusicScreen(
                             onNavigateToRadio = onNavigateToRadio,
                             onNavigateToDuoMode = onNavigateToDuoPlayer,
                             onNavigateToEqualizer = onNavigateToEqualizer,
-                            onNavigateToDigitalRadio = { navController.navigate(MusicRoute.DigitalRadio.route) },
-                            onNavigateToOnlineFinder = { navController.navigate(MusicRoute.OnlineFinder.route) },
+                            onNavigateToDigitalRadio = onNavigateToDigitalRadio,
+                            onNavigateToOnlineFinder = onNavigateToOnlineFinder,
                             onPlayTrack = { song -> playSelectedSong(song) }
                         )
                     }
@@ -325,6 +320,7 @@ fun MusicScreen(
     }
 }
 
+@RequiresApi(Build.VERSION_CODES.CUPCAKE)
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MusicTopAppBar(
@@ -495,7 +491,6 @@ fun MusicTopAppBar(
                     }
                 }
 
-                // 3-Dots Button at Top Bar to change Speed & Pitch
                 Box {
                     Surface(
                         onClick = {
@@ -871,9 +866,6 @@ fun InteractiveSongRow(
     }
 }
 
-// =========================================================================================
-// UPGRADED MINI PLAYER WITH DRAGGABLE SEEKBAR LINE + TOP 3-DOTS FOR SPEED & PITCH
-// =========================================================================================
 @Composable
 fun ModernMiniPlayer(
     track: AudioTrack,
@@ -920,7 +912,6 @@ fun ModernMiniPlayer(
                 .fillMaxWidth()
                 .padding(start = 12.dp, end = 8.dp, top = 10.dp, bottom = 6.dp)
         ) {
-            // TOP ROW: Album Art, Title/Artist, Prev/Play/Next, and 3-Dots Speed/Pitch Button
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
@@ -960,7 +951,6 @@ fun ModernMiniPlayer(
                     )
                 }
 
-                // Playback Controls + 3-Dots Menu Button
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     IconButton(
                         onClick = { onPrev(); view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY) },
@@ -1002,7 +992,6 @@ fun ModernMiniPlayer(
                         )
                     }
 
-                    // 3-Dots Button to open Speed & Pitch Controls
                     IconButton(
                         onClick = {
                             view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
@@ -1022,7 +1011,6 @@ fun ModernMiniPlayer(
 
             Spacer(Modifier.height(4.dp))
 
-            // BOTTOM ROW: Interactive Draggable Seekbar Line + Current/Total Time
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1073,9 +1061,6 @@ fun ModernMiniPlayer(
     }
 }
 
-// =========================================================================================
-// SPEED & PITCH DIALOG (OPENED VIA 3-DOTS AT TOP)
-// =========================================================================================
 @Composable
 fun SpeedPitchDialog(
     viewModel: MusicViewModel,
@@ -1114,7 +1099,6 @@ fun SpeedPitchDialog(
         },
         text = {
             Column(modifier = Modifier.fillMaxWidth()) {
-                // Speed Slider
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween
@@ -1146,7 +1130,6 @@ fun SpeedPitchDialog(
 
                 Spacer(Modifier.height(14.dp))
 
-                // Pitch Slider
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween

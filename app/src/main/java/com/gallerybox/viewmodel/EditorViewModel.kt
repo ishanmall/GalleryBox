@@ -149,7 +149,19 @@ class EditorViewModel @Inject constructor(
             return (1f - (clamped / 10f)).coerceIn(0.3f, 1.0f)
         }
     }
-
+    fun initializeEditorFromGallery(
+        mediaId: Long,
+        galleryViewModel: GalleryViewModel,
+        fallbackUri: Uri? = null,
+        isVideoHint: Boolean = false
+    ) = viewModelScope.launch {
+        (galleryViewModel.getMediaItemById(mediaId)
+            ?: galleryViewModel.rawMedia.value.firstOrNull { it.id == mediaId }
+            ?: fallbackUri?.let { uri ->
+                galleryViewModel.rawMedia.value.firstOrNull { it.uri == uri }
+                    ?: resolveMediaItemFromUri(uri, mediaId, isVideoHint)
+            })?.let { initializeEditor(it) }
+    }
     init {
         loadLuts()
         loadStickers()
@@ -205,29 +217,6 @@ class EditorViewModel @Inject constructor(
         scale: Float = 1f
     ): Boolean {
         return editStateManager.isPointInLayer(x, y, layerX, layerY, width, height, rotation, scale)
-    }
-
-    /**
-     * Links directly with [GalleryViewModel] using `mediaId` or `fallbackUri` to load any photo or video.
-     */
-    fun initializeEditorFromGallery(
-        mediaId: Long,
-        galleryViewModel: GalleryViewModel,
-        fallbackUri: Uri? = null,
-        isVideoHint: Boolean = false
-    ) = viewModelScope.launch {
-        val itemFromGallery = galleryViewModel.getMediaItemById(mediaId)
-            ?: galleryViewModel.rawMedia.value.firstOrNull { it.id == mediaId }
-            ?: fallbackUri?.let { uri ->
-                galleryViewModel.rawMedia.value.firstOrNull { it.uri == uri }
-                    ?: resolveMediaItemFromUri(uri, mediaId, isVideoHint)
-            }
-
-        if (itemFromGallery != null) {
-            initializeEditor(itemFromGallery)
-        } else {
-            _events.send(GalleryEvent.ShowToast("Unable to load media for editing"))
-        }
     }
 
     private suspend fun resolveMediaItemFromUri(

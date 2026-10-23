@@ -122,6 +122,12 @@
 -dontwarn javax.naming.**
 
 #############################
+# TENSORFLOW LITE / AI EDGE
+#############################
+-dontwarn org.tensorflow.lite.gpu.GpuDelegateFactory$Options$GpuBackend
+-dontwarn org.tensorflow.lite.gpu.GpuDelegateFactory$Options
+
+#############################
 # SHRINK / OBFUSCATE
 #############################
 -allowaccessmodification

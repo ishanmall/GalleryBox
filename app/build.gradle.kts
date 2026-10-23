@@ -29,7 +29,7 @@ android {
         applicationId = "com.gallerybox"
         minSdk = 31
         targetSdk = 36
-        versionCode = 98
+        versionCode = 100
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -47,16 +47,20 @@ android {
         externalNativeBuild {
             cmake {
                 cppFlags += listOf("-Wl,-z,max-page-size=16384")
+                arguments += listOf("-DANDROID_STL=c++_shared")
             }
             ndkBuild {
-                arguments += listOf("APP_LDFLAGS+=-Wl,-z,max-page-size=16384")
+                arguments += listOf(
+                    "APP_LDFLAGS+=-Wl,-z,max-page-size=16384",
+                    "APP_STL=c++_shared"
+                )
             }
         }
     }
 
     // Prevent compression on AI models (.tflite) and LUTs (.cube) so they can be memory-mapped directly
     androidResources {
-        noCompress += listOf("tflite", "lite", "onnx", "cube")
+        noCompress += listOf("tflite", "lite", "onnx", "cube", "task", "bin")
     }
 
     // --- APP SPLITTING (Keeps per-device APK well under 50 MB) ---
@@ -128,8 +132,11 @@ android {
                 "lib/**/libmodpdfium.so",
                 "lib/**/libjniPdfium.so",
                 "lib/**/libtensorflowlite_jni.so",
-                "lib/**/libtensorflowlite_gpu_jni.so"
+                "lib/**/libtensorflowlite_gpu_jni.so",
+                "lib/**/libopencv_java4.so"
             )
+            // Ensures uncompressed native libraries preserve 16KB alignment flags
+            keepDebugSymbols += listOf("**/arm64-v8a/*.so", "**/armeabi-v7a/*.so")
         }
     }
 }
@@ -157,13 +164,15 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.8.0") // For awaiting ML Kit Tasks
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
 
-    // --- ON-DEVICE AI ENGINE (BG Blur, Subject Cutout, Object/Shadow/Reflection Eraser) ---
-    // 1. Google ML Kit Subject Segmentation (~0.4 MB — uses Google Play Services neural engine)
-    implementation("com.google.android.gms:play-services-mlkit-subject-segmentation:16.0.0-beta1")
-    // 2. Google LiteRT (formerly TensorFlow Lite) for fast on-device Inpainting / Object Eraser (~1.7 MB)
-    implementation("com.google.ai.edge.litert:litert:1.0.1")
-    implementation("com.google.ai.edge.litert:litert-gpu:1.0.1")
-    implementation("com.google.ai.edge.litert:litert-support:1.0.1")
+    // 4. Media3 Muxer & Decoder Extensions — Offline Multi-track Video/Audio Muxing & Frame Extraction
+    val media3Version = "1.5.1"
+    implementation("androidx.media3:media3-muxer:$media3Version")
+    implementation("androidx.media3:media3-extractor:$media3Version")
+
+    // 5. Android GPU / Vulkan / RenderEffect Helpers
+    implementation("androidx.graphics:graphics-core:1.0.0")
+    implementation("androidx.graphics:graphics-path:1.0.1")
+    implementation("androidx.graphics:graphics-shapes:1.0.1")
 
     // --- Auth & Credentials ---
     implementation("androidx.credentials:credentials:1.3.0")
@@ -223,12 +232,10 @@ dependencies {
 
     // --- Media & Graphics ---
     implementation("androidx.tracing:tracing:1.2.0")
-    implementation("androidx.graphics:graphics-core:1.0.0")
     implementation("androidx.media:media:1.7.0")
     implementation("androidx.compose.material:material-icons-extended")
 
     // --- Media3 (ExoPlayer & Transformer) ---
-    val media3Version = "1.5.1"
     implementation("androidx.media3:media3-exoplayer:$media3Version")
     implementation("androidx.media3:media3-ui:$media3Version")
     implementation("androidx.media3:media3-session:$media3Version")

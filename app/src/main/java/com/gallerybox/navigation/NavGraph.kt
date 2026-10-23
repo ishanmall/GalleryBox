@@ -46,7 +46,7 @@ import kotlinx.serialization.Serializable
 import kotlin.reflect.KClass
 
 // ---------------------------------------------------------------------------
-// 🖼️ APP SCREENS & VIEWMODELS
+// APP SCREENS & VIEWMODELS
 // ---------------------------------------------------------------------------
 import com.gallerybox.about.AboutScreen
 import com.gallerybox.ui.screens.ScanLibraryScreen
@@ -63,8 +63,7 @@ import com.gallerybox.ui.screens.wallpaper.WallpaperScreen
 import com.gallerybox.viewmodel.*
 
 // ---------------------------------------------------------------------------
-// 🧠 ADAPTIVE LOGIC IMPORTS
-// These are imported from the adaptive package we just built!
+// ADAPTIVE LOGIC IMPORTS
 // ---------------------------------------------------------------------------
 import com.gallerybox.ui.screens.adaptive.AdaptiveState
 import com.gallerybox.ui.screens.adaptive.NavigationStyle
@@ -72,11 +71,7 @@ import com.gallerybox.ui.screens.adaptive.rememberAdaptiveState
 
 /**
  * =========================================================================================
- * 🗺️ THE APP ROADMAP (ROUTES)
- * =========================================================================================
- * Think of this section as the "Addresses" in a GPS system.
- * Every single screen in the app has a specific address (a "Route").
- * When a user clicks a button to go somewhere, we tell the app to travel to one of these Routes.
+ * THE APP ROADMAP (ROUTES)
  * =========================================================================================
  */
 sealed interface Route {
@@ -98,7 +93,6 @@ sealed interface Route {
     @Serializable data object HideAlbums : Route
     @Serializable data object Duplicates : Route
 
-    // Some routes carry "packages" of data with them (like a specific Video URI to play)
     @Serializable data class VideoPlayer(val uri: String, val position: Long = 0L) : Route
     @Serializable data class AlbumView(val albumId: String) : Route
     @Serializable data class Slideshow(val albumId: String? = null) : Route
@@ -107,22 +101,15 @@ sealed interface Route {
     @Serializable data class Wallpaper(val uri: String, val mediaId: Long? = null) : Route
 }
 
-/**
- * Helper tools to turn complex text (like file paths with slashes and symbols)
- * into a safe, messy string (Base64) so it doesn't break our navigation system.
- * It's like packing a fragile item in bubble wrap before mailing it.
- */
-fun String.toSafeRouteArgs() = Base64.encodeToString(this.toByteArray(), Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+fun String.toSafeRouteArgs(): String =
+    Base64.encodeToString(this.toByteArray(), Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
 
-fun String.fromSafeRouteArgs() = try {
+fun String.fromSafeRouteArgs(): String = try {
     String(Base64.decode(this, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING))
 } catch (e: Exception) {
-    this // If bubble wrap removal fails, just return the original text
+    this
 }
 
-/**
- * A blueprint for the main menu buttons (Photos, Albums, Music).
- */
 data class BottomTab(
     val route: Route,
     val routeClass: KClass<out Route>,
@@ -133,11 +120,7 @@ data class BottomTab(
 
 /**
  * =========================================================================================
- * 🛡️ THE SECURITY GATEKEEPER (GalleryNavHost)
- * =========================================================================================
- * This is the very first thing the app loads. Before showing any photos, it checks:
- * "Is AppLock enabled? Does the user need to enter a PIN code?"
- * If locked, it shows the Vault screen. If unlocked, it lets them in.
+ * THE SECURITY GATEKEEPER (GalleryNavHost)
  * =========================================================================================
  */
 @Composable
@@ -154,17 +137,14 @@ fun GalleryNavHost(
     val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
 
-    // When the app starts, silently check if the user turned on the App Lock in settings.
     LaunchedEffect(Unit) {
         isAppLockEnabled = withContext(Dispatchers.IO) { securityVM.isAppLockEnabled() }
         if (isAppLockEnabled) {
-            securityVM.lock() // Lock the doors!
+            securityVM.lock()
         }
         isInitializing = false
     }
 
-    // This watcher notices if the user leaves the app and comes back.
-    // If they come back, we check the lock status again.
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
@@ -179,26 +159,24 @@ fun GalleryNavHost(
         }
     }
 
-    // Deciding what screen to show to the user right now:
     if (isInitializing) {
-        // Still thinking... show a loading circle.
         Box(
-            Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
+            Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.background),
             contentAlignment = Alignment.Center
         ) {
             CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
         }
     } else if (isAppLockEnabled && !isUnlocked) {
-        // The doors are locked! Show the PIN/Fingerprint screen.
         VaultSecureScreen(
             isGlobalAppGuard = true,
             onBack = {},
             onUnlockGlobalSuccess = {
-                securityVM.unlockReal() // User entered correct PIN, unlock it!
+                securityVM.unlockReal()
             }
         )
     } else {
-        // They are allowed in. Show the actual Gallery App!
         GalleryAppContent(
             sharedGalleryViewModel = sharedGalleryViewModel,
             sharedMusicViewModel = sharedMusicViewModel,
@@ -209,7 +187,6 @@ fun GalleryNavHost(
     }
 }
 
-
 @Composable
 fun GalleryAppContent(
     sharedGalleryViewModel: GalleryViewModel,
@@ -218,19 +195,12 @@ fun GalleryAppContent(
     sharedRadioViewModel: RadioViewModel,
     onLockApp: () -> Unit
 ) {
-    // 1. Adaptive layout state
     val adaptiveState = rememberAdaptiveState()
-
-    // 2. Navigation controller
     val navController = rememberNavController()
     val context = LocalContext.current
 
-    // 3. Remember the last main tab
     val sharedPrefs = remember {
-        context.getSharedPreferences(
-            "app_nav_prefs",
-            Context.MODE_PRIVATE
-        )
+        context.getSharedPreferences("app_nav_prefs", Context.MODE_PRIVATE)
     }
 
     val initialStartDestination = remember {
@@ -241,32 +211,22 @@ fun GalleryAppContent(
         }
     }
 
-    // 4. Save the selected main tab
     LaunchedEffect(navController) {
         navController.addOnDestinationChangedListener { _, dest, _ ->
             when {
                 dest.hasRoute(Route.Pictures::class) -> {
-                    sharedPrefs.edit {
-                        putString("last_main_tab", "Pictures")
-                    }
+                    sharedPrefs.edit { putString("last_main_tab", "Pictures") }
                 }
-
                 dest.hasRoute(Route.Albums::class) -> {
-                    sharedPrefs.edit {
-                        putString("last_main_tab", "Albums")
-                    }
+                    sharedPrefs.edit { putString("last_main_tab", "Albums") }
                 }
-
                 dest.hasRoute(Route.Music::class) -> {
-                    sharedPrefs.edit {
-                        putString("last_main_tab", "Music")
-                    }
+                    sharedPrefs.edit { putString("last_main_tab", "Music") }
                 }
             }
         }
     }
 
-    // 5. Main navigation tabs
     val tabs = remember {
         listOf(
             BottomTab(
@@ -303,34 +263,18 @@ fun GalleryAppContent(
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = navBackStackEntry?.destination
 
-    var isFullScreenMediaOpen by remember {
-        mutableStateOf(false)
-    }
+    var isFullScreenMediaOpen by remember { mutableStateOf(false) }
+    var isMainSelectionMode by remember { mutableStateOf(false) }
 
-    // Selection state shared by PictureScreen and AlbumScreen.
-    // Those screens will update this through AppNavHost's callback.
-    var isMainSelectionMode by remember {
-        mutableStateOf(false)
-    }
-
-    // Reset selection navigation state when leaving Pictures and Albums.
     LaunchedEffect(currentDestination) {
-        val isPictures =
-            currentDestination?.hasRoute(Route.Pictures::class) == true
-
-        val isAlbums =
-            currentDestination?.hasRoute(Route.Albums::class) == true
-
+        val isPictures = currentDestination?.hasRoute(Route.Pictures::class) == true
+        val isAlbums = currentDestination?.hasRoute(Route.Albums::class) == true
         if (!isPictures && !isAlbums) {
             isMainSelectionMode = false
         }
     }
 
-    // 6. Determine whether the main navigation should be shown.
-    val showMainNavigation by remember(
-        currentDestination,
-        isFullScreenMediaOpen
-    ) {
+    val showMainNavigation by remember(currentDestination, isFullScreenMediaOpen) {
         derivedStateOf {
             if (isFullScreenMediaOpen) {
                 false
@@ -343,21 +287,15 @@ fun GalleryAppContent(
         }
     }
 
-    // 7. Shortcut to open the video player.
     val navigateToVideo = remember(navController) {
         { rawUriString: String, _: List<String> ->
-            navController.navigate(
-                Route.VideoPlayer(rawUriString.toSafeRouteArgs())
-            ) {
-                popUpTo(Route.VideoPlayer::class) {
-                    inclusive = true
-                }
+            navController.navigate(Route.VideoPlayer(rawUriString.toSafeRouteArgs())) {
+                popUpTo(Route.VideoPlayer::class) { inclusive = true }
                 launchSingleTop = true
             }
         }
     }
 
-    // 8. Adaptive layout
     if (!showMainNavigation) {
         Scaffold(
             containerColor = MaterialTheme.colorScheme.background
@@ -374,27 +312,17 @@ fun GalleryAppContent(
                 sharedMusicViewModel = sharedMusicViewModel,
                 sharedRadioViewModel = sharedRadioViewModel,
                 onLockApp = onLockApp,
-                onMainSelectionModeChanged = {
-                    isMainSelectionMode = it
-                }
+                onMainSelectionModeChanged = { isMainSelectionMode = it }
             )
         }
     } else {
         when (adaptiveState.navigationStyle) {
-
-            // PHONE / FOLDABLE COVER SCREEN
             NavigationStyle.BOTTOM_BAR -> {
                 Scaffold(
                     containerColor = MaterialTheme.colorScheme.background,
                     bottomBar = {
-                        // Hide Photos / Albums / Memories / Music tabs
-                        // while an item selection is active.
                         if (!isMainSelectionMode) {
-                            BottomNavigationBar(
-                                tabs,
-                                currentDestination,
-                                navController
-                            )
+                            BottomNavigationBar(tabs, currentDestination, navController)
                         }
                     }
                 ) { padding ->
@@ -410,33 +338,21 @@ fun GalleryAppContent(
                         sharedMusicViewModel = sharedMusicViewModel,
                         sharedRadioViewModel = sharedRadioViewModel,
                         onLockApp = onLockApp,
-                        onMainSelectionModeChanged = {
-                            isMainSelectionMode = it
-                        }
+                        onMainSelectionModeChanged = { isMainSelectionMode = it }
                     )
                 }
             }
 
-            // FOLDABLE UNFOLDED / SMALL TABLET
             NavigationStyle.NAVIGATION_RAIL -> {
                 Row(
                     modifier = Modifier
                         .fillMaxSize()
-                        .background(
-                            MaterialTheme.colorScheme.background
-                        )
+                        .background(MaterialTheme.colorScheme.background)
                 ) {
                     if (!isMainSelectionMode) {
-                        AppSideNavigationRail(
-                            tabs,
-                            currentDestination,
-                            navController
-                        )
+                        AppSideNavigationRail(tabs, currentDestination, navController)
                     }
-
-                    Box(
-                        modifier = Modifier.weight(1f)
-                    ) {
+                    Box(modifier = Modifier.weight(1f)) {
                         AppNavHost(
                             navController = navController,
                             startDest = initialStartDestination,
@@ -449,24 +365,17 @@ fun GalleryAppContent(
                             sharedMusicViewModel = sharedMusicViewModel,
                             sharedRadioViewModel = sharedRadioViewModel,
                             onLockApp = onLockApp,
-                            onMainSelectionModeChanged = {
-                                isMainSelectionMode = it
-                            }
+                            onMainSelectionModeChanged = { isMainSelectionMode = it }
                         )
                     }
                 }
             }
 
-            // LARGE TABLET / DESKTOP
             NavigationStyle.PERMANENT_DRAWER -> {
                 PermanentNavigationDrawer(
                     drawerContent = {
                         if (!isMainSelectionMode) {
-                            AppDesktopDrawer(
-                                tabs,
-                                currentDestination,
-                                navController
-                            )
+                            AppDesktopDrawer(tabs, currentDestination, navController)
                         }
                     }
                 ) {
@@ -482,9 +391,7 @@ fun GalleryAppContent(
                         sharedMusicViewModel = sharedMusicViewModel,
                         sharedRadioViewModel = sharedRadioViewModel,
                         onLockApp = onLockApp,
-                        onMainSelectionModeChanged = {
-                            isMainSelectionMode = it
-                        }
+                        onMainSelectionModeChanged = { isMainSelectionMode = it }
                     )
                 }
             }
@@ -494,10 +401,8 @@ fun GalleryAppContent(
 
 /**
  * =========================================================================================
- * 🔀 THE NAV HOST (The actual list of screens)
+ * THE NAV HOST
  * =========================================================================================
- * We extracted this into its own function so we can easily inject it into our Adaptive
- * Layouts (Bottom Bar vs Side Rail) without copying and pasting the code 3 times.
  */
 @Composable
 private fun AppNavHost(
@@ -519,7 +424,6 @@ private fun AppNavHost(
         startDestination = startDest,
         modifier = Modifier.padding(padding)
     ) {
-        // Main tabs: Photos, Albums, Memories, Music
         mainTabs(
             nav = navController,
             ctx = context,
@@ -531,7 +435,6 @@ private fun AppNavHost(
             onMainSelectionModeChanged = onMainSelectionModeChanged
         )
 
-        // Album detail and hidden folders
         albumGraphs(
             nav = navController,
             navToVid = navToVid,
@@ -540,10 +443,8 @@ private fun AppNavHost(
             trashViewModel = sharedTrashViewModel
         )
 
-        // Photo and video editing
         editorGraphs(navController)
 
-        // Utilities and other screens
         toolsAndUtilityGraphs(
             nav = navController,
             ctx = context,
@@ -556,11 +457,6 @@ private fun AppNavHost(
         )
     }
 }
-
-/**
- * Below are the extension functions that define exactly what Composable Screen
- * to load when the app arrives at a specific Route (address).
- */
 
 private fun NavGraphBuilder.mainTabs(
     nav: NavHostController,
@@ -578,43 +474,27 @@ private fun NavGraphBuilder.mainTabs(
             trashViewModel = trashViewModel,
             onViewerStateChanged = onViewerStateChanged,
             onNavigateToCamera = { safeLaunchCamera(ctx) },
-            onNavigateToTrash = { nav.navigate(Route.Trash) },
-            onNavigateToHidden = { nav.navigate(Route.Hidden) },
-            onNavigateToDuplicates = { nav.navigate(Route.Duplicates) },
-            onNavigateToSlideshow = {
-                nav.navigate(Route.Slideshow())
-            },
+            onNavigateToTrash = { nav.navigate(Route.Trash) { launchSingleTop = true } },
+            onNavigateToHidden = { nav.navigate(Route.Hidden) { launchSingleTop = true } },
+            onNavigateToDuplicates = { nav.navigate(Route.Duplicates) { launchSingleTop = true } },
+            onNavigateToSlideshow = { nav.navigate(Route.Slideshow()) { launchSingleTop = true } },
             onNavigateToWallpaper = { uri, id ->
-                nav.navigate(
-                    Route.Wallpaper(uri.toSafeRouteArgs(), id)
-                )
+                nav.navigate(Route.Wallpaper(uri.toSafeRouteArgs(), id)) { launchSingleTop = true }
             },
             onNavigateToAlbum = { raw ->
-                nav.navigate(
-                    Route.AlbumView(raw.toSafeRouteArgs())
-                )
+                nav.navigate(Route.AlbumView(raw.toSafeRouteArgs())) { launchSingleTop = true }
             },
-            onNavigateToScan = {
-                nav.navigate(Route.ScanLibrary)
-            },
+            onNavigateToScan = { nav.navigate(Route.ScanLibrary) { launchSingleTop = true } },
             onNavigateToVideoPlayer = navToVid,
             onNavigateToEditor = { uri, id ->
-                nav.navigate(
-                    Route.MediaEditor(uri.toSafeRouteArgs(), id)
-                )
+                nav.navigate(Route.MediaEditor(uri.toSafeRouteArgs(), id)) { launchSingleTop = true }
             },
             onNavigateToMoveCopy = { mode, ids, sourceAlbumId ->
                 nav.navigate(
-                    Route.MoveCopy(
-                        mode,
-                        ids,
-                        sourceAlbumId?.toSafeRouteArgs()
-                    )
-                )
+                    Route.MoveCopy(mode, ids, sourceAlbumId?.toSafeRouteArgs())
+                ) { launchSingleTop = true }
             },
-            onNavigateToAbout = {
-                nav.navigate(Route.About)
-            },
+            onNavigateToAbout = { nav.navigate(Route.About) { launchSingleTop = true } },
             onMainSelectionModeChanged = onMainSelectionModeChanged
         )
     }
@@ -628,29 +508,15 @@ private fun NavGraphBuilder.mainTabs(
             onMainSelectionModeChanged = onMainSelectionModeChanged,
             actions = AlbumActions(
                 onAlbumClick = { album ->
-                    nav.navigate(
-                        Route.AlbumView(album.id.toSafeRouteArgs())
-                    )
+                    nav.navigate(Route.AlbumView(album.id.toSafeRouteArgs())) { launchSingleTop = true }
                 },
                 onNavigateToFavorites = {
-                    nav.navigate(
-                        Route.AlbumView(
-                            "virtual_favorites".toSafeRouteArgs()
-                        )
-                    )
+                    nav.navigate(Route.AlbumView("virtual_favorites".toSafeRouteArgs())) { launchSingleTop = true }
                 },
-                onNavigateToTrash = {
-                    nav.navigate(Route.Trash)
-                },
-                onNavigateToHidden = {
-                    nav.navigate(Route.HideAlbums)
-                },
-                onNavigateToDuplicates = {
-                    nav.navigate(Route.Duplicates)
-                },
-                onNavigateToScan = {
-                    nav.navigate(Route.ScanLibrary)
-                }
+                onNavigateToTrash = { nav.navigate(Route.Trash) { launchSingleTop = true } },
+                onNavigateToHidden = { nav.navigate(Route.HideAlbums) { launchSingleTop = true } },
+                onNavigateToDuplicates = { nav.navigate(Route.Duplicates) { launchSingleTop = true } },
+                onNavigateToScan = { nav.navigate(Route.ScanLibrary) { launchSingleTop = true } }
             )
         )
     }
@@ -668,13 +534,19 @@ private fun NavGraphBuilder.mainTabs(
             trashViewModel = trashViewModel,
             onViewerStateChanged = onViewerStateChanged,
             onNavigateToEqualizer = {
-                nav.navigate(Route.Equalizer)
+                nav.navigate(Route.Equalizer) { launchSingleTop = true }
             },
             onNavigateToRadio = {
-                nav.navigate(Route.Radio)
+                nav.navigate(Route.Radio) { launchSingleTop = true }
             },
             onNavigateToDuoPlayer = {
-                nav.navigate(Route.DuoMusic)
+                nav.navigate(Route.DuoMusic) { launchSingleTop = true }
+            },
+            onNavigateToDigitalRadio = {
+                nav.navigate(Route.DigitalRadio) { launchSingleTop = true }
+            },
+            onNavigateToOnlineFinder = {
+                nav.navigate(Route.OnlineFinder) { launchSingleTop = true }
             }
         )
     }
@@ -696,13 +568,13 @@ private fun NavGraphBuilder.albumGraphs(
             onViewerStateChanged = onViewerStateChanged,
             actions = DetailActions(
                 onBack = { nav.popBackStack() },
-                onNavigateToPhotoEditor = { uri, id -> nav.navigate(Route.MediaEditor(uri.toSafeRouteArgs(), id)) },
-                onNavigateToVideoEditor = { uri, id -> nav.navigate(Route.MediaEditor(uri.toSafeRouteArgs(), id)) },
+                onNavigateToPhotoEditor = { uri, id -> nav.navigate(Route.MediaEditor(uri.toSafeRouteArgs(), id)) { launchSingleTop = true } },
+                onNavigateToVideoEditor = { uri, id -> nav.navigate(Route.MediaEditor(uri.toSafeRouteArgs(), id)) { launchSingleTop = true } },
                 onNavigateToVideoPlayer = navToVid,
-                onNavigateToMoveCopy = { m, ids, src -> nav.navigate(Route.MoveCopy(m, ids, src?.toSafeRouteArgs())) },
-                onNavigateToTrash = { nav.navigate(Route.Trash) },
-                onNavigateToHidden = { nav.navigate(Route.Hidden) },
-                onNavigateToWallpaper = { uri, id -> nav.navigate(Route.Wallpaper(uri.toSafeRouteArgs(), id)) }
+                onNavigateToMoveCopy = { m, ids, src -> nav.navigate(Route.MoveCopy(m, ids, src?.toSafeRouteArgs())) { launchSingleTop = true } },
+                onNavigateToTrash = { nav.navigate(Route.Trash) { launchSingleTop = true } },
+                onNavigateToHidden = { nav.navigate(Route.Hidden) { launchSingleTop = true } },
+                onNavigateToWallpaper = { uri, id -> nav.navigate(Route.Wallpaper(uri.toSafeRouteArgs(), id)) { launchSingleTop = true } }
             )
         )
     }
@@ -716,13 +588,13 @@ private fun NavGraphBuilder.albumGraphs(
             onViewerStateChanged = onViewerStateChanged,
             actions = DetailActions(
                 onBack = { nav.popBackStack() },
-                onNavigateToPhotoEditor = { uri, id -> nav.navigate(Route.MediaEditor(uri.toSafeRouteArgs(), id)) },
-                onNavigateToVideoEditor = { uri, id -> nav.navigate(Route.MediaEditor(uri.toSafeRouteArgs(), id)) },
+                onNavigateToPhotoEditor = { uri, id -> nav.navigate(Route.MediaEditor(uri.toSafeRouteArgs(), id)) { launchSingleTop = true } },
+                onNavigateToVideoEditor = { uri, id -> nav.navigate(Route.MediaEditor(uri.toSafeRouteArgs(), id)) { launchSingleTop = true } },
                 onNavigateToVideoPlayer = navToVid,
-                onNavigateToMoveCopy = { m, ids, src -> nav.navigate(Route.MoveCopy(m, ids, src?.toSafeRouteArgs())) },
-                onNavigateToTrash = { nav.navigate(Route.Trash) },
-                onNavigateToHidden = { nav.navigate(Route.Hidden) },
-                onNavigateToWallpaper = { uri, id -> nav.navigate(Route.Wallpaper(uri.toSafeRouteArgs(), id)) }
+                onNavigateToMoveCopy = { m, ids, src -> nav.navigate(Route.MoveCopy(m, ids, src?.toSafeRouteArgs())) { launchSingleTop = true } },
+                onNavigateToTrash = { nav.navigate(Route.Trash) { launchSingleTop = true } },
+                onNavigateToHidden = { nav.navigate(Route.Hidden) { launchSingleTop = true } },
+                onNavigateToWallpaper = { uri, id -> nav.navigate(Route.Wallpaper(uri.toSafeRouteArgs(), id)) { launchSingleTop = true } }
             )
         )
     }
@@ -738,7 +610,6 @@ private fun NavGraphBuilder.editorGraphs(nav: NavHostController) {
                 onBack = { nav.popBackStack() }
             )
         } else {
-            // Safety fallback: if no ID was passed, just go back.
             LaunchedEffect(Unit) {
                 nav.popBackStack()
             }
@@ -768,10 +639,10 @@ private fun NavGraphBuilder.toolsAndUtilityGraphs(
         val args = backStack.toRoute<Route.Wallpaper>()
         val decodedUri = args.uri.fromSafeRouteArgs()
         val rawMedia by galleryViewModel.rawMedia.collectAsState()
-        val mediaItem = galleryViewModel.getMediaItemById(args.mediaId ?: -1L) ?: rawMedia.find { m -> m.uri.toString() == decodedUri }
+        val mediaItem = galleryViewModel.getMediaItemById(args.mediaId ?: -1L)
+            ?: rawMedia.find { m -> m.uri.toString() == decodedUri }
 
         if (mediaItem != null) {
-            // Updated to pass the full MediaItem directly based on the new WallpaperScreen signature
             WallpaperScreen(
                 item = mediaItem,
                 onBack = { nav.popBackStack() }
@@ -781,6 +652,7 @@ private fun NavGraphBuilder.toolsAndUtilityGraphs(
             if (!isBusy) LaunchedEffect(Unit) { nav.popBackStack() }
         }
     }
+
     composable<Route.Trash> {
         TrashScreen(
             trashViewModel = trashViewModel,
@@ -790,7 +662,13 @@ private fun NavGraphBuilder.toolsAndUtilityGraphs(
         )
     }
 
-    composable<Route.Duplicates> { DuplicatesScreen(viewModel = galleryViewModel, trashViewModel = trashViewModel, onBack = { nav.popBackStack() }) }
+    composable<Route.Duplicates> {
+        DuplicatesScreen(
+            viewModel = galleryViewModel,
+            trashViewModel = trashViewModel,
+            onBack = { nav.popBackStack() }
+        )
+    }
 
     composable<Route.ScanLibrary> {
         ScanLibraryScreen(
@@ -827,7 +705,6 @@ private fun NavGraphBuilder.toolsAndUtilityGraphs(
         )
     }
 
-    // Notice we support "Deep Links" here. If another app asks to play a video using GalleryBox, it routes here directly!
     composable<Route.VideoPlayer>(deepLinks = listOf(navDeepLink<Route.VideoPlayer>(basePath = "gallerybox://video"))) {
         val args = it.toRoute<Route.VideoPlayer>()
         val decodedUri = args.uri.fromSafeRouteArgs()
@@ -843,9 +720,8 @@ private fun NavGraphBuilder.toolsAndUtilityGraphs(
 
 /**
  * =========================================================================================
- * 🔘 MENU COMPONENT 1: THE BOTTOM BAR (For Normal Phones)
+ * MENU COMPONENTS (Bottom Bar, Side Rail, Desktop Drawer)
  * =========================================================================================
- * Your exact custom Bottom Bar implementation with perfectly rounded corners.
  */
 @Composable
 fun BottomNavigationBar(
@@ -863,7 +739,7 @@ fun BottomNavigationBar(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .navigationBarsPadding() // Ensures background extends behind system nav bar fixing clipping white area
+                .navigationBarsPadding()
                 .padding(horizontal = 12.dp)
                 .padding(top = 16.dp, bottom = 16.dp),
             horizontalArrangement = Arrangement.SpaceEvenly,
@@ -882,7 +758,6 @@ fun BottomNavigationBar(
                         ) {
                             if (!selected) {
                                 nav.navigate(tab.route) {
-                                    // Pop up to start to prevent massive back-stacks of switching tabs
                                     popUpTo(nav.graph.findStartDestination().id) { saveState = true }
                                     launchSingleTop = true
                                     restoreState = true
@@ -904,12 +779,6 @@ fun BottomNavigationBar(
     }
 }
 
-/**
- * =========================================================================================
- * 🔘 MENU COMPONENT 2: THE SIDE RAIL (For Foldables & Small Tablets)
- * =========================================================================================
- * Uses official Material 3 Side Rail. Puts buttons vertically on the left edge.
- */
 @Composable
 fun AppSideNavigationRail(
     tabs: List<BottomTab>,
@@ -917,7 +786,7 @@ fun AppSideNavigationRail(
     nav: NavHostController
 ) {
     NavigationRail {
-        Spacer(Modifier.weight(1f)) // Push items to center
+        Spacer(Modifier.weight(1f))
         tabs.forEach { tab ->
             val selected = currentDest?.hierarchy?.any { it.hasRoute(tab.routeClass) } == true
             NavigationRailItem(
@@ -935,16 +804,10 @@ fun AppSideNavigationRail(
                 label = { Text(tab.label) }
             )
         }
-        Spacer(Modifier.weight(1f)) // Push items to center
+        Spacer(Modifier.weight(1f))
     }
 }
 
-/**
- * =========================================================================================
- * 🔘 MENU COMPONENT 3: THE DESKTOP DRAWER (For Big Tablets & Desktop Monitors)
- * =========================================================================================
- * A permanently open menu on the left side of a giant screen.
- */
 @Composable
 fun AppDesktopDrawer(
     tabs: List<BottomTab>,
@@ -981,9 +844,6 @@ fun AppDesktopDrawer(
     }
 }
 
-/**
- * Simple helper to safely open the phone's default Camera app.
- */
 fun safeLaunchCamera(context: Context) {
     try {
         context.startActivity(Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA))
