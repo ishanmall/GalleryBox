@@ -360,7 +360,9 @@ class GalleryViewModel @Inject constructor(
 
     private val _autoPlayNext = MutableStateFlow(prefs.getBoolean("autoPlayNext", true))
     val autoPlayNext = _autoPlayNext.asStateFlow()
-    private val _repeatMode = MutableStateFlow(PremiumRepeatMode.entries[prefs.getInt("autoRepeat", 0)])
+    private val _repeatMode = MutableStateFlow(
+        if (prefs.getInt("autoRepeat", 0) == PremiumRepeatMode.ONE.ordinal) PremiumRepeatMode.ONE else PremiumRepeatMode.OFF
+    )
     val repeatMode = _repeatMode.asStateFlow()
     private val _backgroundPlay = MutableStateFlow(prefs.getBoolean("backgroundPlay", false))
     val backgroundPlay = _backgroundPlay.asStateFlow()
@@ -383,19 +385,19 @@ class GalleryViewModel @Inject constructor(
                 _duration.value = sharedPlayer?.duration?.coerceAtLeast(0L) ?: 0L
             }
             if (state == Player.STATE_ENDED) {
-                if (_repeatMode.value == PremiumRepeatMode.ALL) {
-                    playNextVideo()
-                } else if (_repeatMode.value == PremiumRepeatMode.OFF && _autoPlayNext.value) {
+                // Reset saved playback position so completed videos start from 0:00 next time
+                _currentVideoUri.value?.let { finishedUri ->
+                    prefs.edit { putLong(finishedUri, 0L) }
+                }
+
+                if (_repeatMode.value == PremiumRepeatMode.ONE) {
+                    // Infinite repeat on whichever video is currently active
+                    sharedPlayer?.seekTo(0L)
+                    sharedPlayer?.playWhenReady = true
+                    sharedPlayer?.play()
+                } else if (_autoPlayNext.value) {
                     playNextVideo()
                 }
-            }
-        }
-
-        override fun onMediaItemTransition(mediaItem: Media3Item?, reason: Int) {
-            val newUri = mediaItem?.localConfiguration?.uri?.toString()
-            if (newUri != null) {
-                _currentVideoUri.value = newUri
-                _currentVideoIndex.value = _videoPlaylist.value.indexOf(newUri).coerceAtLeast(0)
             }
         }
 
@@ -543,7 +545,11 @@ class GalleryViewModel @Inject constructor(
                 .setSeekForwardIncrementMs(5000)
                 .build()
                 .apply {
-                    repeatMode = Player.REPEAT_MODE_OFF
+                    repeatMode = if (_repeatMode.value == PremiumRepeatMode.ONE) {
+                        Player.REPEAT_MODE_ONE
+                    } else {
+                        Player.REPEAT_MODE_OFF
+                    }
                     playWhenReady = true
                     setAudioAttributes(
                         AudioAttributes.Builder()
@@ -683,27 +689,32 @@ class GalleryViewModel @Inject constructor(
         var playlist = _videoPlaylist.value
 
         if (playlist.isEmpty()) {
-            playlist = _mediaIndexes.value.videos.map { it.uri.toString() }
+            val indexedVideos = _mediaIndexes.value.videos.map { it.uri.toString() }
+            val rawVideos = _rawMedia.value.filter { it.isVideo }.map { it.uri.toString() }
+            playlist = when {
+                indexedVideos.isNotEmpty() -> indexedVideos
+                rawVideos.isNotEmpty() -> rawVideos
+                else -> listOf(uri)
+            }
             _videoPlaylist.value = playlist
         }
 
-        if (playlist.isEmpty()) {
-            Log.e(TAG, "Video playlist is empty")
-            return
+        if (!playlist.contains(uri)) {
+            playlist = playlist + uri
+            _videoPlaylist.value = playlist
         }
 
-        val index = playlist.indexOf(uri)
-
-        if (index == -1) {
-            Log.e(TAG, "Video not found in playlist: $uri")
-            return
-        }
-
+        val index = playlist.indexOf(uri).coerceAtLeast(0)
         _currentVideoIndex.value = index
         _currentVideoUri.value = uri
 
-        val mediaItems = playlist.map { Media3Item.fromUri(Uri.parse(it)) }
-        val savedPosition = prefs.getLong(uri, 0L)
+        val rawSavedPosition = prefs.getLong(uri, 0L)
+        val knownDuration = _rawMedia.value.firstOrNull { it.uri.toString() == uri }?.duration ?: 0L
+        val savedPosition = if (knownDuration > 0L && rawSavedPosition >= knownDuration - 2000L) {
+            0L
+        } else {
+            rawSavedPosition
+        }
 
         player.stop()
         player.clearMediaItems()
@@ -716,7 +727,14 @@ class GalleryViewModel @Inject constructor(
             true
         )
 
-        player.setMediaItems(mediaItems, index, savedPosition)
+        // Load ONLY the current video into ExoPlayer so Repeat ONE loops only this video,
+        // and when Repeat is OFF, Player.STATE_ENDED reliably triggers playNextVideo()!
+        player.setMediaItem(Media3Item.fromUri(Uri.parse(uri)), savedPosition)
+        player.repeatMode = if (_repeatMode.value == PremiumRepeatMode.ONE) {
+            Player.REPEAT_MODE_ONE
+        } else {
+            Player.REPEAT_MODE_OFF
+        }
         player.volume = 1f
         player.playWhenReady = true
         player.prepare()
@@ -750,27 +768,39 @@ class GalleryViewModel @Inject constructor(
     }
 
     fun hasNextVideo(): Boolean {
-        return _currentVideoIndex.value + 1 < _videoPlaylist.value.size
+        val list = _videoPlaylist.value
+        var next = _currentVideoIndex.value + 1
+        while (next < list.size && isHiddenUri(list[next])) next++
+        return next < list.size
     }
 
     fun hasPreviousVideo(): Boolean {
-        return _currentVideoIndex.value > 0
+        val list = _videoPlaylist.value
+        var prev = _currentVideoIndex.value - 1
+        while (prev >= 0 && isHiddenUri(list[prev])) prev--
+        return prev >= 0
     }
 
     fun playNextVideo() {
-        var next = _currentVideoIndex.value + 1
-        while (next < _videoPlaylist.value.size && isHiddenUri(_videoPlaylist.value[next])) next++
-
-        if (next >= _videoPlaylist.value.size) {
-            if (_repeatMode.value == PremiumRepeatMode.ALL && _videoPlaylist.value.isNotEmpty()) {
-                next = 0
-                while (next < _videoPlaylist.value.size && isHiddenUri(_videoPlaylist.value[next])) next++
-                if (next >= _videoPlaylist.value.size) return
-            } else {
-                return
+        var list = _videoPlaylist.value
+        if (list.size <= 1) {
+            val fallback = _mediaIndexes.value.videos.map { it.uri.toString() }
+            if (fallback.isNotEmpty()) {
+                list = fallback
+                _videoPlaylist.value = list
+                val currentUri = _currentVideoUri.value
+                if (currentUri != null) {
+                    val idx = list.indexOf(currentUri)
+                    if (idx != -1) _currentVideoIndex.value = idx
+                }
             }
         }
-        openVideo(_videoPlaylist.value[next])
+
+        var next = _currentVideoIndex.value + 1
+        while (next < list.size && isHiddenUri(list[next])) next++
+
+        if (next >= list.size) return
+        openVideo(list[next])
     }
 
     fun playPreviousVideo() {
@@ -778,18 +808,11 @@ class GalleryViewModel @Inject constructor(
             sharedPlayer?.seekTo(0)
             return
         }
+        val list = _videoPlaylist.value
         var prev = _currentVideoIndex.value - 1
-        while (prev >= 0 && isHiddenUri(_videoPlaylist.value[prev])) prev--
-        if (prev < 0) {
-            if (_repeatMode.value == PremiumRepeatMode.ALL && _videoPlaylist.value.isNotEmpty()) {
-                prev = _videoPlaylist.value.lastIndex
-                while (prev >= 0 && isHiddenUri(_videoPlaylist.value[prev])) prev--
-                if (prev < 0) return
-            } else {
-                return
-            }
-        }
-        openVideo(_videoPlaylist.value[prev])
+        while (prev >= 0 && isHiddenUri(list[prev])) prev--
+        if (prev < 0) return
+        openVideo(list[prev])
     }
 
     private fun isHiddenUri(uriStr: String): Boolean {
@@ -849,22 +872,20 @@ class GalleryViewModel @Inject constructor(
     fun setAutoPlayNext(enabled: Boolean) {
         _autoPlayNext.value = enabled
         prefs.edit { putBoolean("autoPlayNext", enabled) }
-        if (enabled) {
-            cycleRepeatMode(PremiumRepeatMode.OFF)
-        }
     }
 
     fun cycleRepeatMode(mode: PremiumRepeatMode? = null) {
-        val newMode = mode ?: PremiumRepeatMode.entries[(_repeatMode.value.ordinal + 1) % PremiumRepeatMode.entries.size]
-        _repeatMode.value = newMode
-        prefs.edit { putInt("autoRepeat", newMode.ordinal) }
-        sharedPlayer?.repeatMode = when (newMode) {
-            PremiumRepeatMode.OFF -> Player.REPEAT_MODE_OFF
-            PremiumRepeatMode.ONE -> Player.REPEAT_MODE_ONE
-            PremiumRepeatMode.ALL -> Player.REPEAT_MODE_OFF
+        val targetMode = when (mode) {
+            PremiumRepeatMode.ONE -> PremiumRepeatMode.ONE
+            PremiumRepeatMode.OFF -> PremiumRepeatMode.OFF
+            else -> if (_repeatMode.value == PremiumRepeatMode.ONE) PremiumRepeatMode.OFF else PremiumRepeatMode.ONE
         }
-        if (newMode != PremiumRepeatMode.OFF) {
-            setAutoPlayNext(false)
+        _repeatMode.value = targetMode
+        prefs.edit { putInt("autoRepeat", targetMode.ordinal) }
+        sharedPlayer?.repeatMode = if (targetMode == PremiumRepeatMode.ONE) {
+            Player.REPEAT_MODE_ONE
+        } else {
+            Player.REPEAT_MODE_OFF
         }
     }
 
@@ -891,8 +912,12 @@ class GalleryViewModel @Inject constructor(
 
     fun savePlaybackPosition() {
         val uri = _currentVideoUri.value ?: return
-        val position = sharedPlayer?.currentPosition ?: return
-        prefs.edit { putLong(uri, position) }
+        val p = sharedPlayer ?: return
+        val position = p.currentPosition
+        val dur = p.duration
+        // Don't save position if video is already at the end
+        val safePos = if (dur > 0L && position >= dur - 2000L) 0L else position
+        prefs.edit { putLong(uri, safePos) }
     }
 
     fun restorePlaybackPosition() {
@@ -1629,11 +1654,22 @@ class GalleryViewModel @Inject constructor(
         }
 
         validMedia.sortByDescending { it.dateAdded }
+        videos.sortByDescending { it.dateAdded }
         recents.addAll(validMedia)
 
         val favorites = validMedia.filter { favSet.contains(it.id) }
         _mediaMap.value = map
         _mediaIndexes.value = MediaIndexes(validMedia, photos, videos, gifs, recents)
+
+        // If a single video was opened before the library finished loading, expand the playlist now
+        if (_videoPlaylist.value.size <= 1 && videos.isNotEmpty()) {
+            val fullVideoList = videos.map { it.uri.toString() }
+            _videoPlaylist.value = fullVideoList
+            _currentVideoUri.value?.let { activeUri ->
+                val idx = fullVideoList.indexOf(activeUri)
+                if (idx != -1) _currentVideoIndex.value = idx
+            }
+        }
 
         val sortOption = _albumSort.value
         val isCustomOrder = sortOption == AlbumSort.Custom

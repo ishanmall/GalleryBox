@@ -2,7 +2,11 @@
 // 🤫 COMPILER INSTRUCTIONS
 // =========================================================================================
 @file:Suppress("unused", "UnsafeOptInUsageError", "UnstableApiUsage", "OPT_IN_USAGE", "DEPRECATION")
-@file:androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class, androidx.compose.material3.ExperimentalMaterial3Api::class, kotlinx.coroutines.FlowPreview::class)
+@file:androidx.annotation.OptIn(
+    androidx.media3.common.util.UnstableApi::class,
+    androidx.compose.material3.ExperimentalMaterial3Api::class,
+    kotlinx.coroutines.FlowPreview::class
+)
 
 package com.gallerybox.ui.screens.videoplayer
 
@@ -19,7 +23,6 @@ import android.graphics.Bitmap
 import android.media.AudioManager
 import android.media.MediaMetadataRetriever
 import android.net.Uri
-import android.os.Build
 import android.provider.Settings
 import android.util.LruCache
 import android.util.Rational
@@ -34,7 +37,6 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -54,7 +56,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -91,7 +92,6 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.media3.common.*
-import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.gallerybox.viewmodel.GalleryViewModel
@@ -127,7 +127,7 @@ fun Context.findActivity(): Activity? {
 }
 
 enum class GestureMode { NONE, SCRUB, VOLUME, BRIGHTNESS }
-enum class PremiumResizeMode { FIT, ZOOM, FILL, STRETCH, RATIO_16_9, RATIO_4_3 }
+// Kept for ViewModel binary compatibility if GalleryViewModel still references PremiumRepeatMode
 enum class PremiumRepeatMode { OFF, ONE, ALL }
 
 class VideoFrameLoader(private val context: Context) {
@@ -161,7 +161,12 @@ class VideoFrameLoader(private val context: Context) {
 
         cache.get(cacheKey)?.let { return@withContext it }
         return@withContext try {
-            val frame = retriever?.getScaledFrameAtTime(safeTime * 1000L, MediaMetadataRetriever.OPTION_CLOSEST, width, height)
+            val frame = retriever?.getScaledFrameAtTime(
+                safeTime * 1000L,
+                MediaMetadataRetriever.OPTION_CLOSEST,
+                width,
+                height
+            )
             frame?.copy(Bitmap.Config.RGB_565, false)?.also { cache.put(cacheKey, it) }
         } catch (e: Exception) {
             null
@@ -349,6 +354,9 @@ fun VideoPlayerContent(
     val lifecycleOwner = LocalLifecycleOwner.current
     val insetsController = remember { activity?.window?.let { WindowCompat.getInsetsController(it, view) } }
 
+    // Local SharedPreferences to guarantee Auto-Play Next and Repeat Mode survive app restarts/refreshes
+    val playerPrefs = remember { context.getSharedPreferences("gallerybox_player_prefs", Context.MODE_PRIVATE) }
+
     val player = remember(viewModel) { viewModel.getPlayer() }
     val currentVideoUri by viewModel.currentVideoUri.collectAsState()
     val isPlaying by viewModel.isPlaying.collectAsState()
@@ -360,10 +368,32 @@ fun VideoPlayerContent(
 
     val videoFormat by viewModel.videoFormat.collectAsState()
     val backgroundPlay by viewModel.backgroundPlay.collectAsState()
-    val autoPlayNext by viewModel.autoPlayNext.collectAsState()
-    val repeatMode by viewModel.repeatMode.collectAsState()
+    val vmAutoPlayNext by viewModel.autoPlayNext.collectAsState()
     val sleepTimerMs by viewModel.sleepTimerMs.collectAsState()
     val audioDelayMs by viewModel.audioDelayMs.collectAsState()
+
+    // Persistent Repeat & AutoPlay states that survive app restarts and manual video changes
+    var isRepeatEnabled by remember {
+        mutableStateOf(playerPrefs.getBoolean("repeat_current_video_enabled", false))
+    }
+    var isAutoPlayNextEnabled by remember {
+        mutableStateOf(playerPrefs.getBoolean("auto_play_next_enabled", vmAutoPlayNext))
+    }
+
+    // Re-apply saved preferences to ViewModel & ExoPlayer whenever the screen starts or video changes
+    LaunchedEffect(Unit) {
+        viewModel.setAutoPlayNext(isAutoPlayNextEnabled)
+        viewModel.cycleRepeatMode(if (isRepeatEnabled) PremiumRepeatMode.ONE else PremiumRepeatMode.OFF)
+    }
+
+    // Keep ExoPlayer repeatMode locked to REPEAT_MODE_ONE on whichever video is currently active
+    // until the user manually turns Repeat OFF
+    LaunchedEffect(currentVideoUri, isRepeatEnabled) {
+        player.repeatMode = if (isRepeatEnabled) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
+    }
+
+    val latestAutoPlayNext by rememberUpdatedState(isAutoPlayNextEnabled)
+    val latestIsRepeatEnabled by rememberUpdatedState(isRepeatEnabled)
 
     val gestureState = remember { PlayerGestureState() }
     val gestureEngine = remember(player) { PlayerGestureEngine(context, activity) { duration.coerceAtLeast(1L) } }
@@ -373,7 +403,6 @@ fun VideoPlayerContent(
     val configuration = LocalConfiguration.current
     var manualRotateOverride by remember { mutableStateOf(false) }
     var originalBrightness by remember { mutableFloatStateOf(-1f) }
-
     var cachedSystemBrightness by remember { mutableFloatStateOf(-1f) }
 
     LaunchedEffect(Unit) {
@@ -404,15 +433,34 @@ fun VideoPlayerContent(
         }
     }
 
-    DisposableEffect(Unit) {
-        val sizeListener = object : Player.Listener {
+    // Direct Player Listener: handles video size, infinite current-video repeat, and reliable Auto-Play Next
+    DisposableEffect(player) {
+        val playerListener = object : Player.Listener {
             override fun onVideoSizeChanged(newSize: VideoSize) {
                 videoSize = newSize
             }
+
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                // Ensure repeat mode stays applied to the newly loaded video if user manually skipped (e.g. to video #11 or #26)
+                player.repeatMode = if (latestIsRepeatEnabled) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
+            }
+
+            override fun onPlaybackStateChanged(state: Int) {
+                if (state == Player.STATE_ENDED) {
+                    if (latestIsRepeatEnabled) {
+                        // Fallback if ViewModel overrides player.repeatMode internally
+                        player.seekTo(0L)
+                        player.playWhenReady = true
+                        player.play()
+                    } else if (latestAutoPlayNext && viewModel.hasNextVideo()) {
+                        viewModel.playNextVideo()
+                    }
+                }
+            }
         }
-        player.addListener(sizeListener)
+        player.addListener(playerListener)
         onDispose {
-            player.removeListener(sizeListener)
+            player.removeListener(playerListener)
             activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
             frameLoader.release()
             previewBitmap = null
@@ -433,8 +481,6 @@ fun VideoPlayerContent(
     }
 
     var isLongPressing by remember { mutableStateOf(false) }
-    var resizeMode by remember { mutableStateOf(PremiumResizeMode.FIT) }
-    var resizeModeToast by remember { mutableStateOf("") }
     var isMirrored by remember { mutableStateOf(false) }
 
     var showControls by remember { mutableStateOf(true) }
@@ -447,13 +493,6 @@ fun VideoPlayerContent(
     var doubleTapAlignment by remember { mutableStateOf(Alignment.Center) }
     var doubleTapJob by remember { mutableStateOf<Job?>(null) }
     var showSettingsMenu by remember { mutableStateOf(false) }
-
-    LaunchedEffect(resizeModeToast) {
-        if (resizeModeToast.isNotEmpty()) {
-            delay(1500)
-            resizeModeToast = ""
-        }
-    }
 
     DisposableEffect(activity) {
         val compActivity = activity as? ComponentActivity
@@ -515,9 +554,11 @@ fun VideoPlayerContent(
         }
     }
 
+    // Manual Next/Prev keeps Repeat ON if enabled, so the newly selected video (e.g., #11 or #26) repeats infinitely
     val onNextClick = remember(viewModel) {
         {
             viewModel.playNextVideo()
+            player.repeatMode = if (isRepeatEnabled) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
             resetControlsTimer()
         }
     }
@@ -525,6 +566,7 @@ fun VideoPlayerContent(
     val onPrevClick = remember(viewModel) {
         {
             viewModel.playPreviousVideo()
+            player.repeatMode = if (isRepeatEnabled) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
             resetControlsTimer()
         }
     }
@@ -556,22 +598,6 @@ fun VideoPlayerContent(
     val onRotateAction = remember {
         {
             manualRotateOverride = !manualRotateOverride
-            resetControlsTimer()
-        }
-    }
-
-    val onAspectRatioAction = remember {
-        {
-            val modes = PremiumResizeMode.entries.toTypedArray()
-            resizeMode = modes[(resizeMode.ordinal + 1) % modes.size]
-            resizeModeToast = when (resizeMode) {
-                PremiumResizeMode.FIT -> "Fit to screen"
-                PremiumResizeMode.ZOOM -> "Crop to fill"
-                PremiumResizeMode.FILL -> "Stretch to fill"
-                PremiumResizeMode.STRETCH -> "Stretch"
-                PremiumResizeMode.RATIO_16_9 -> "16 : 9"
-                PremiumResizeMode.RATIO_4_3 -> "4 : 3"
-            }
             resetControlsTimer()
         }
     }
@@ -653,7 +679,6 @@ fun VideoPlayerContent(
                         onSeekFinished = onSeekFinishedAction,
                         onLock = onLockAction,
                         onRotateToggle = onRotateAction,
-                        onAspectRatioToggle = onAspectRatioAction,
                         adaptiveState = adaptiveState
                     )
                 }
@@ -668,23 +693,11 @@ fun VideoPlayerContent(
                 },
                 update = { viewParams ->
                     if (viewParams.player != player) viewParams.player = player
-                    viewParams.resizeMode = when (resizeMode) {
-                        PremiumResizeMode.FIT -> AspectRatioFrameLayout.RESIZE_MODE_FIT
-                        PremiumResizeMode.ZOOM -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                        PremiumResizeMode.FILL, PremiumResizeMode.STRETCH -> AspectRatioFrameLayout.RESIZE_MODE_FILL
-                        else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
-                    }
+                    viewParams.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
                 },
                 modifier = Modifier
                     .fillMaxSize()
                     .then(if (isMirrored) Modifier.graphicsLayer { scaleX = -1f } else Modifier)
-                    .then(
-                        when (resizeMode) {
-                            PremiumResizeMode.RATIO_16_9 -> Modifier.aspectRatio(16f / 9f)
-                            PremiumResizeMode.RATIO_4_3 -> Modifier.aspectRatio(4f / 3f)
-                            else -> Modifier
-                        }
-                    )
                     .pointerInput(isLocked, configuration.orientation) {
                         if (isLocked) {
                             detectTapGestures(
@@ -840,41 +853,6 @@ fun VideoPlayerContent(
                 }
             }
 
-            // --- ASPECT RATIO HUD PILL ---
-            AnimatedVisibility(
-                visible = resizeModeToast.isNotEmpty(),
-                enter = scaleIn(initialScale = 0.9f) + fadeIn(tween(150)),
-                exit = scaleOut(targetScale = 0.9f) + fadeOut(tween(180)),
-                modifier = Modifier.align(Alignment.Center)
-            ) {
-                Surface(
-                    color = Color(0xD9101116),
-                    shape = CircleShape,
-                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.18f)),
-                    shadowElevation = 10.dp
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(horizontal = 22.dp, vertical = 12.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Outlined.AspectRatio,
-                            contentDescription = null,
-                            tint = Color.White,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(Modifier.width(10.dp))
-                        Text(
-                            text = resizeModeToast,
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 15.sp,
-                            letterSpacing = 0.4.sp
-                        )
-                    }
-                }
-            }
-
             // --- LONG-PRESS 2X SPEED BADGE ---
             AnimatedVisibility(
                 visible = isLongPressing && isPlaying,
@@ -963,7 +941,6 @@ fun VideoPlayerContent(
                         onSeekFinished = onSeekFinishedAction,
                         onLock = onLockAction,
                         onRotateToggle = onRotateAction,
-                        onAspectRatioToggle = onAspectRatioAction,
                         adaptiveState = adaptiveState
                     )
                 }
@@ -1028,8 +1005,8 @@ fun VideoPlayerContent(
                     .fillMaxSize()
                     .pointerInput(Unit) { },
                 currentSpeed = playbackSpeed,
-                autoPlayNext = autoPlayNext,
-                autoRepeat = repeatMode,
+                autoPlayNext = isAutoPlayNextEnabled,
+                repeatCurrentVideo = isRepeatEnabled,
                 backgroundPlay = backgroundPlay,
                 sleepTimerActive = sleepTimerMs != null,
                 audioDelayMs = audioDelayMs,
@@ -1038,8 +1015,17 @@ fun VideoPlayerContent(
                     resetControlsTimer()
                 },
                 onSpeedChange = { viewModel.setPlaybackSpeed(it) },
-                onToggleAutoPlay = { viewModel.setAutoPlayNext(it) },
-                onToggleAutoRepeat = { viewModel.cycleRepeatMode(it) },
+                onToggleAutoPlay = { enabled ->
+                    isAutoPlayNextEnabled = enabled
+                    playerPrefs.edit().putBoolean("auto_play_next_enabled", enabled).apply()
+                    viewModel.setAutoPlayNext(enabled)
+                },
+                onToggleRepeatCurrentVideo = { enabled ->
+                    isRepeatEnabled = enabled
+                    playerPrefs.edit().putBoolean("repeat_current_video_enabled", enabled).apply()
+                    player.repeatMode = if (enabled) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
+                    viewModel.cycleRepeatMode(if (enabled) PremiumRepeatMode.ONE else PremiumRepeatMode.OFF)
+                },
                 onToggleBackgroundPlay = { viewModel.setBackgroundPlay(it) },
                 onSetSleepTimer = { minutes ->
                     viewModel.startSleepTimer(minutes)
@@ -1226,7 +1212,6 @@ fun VideoBottomControls(
     onSeekFinished: () -> Unit,
     onLock: () -> Unit,
     onRotateToggle: () -> Unit,
-    onAspectRatioToggle: () -> Unit,
     adaptiveState: AdaptiveState
 ) {
     Box(Modifier.fillMaxWidth()) {
@@ -1341,38 +1326,28 @@ fun VideoBottomControls(
                         }
                     }
 
-                    // Right Utility Cluster: Aspect Ratio + Screen Rotate
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    // Right Utility Cluster: Screen Rotate only
+                    var rotateAngle by remember { mutableFloatStateOf(0f) }
+                    val animatedAngle by animateFloatAsState(
+                        rotateAngle,
+                        spring(dampingRatio = Spring.DampingRatioMediumBouncy),
+                        label = "rotation"
+                    )
+                    ScaleButton(
+                        onClick = {
+                            rotateAngle += 180f
+                            onRotateToggle()
+                        },
+                        modifier = Modifier.size(44.dp)
                     ) {
-                        ScaleButton(onClick = onAspectRatioToggle, modifier = Modifier.size(42.dp)) {
-                            Icon(
-                                imageVector = Icons.Outlined.AspectRatio,
-                                contentDescription = "Aspect Ratio",
-                                tint = Color.White.copy(alpha = 0.9f),
-                                modifier = Modifier.size(22.dp)
-                            )
-                        }
-
-                        var rotateAngle by remember { mutableFloatStateOf(0f) }
-                        val animatedAngle by animateFloatAsState(rotateAngle, spring(dampingRatio = Spring.DampingRatioMediumBouncy), label = "rotation")
-                        ScaleButton(
-                            onClick = {
-                                rotateAngle += 180f
-                                onRotateToggle()
-                            },
-                            modifier = Modifier.size(42.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Outlined.ScreenRotation,
-                                contentDescription = "Rotate Screen",
-                                tint = Color.White.copy(alpha = 0.9f),
-                                modifier = Modifier
-                                    .size(22.dp)
-                                    .graphicsLayer { rotationZ = animatedAngle }
-                            )
-                        }
+                        Icon(
+                            imageVector = Icons.Outlined.ScreenRotation,
+                            contentDescription = "Rotate Screen",
+                            tint = Color.White.copy(alpha = 0.9f),
+                            modifier = Modifier
+                                .size(22.dp)
+                                .graphicsLayer { rotationZ = animatedAngle }
+                        )
                     }
                 }
             }
@@ -1462,7 +1437,6 @@ private fun PlayerTimelineSection(
     val activeTimeMs = if (isSeeking) seekPosition.toLong() else currentMs
     val displayGestureText = gestureText.ifEmpty { formatTime(activeTimeMs) }
 
-    // Synchronize thumbXOffset when horizontal gesture scrubbing occurs on the video surface
     val safeTotal = maxOf(1f, durationMs.toFloat())
     val effectiveThumbX = if (thumbXOffset > 0f) {
         thumbXOffset
@@ -1707,14 +1681,14 @@ private fun FullscreenSettingsMenu(
     modifier: Modifier = Modifier,
     currentSpeed: Float,
     autoPlayNext: Boolean,
-    autoRepeat: PremiumRepeatMode,
+    repeatCurrentVideo: Boolean,
     backgroundPlay: Boolean,
     sleepTimerActive: Boolean,
     audioDelayMs: Float,
     onDismissRequest: () -> Unit,
     onSpeedChange: (Float) -> Unit,
     onToggleAutoPlay: (Boolean) -> Unit,
-    onToggleAutoRepeat: (PremiumRepeatMode) -> Unit,
+    onToggleRepeatCurrentVideo: (Boolean) -> Unit,
     onToggleBackgroundPlay: (Boolean) -> Unit,
     onSetSleepTimer: (Int) -> Unit,
     onCancelSleepTimer: () -> Unit,
@@ -1990,16 +1964,13 @@ private fun FullscreenSettingsMenu(
                                     )
                                 }
 
-                                item { SettingsSectionHeader("Display & Behavior") }
+                                item { SettingsSectionHeader("Behavior") }
                                 item {
-                                    SettingsListItem(
-                                        headline = "Repeat Mode",
-                                        supporting = autoRepeat.name,
-                                        icon = Icons.Rounded.Repeat,
-                                        onClick = {
-                                            val entries = PremiumRepeatMode.entries.toTypedArray()
-                                            onToggleAutoRepeat(entries[(autoRepeat.ordinal + 1) % entries.size])
-                                        }
+                                    SettingsSwitchItem(
+                                        headline = "Repeat Video",
+                                        icon = Icons.Rounded.RepeatOne,
+                                        checked = repeatCurrentVideo,
+                                        onCheckedChange = onToggleRepeatCurrentVideo
                                     )
                                 }
                                 item {
