@@ -127,7 +127,6 @@ fun Context.findActivity(): Activity? {
 }
 
 enum class GestureMode { NONE, SCRUB, VOLUME, BRIGHTNESS }
-// Kept for ViewModel binary compatibility if GalleryViewModel still references PremiumRepeatMode
 enum class PremiumRepeatMode { OFF, ONE, ALL }
 
 class VideoFrameLoader(private val context: Context) {
@@ -354,10 +353,9 @@ fun VideoPlayerContent(
     val lifecycleOwner = LocalLifecycleOwner.current
     val insetsController = remember { activity?.window?.let { WindowCompat.getInsetsController(it, view) } }
 
-    // Local SharedPreferences to guarantee Auto-Play Next and Repeat Mode survive app restarts/refreshes
-    val playerPrefs = remember { context.getSharedPreferences("gallerybox_player_prefs", Context.MODE_PRIVATE) }
-
     val player = remember(viewModel) { viewModel.getPlayer() }
+    val videoPlaylist by viewModel.videoPlaylist.collectAsState()
+    val currentVideoIndex by viewModel.currentVideoIndex.collectAsState()
     val currentVideoUri by viewModel.currentVideoUri.collectAsState()
     val isPlaying by viewModel.isPlaying.collectAsState()
     val playbackState by viewModel.playbackState.collectAsState()
@@ -368,32 +366,20 @@ fun VideoPlayerContent(
 
     val videoFormat by viewModel.videoFormat.collectAsState()
     val backgroundPlay by viewModel.backgroundPlay.collectAsState()
-    val vmAutoPlayNext by viewModel.autoPlayNext.collectAsState()
+    val autoPlayNext by viewModel.autoPlayNext.collectAsState()
+    val repeatMode by viewModel.repeatMode.collectAsState()
     val sleepTimerMs by viewModel.sleepTimerMs.collectAsState()
     val audioDelayMs by viewModel.audioDelayMs.collectAsState()
 
-    // Persistent Repeat & AutoPlay states that survive app restarts and manual video changes
-    var isRepeatEnabled by remember {
-        mutableStateOf(playerPrefs.getBoolean("repeat_current_video_enabled", false))
-    }
-    var isAutoPlayNextEnabled by remember {
-        mutableStateOf(playerPrefs.getBoolean("auto_play_next_enabled", vmAutoPlayNext))
-    }
+    val isRepeatEnabled = repeatMode == PremiumRepeatMode.ONE
 
-    // Re-apply saved preferences to ViewModel & ExoPlayer whenever the screen starts or video changes
-    LaunchedEffect(Unit) {
-        viewModel.setAutoPlayNext(isAutoPlayNextEnabled)
-        viewModel.cycleRepeatMode(if (isRepeatEnabled) PremiumRepeatMode.ONE else PremiumRepeatMode.OFF)
+    // Reactive next/prev availability based on current playlist state
+    val hasNext = remember(videoPlaylist, currentVideoIndex) {
+        currentVideoIndex + 1 < videoPlaylist.size
     }
-
-    // Keep ExoPlayer repeatMode locked to REPEAT_MODE_ONE on whichever video is currently active
-    // until the user manually turns Repeat OFF
-    LaunchedEffect(currentVideoUri, isRepeatEnabled) {
-        player.repeatMode = if (isRepeatEnabled) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
+    val hasPrev = remember(videoPlaylist, currentVideoIndex, currentPosition) {
+        currentVideoIndex > 0 || currentPosition > 3000L
     }
-
-    val latestAutoPlayNext by rememberUpdatedState(isAutoPlayNextEnabled)
-    val latestIsRepeatEnabled by rememberUpdatedState(isRepeatEnabled)
 
     val gestureState = remember { PlayerGestureState() }
     val gestureEngine = remember(player) { PlayerGestureEngine(context, activity) { duration.coerceAtLeast(1L) } }
@@ -433,34 +419,15 @@ fun VideoPlayerContent(
         }
     }
 
-    // Direct Player Listener: handles video size, infinite current-video repeat, and reliable Auto-Play Next
     DisposableEffect(player) {
-        val playerListener = object : Player.Listener {
+        val sizeListener = object : Player.Listener {
             override fun onVideoSizeChanged(newSize: VideoSize) {
                 videoSize = newSize
             }
-
-            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-                // Ensure repeat mode stays applied to the newly loaded video if user manually skipped (e.g. to video #11 or #26)
-                player.repeatMode = if (latestIsRepeatEnabled) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
-            }
-
-            override fun onPlaybackStateChanged(state: Int) {
-                if (state == Player.STATE_ENDED) {
-                    if (latestIsRepeatEnabled) {
-                        // Fallback if ViewModel overrides player.repeatMode internally
-                        player.seekTo(0L)
-                        player.playWhenReady = true
-                        player.play()
-                    } else if (latestAutoPlayNext && viewModel.hasNextVideo()) {
-                        viewModel.playNextVideo()
-                    }
-                }
-            }
         }
-        player.addListener(playerListener)
+        player.addListener(sizeListener)
         onDispose {
-            player.removeListener(playerListener)
+            player.removeListener(sizeListener)
             activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
             frameLoader.release()
             previewBitmap = null
@@ -554,11 +521,9 @@ fun VideoPlayerContent(
         }
     }
 
-    // Manual Next/Prev keeps Repeat ON if enabled, so the newly selected video (e.g., #11 or #26) repeats infinitely
     val onNextClick = remember(viewModel) {
         {
             viewModel.playNextVideo()
-            player.repeatMode = if (isRepeatEnabled) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
             resetControlsTimer()
         }
     }
@@ -566,7 +531,6 @@ fun VideoPlayerContent(
     val onPrevClick = remember(viewModel) {
         {
             viewModel.playPreviousVideo()
-            player.repeatMode = if (isRepeatEnabled) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
             resetControlsTimer()
         }
     }
@@ -669,8 +633,8 @@ fun VideoPlayerContent(
                         previewBitmap = previewBitmap,
                         seekPosition = gestureState.seekPosition,
                         gestureText = gestureState.gestureText,
-                        hasNext = viewModel.hasNextVideo(),
-                        hasPrev = viewModel.hasPreviousVideo() || currentPosition > 3000L,
+                        hasNext = hasNext,
+                        hasPrev = hasPrev,
                         isLandscape = false,
                         onTogglePlay = onTogglePlay,
                         onNext = onNextClick,
@@ -931,8 +895,8 @@ fun VideoPlayerContent(
                         previewBitmap = previewBitmap,
                         seekPosition = gestureState.seekPosition,
                         gestureText = gestureState.gestureText,
-                        hasNext = viewModel.hasNextVideo(),
-                        hasPrev = viewModel.hasPreviousVideo() || currentPosition > 3000L,
+                        hasNext = hasNext,
+                        hasPrev = hasPrev,
                         isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE,
                         onTogglePlay = onTogglePlay,
                         onNext = onNextClick,
@@ -1005,7 +969,7 @@ fun VideoPlayerContent(
                     .fillMaxSize()
                     .pointerInput(Unit) { },
                 currentSpeed = playbackSpeed,
-                autoPlayNext = isAutoPlayNextEnabled,
+                autoPlayNext = autoPlayNext,
                 repeatCurrentVideo = isRepeatEnabled,
                 backgroundPlay = backgroundPlay,
                 sleepTimerActive = sleepTimerMs != null,
@@ -1016,14 +980,9 @@ fun VideoPlayerContent(
                 },
                 onSpeedChange = { viewModel.setPlaybackSpeed(it) },
                 onToggleAutoPlay = { enabled ->
-                    isAutoPlayNextEnabled = enabled
-                    playerPrefs.edit().putBoolean("auto_play_next_enabled", enabled).apply()
                     viewModel.setAutoPlayNext(enabled)
                 },
                 onToggleRepeatCurrentVideo = { enabled ->
-                    isRepeatEnabled = enabled
-                    playerPrefs.edit().putBoolean("repeat_current_video_enabled", enabled).apply()
-                    player.repeatMode = if (enabled) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
                     viewModel.cycleRepeatMode(if (enabled) PremiumRepeatMode.ONE else PremiumRepeatMode.OFF)
                 },
                 onToggleBackgroundPlay = { viewModel.setBackgroundPlay(it) },
@@ -1239,7 +1198,6 @@ fun VideoBottomControls(
                 .navigationBarsPadding()
                 .padding(start = 18.dp, end = 18.dp, bottom = 14.dp, top = 8.dp)
         ) {
-            // --- TIMELINE & FLOATING SCRUB PREVIEW ---
             PlayerTimelineSection(
                 currentMs = currentMs,
                 bufferedMs = bufferedMs,
@@ -1254,7 +1212,6 @@ fun VideoBottomControls(
 
             Spacer(Modifier.height(10.dp))
 
-            // --- SAMSUNG ONE UI GLASSMORPHIC CONTROL DECK ---
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(28.dp),
@@ -1268,7 +1225,6 @@ fun VideoBottomControls(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Left Utility Cluster: Screen Lock
                     ScaleButton(onClick = onLock, modifier = Modifier.size(44.dp)) {
                         Icon(
                             imageVector = Icons.Outlined.Lock,
@@ -1278,7 +1234,6 @@ fun VideoBottomControls(
                         )
                     }
 
-                    // Center Playback Cluster: Previous | Play/Pause | Next
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(18.dp)
@@ -1326,7 +1281,6 @@ fun VideoBottomControls(
                         }
                     }
 
-                    // Right Utility Cluster: Screen Rotate only
                     var rotateAngle by remember { mutableFloatStateOf(0f) }
                     val animatedAngle by animateFloatAsState(
                         rotateAngle,
@@ -1454,7 +1408,6 @@ private fun PlayerTimelineSection(
                 .fillMaxWidth()
                 .padding(bottom = 2.dp)
         ) {
-            // --- FLOATING FRAME PREVIEW TOOLTIP ---
             androidx.compose.animation.AnimatedVisibility(
                 visible = isSeeking,
                 enter = fadeIn(tween(120)) + scaleIn(initialScale = 0.88f),
@@ -1632,28 +1585,24 @@ fun SamsungSeekBar(
         val cW = (current / safeTotal).coerceIn(0f, 1f) * width
         val thumbR = thumbRadiusDp.toPx()
 
-        // Unplayed Background Track
         drawRoundRect(
             color = Color.White.copy(alpha = 0.24f),
             topLeft = Offset(0f, y - h / 2f),
             size = Size(width, h),
             cornerRadius = CornerRadius(h / 2f)
         )
-        // Buffered Track
         drawRoundRect(
             color = Color.White.copy(alpha = 0.48f),
             topLeft = Offset(0f, y - h / 2f),
             size = Size(bW, h),
             cornerRadius = CornerRadius(h / 2f)
         )
-        // Active Played Track
         drawRoundRect(
             color = Color.White,
             topLeft = Offset(0f, y - h / 2f),
             size = Size(cW, h),
             cornerRadius = CornerRadius(h / 2f)
         )
-        // Outer Thumb Halo when scrubbing
         if (isDraggingBar) {
             drawCircle(
                 color = Color.White.copy(alpha = 0.28f),
@@ -1661,7 +1610,6 @@ fun SamsungSeekBar(
                 center = Offset(cW, y)
             )
         }
-        // Solid Scrubber Thumb
         drawCircle(
             color = Color.White,
             radius = thumbR,
@@ -2064,7 +2012,7 @@ fun SettingsListItem(
                 ) {
                     Text(
                         text = supporting,
-                        color = MaterialTheme.colorScheme.primary,
+                        color = Color.White,
                         fontWeight = FontWeight.Bold,
                         fontSize = 12.sp,
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
