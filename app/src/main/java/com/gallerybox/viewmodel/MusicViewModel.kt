@@ -73,16 +73,16 @@ data class PlayerState(
  * For example, "ROCK" bumps up the high and low frequencies, but lowers the middle.
  */
 enum class Preset(val levels: List<Float>) {
-    NORMAL(List(5){0.5f}),
-    CLASSICAL(listOf(0.6f,0.6f,0.6f,0.6f,0.6f)),
-    DANCE(listOf(0.4f,0.5f,0.6f,0.7f,0.8f)),
-    FLAT(List(5){0.5f}),
-    FOLK(listOf(0.5f,0.5f,0.5f,0.6f,0.6f)),
-    HEAVY_METAL(listOf(0.7f,0.7f,0.7f,0.5f,0.5f)),
-    HIP_HOP(listOf(0.7f,0.7f,0.6f,0.6f,0.5f)),
-    JAZZ(listOf(0.5f,0.5f,0.6f,0.6f,0.6f)),
-    POP(listOf(0.5f,0.6f,0.7f,0.8f,0.7f)),
-    ROCK(listOf(0.7f,0.7f,0.6f,0.5f,0.4f))
+    NORMAL(List(5) { 0.5f }),
+    CLASSICAL(listOf(0.6f, 0.6f, 0.6f, 0.6f, 0.6f)),
+    DANCE(listOf(0.4f, 0.5f, 0.6f, 0.7f, 0.8f)),
+    FLAT(List(5) { 0.5f }),
+    FOLK(listOf(0.5f, 0.5f, 0.5f, 0.6f, 0.6f)),
+    HEAVY_METAL(listOf(0.7f, 0.7f, 0.7f, 0.5f, 0.5f)),
+    HIP_HOP(listOf(0.7f, 0.7f, 0.6f, 0.6f, 0.5f)),
+    JAZZ(listOf(0.5f, 0.5f, 0.6f, 0.6f, 0.6f)),
+    POP(listOf(0.5f, 0.6f, 0.7f, 0.8f, 0.7f)),
+    ROCK(listOf(0.7f, 0.7f, 0.6f, 0.5f, 0.4f))
 }
 
 // Options for sorting the music library
@@ -114,19 +114,21 @@ object MediaStoreMapper {
 
         // Go row by row through the spreadsheet and build our songs
         while (cursor.moveToNext()) {
-            list.add(AudioTrack(
-                id = cursor.getLong(idC),
-                uri = ContentUris.withAppendedId(uri, cursor.getLong(idC)).toString(),
-                title = cursor.getString(titleC) ?: "Unknown",
-                artist = cursor.getString(artistC) ?: "Unknown",
-                album = cursor.getString(albumC) ?: "Unknown",
-                albumId = cursor.getLong(albumIdC),
-                duration = cursor.getLong(durC),
-                path = cursor.getString(pathC) ?: "",
-                year = if (yearC != -1) cursor.getInt(yearC) else 0,
-                dateAdded = cursor.getLong(dateC),
-                composer = if (composerC != -1) cursor.getString(composerC) ?: "Unknown" else "Unknown"
-            ))
+            list.add(
+                AudioTrack(
+                    id = cursor.getLong(idC),
+                    uri = ContentUris.withAppendedId(uri, cursor.getLong(idC)).toString(),
+                    title = cursor.getString(titleC) ?: "Unknown",
+                    artist = cursor.getString(artistC) ?: "Unknown",
+                    album = cursor.getString(albumC) ?: "Unknown",
+                    albumId = cursor.getLong(albumIdC),
+                    duration = cursor.getLong(durC),
+                    path = cursor.getString(pathC) ?: "",
+                    year = if (yearC != -1) cursor.getInt(yearC) else 0,
+                    dateAdded = cursor.getLong(dateC),
+                    composer = if (composerC != -1) cursor.getString(composerC) ?: "Unknown" else "Unknown"
+                )
+            )
         }
         return list
     }
@@ -149,7 +151,18 @@ class MusicRepository @Inject constructor(
     suspend fun getLocalQueue(sortOption: SortOption = SortOption.DATE_ADDED): List<AudioTrack> = withContext(Dispatchers.IO) {
         val uri = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI // The Android "folder" where all music is tracked
         val pathColumn = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) MediaStore.Audio.Media.RELATIVE_PATH else @Suppress("DEPRECATION") MediaStore.Audio.Media.DATA
-        val projection = arrayOf(MediaStore.Audio.Media._ID, MediaStore.Audio.Media.TITLE, MediaStore.Audio.Media.ARTIST, MediaStore.Audio.Media.ALBUM_ID, MediaStore.Audio.Media.ALBUM, MediaStore.Audio.Media.DURATION, pathColumn, MediaStore.Audio.Media.DATE_ADDED, MediaStore.Audio.Media.COMPOSER, MediaStore.Audio.Media.YEAR)
+        val projection = arrayOf(
+            MediaStore.Audio.Media._ID,
+            MediaStore.Audio.Media.TITLE,
+            MediaStore.Audio.Media.ARTIST,
+            MediaStore.Audio.Media.ALBUM_ID,
+            MediaStore.Audio.Media.ALBUM,
+            MediaStore.Audio.Media.DURATION,
+            pathColumn,
+            MediaStore.Audio.Media.DATE_ADDED,
+            MediaStore.Audio.Media.COMPOSER,
+            MediaStore.Audio.Media.YEAR
+        )
 
         // Figure out how the user wants the list sorted
         val sortOrder = when (sortOption) {
@@ -190,7 +203,18 @@ class MusicRepository @Inject constructor(
         if (ids.isEmpty()) return@withContext emptyList()
         val uri = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
         val pathColumn = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) MediaStore.Audio.Media.RELATIVE_PATH else @Suppress("DEPRECATION") MediaStore.Audio.Media.DATA
-        val projection = arrayOf(MediaStore.Audio.Media._ID, MediaStore.Audio.Media.TITLE, MediaStore.Audio.Media.ARTIST, MediaStore.Audio.Media.ALBUM_ID, MediaStore.Audio.Media.ALBUM, MediaStore.Audio.Media.DURATION, pathColumn, MediaStore.Audio.Media.DATE_ADDED, MediaStore.Audio.Media.COMPOSER, MediaStore.Audio.Media.YEAR)
+        val projection = arrayOf(
+            MediaStore.Audio.Media._ID,
+            MediaStore.Audio.Media.TITLE,
+            MediaStore.Audio.Media.ARTIST,
+            MediaStore.Audio.Media.ALBUM_ID,
+            MediaStore.Audio.Media.ALBUM,
+            MediaStore.Audio.Media.DURATION,
+            pathColumn,
+            MediaStore.Audio.Media.DATE_ADDED,
+            MediaStore.Audio.Media.COMPOSER,
+            MediaStore.Audio.Media.YEAR
+        )
 
         val selection = "${MediaStore.Audio.Media._ID} IN (${ids.joinToString(",")}) AND ${MediaStore.Audio.Media.SIZE} > 0"
         return@withContext try {
@@ -263,7 +287,18 @@ class AudioPagingSource(private val resolver: ContentResolver, private val query
             val size = params.loadSize // How many to grab
             val uri = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
             val pathCol = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) MediaStore.Audio.Media.RELATIVE_PATH else @Suppress("DEPRECATION") MediaStore.Audio.Media.DATA
-            val proj = arrayOf(MediaStore.Audio.Media._ID, MediaStore.Audio.Media.TITLE, MediaStore.Audio.Media.ARTIST, MediaStore.Audio.Media.ALBUM_ID, MediaStore.Audio.Media.ALBUM, MediaStore.Audio.Media.DURATION, pathCol, MediaStore.Audio.Media.DATE_ADDED, MediaStore.Audio.Media.COMPOSER, MediaStore.Audio.Media.YEAR)
+            val proj = arrayOf(
+                MediaStore.Audio.Media._ID,
+                MediaStore.Audio.Media.TITLE,
+                MediaStore.Audio.Media.ARTIST,
+                MediaStore.Audio.Media.ALBUM_ID,
+                MediaStore.Audio.Media.ALBUM,
+                MediaStore.Audio.Media.DURATION,
+                pathCol,
+                MediaStore.Audio.Media.DATE_ADDED,
+                MediaStore.Audio.Media.COMPOSER,
+                MediaStore.Audio.Media.YEAR
+            )
             val baseSel = "${MediaStore.Audio.Media.IS_MUSIC} != 0 AND ${MediaStore.Audio.Media.SIZE} > 0"
 
             // If the user typed in a search bar, add a filter for the title or artist name.
@@ -297,7 +332,7 @@ class AudioPagingSource(private val resolver: ContentResolver, private val query
             }
 
             // Return the tray of songs to the screen, and give it the numbers for the Next Page and Previous Page.
-            LoadResult.Page(trackList, if (pos == 0) null else pos - size, if (trackList.size < size) null else pos + size)
+            LoadResult.Page(trackList, if (pos == 0) null else (pos - size).coerceAtLeast(0), if (trackList.size < size) null else pos + size)
         } catch (e: Exception) {
             LoadResult.Error(e) // Dropped the tray.
         }
@@ -361,6 +396,7 @@ class MusicViewModel @Inject constructor(
 
     private var observeJob: Job? = null
     private var eqSaveJob: Job? = null
+    private var lastAutoAdvancedTrackId: Long? = null
 
     // --- SCOREBOARDS (StateFlows) ---
     // A StateFlow is like a sports scoreboard. It always shows the current score (state).
@@ -410,10 +446,10 @@ class MusicViewModel @Inject constructor(
     val favoriteIds = _favoriteIds.asStateFlow()
 
     // The Queues (Playlists)
-    private val _originalQueue = MutableStateFlow<List<AudioTrack>>(emptyList()) // The un-shuffled list
-    private val _queue = MutableStateFlow<List<AudioTrack>>(emptyList()) // The current playing list (might be shuffled)
+    private val _originalQueue = MutableStateFlow<List<AudioTrack>>(emptyList()) // The un-shuffled list of the active playlist
+    private val _queue = MutableStateFlow<List<AudioTrack>>(emptyList()) // The current playing playlist (might be shuffled)
     val currentQueue = _queue.asStateFlow()
-    private val _currentQueueIndex = MutableStateFlow(0) // Which song in the queue we are on right now
+    private val _currentQueueIndex = MutableStateFlow(0) // Which song in the active playlist we are on right now
 
     // PLAYER 1 (The main record player)
     private val _currentTrack1 = MutableStateFlow<AudioTrack?>(null)
@@ -515,7 +551,13 @@ class MusicViewModel @Inject constructor(
             _isLoading.value = true
             _error.value = null
             try {
-                _allAudioTracks.value = repository.getLocalQueue(_currentSortOption.value)
+                val loaded = repository.getLocalQueue(_currentSortOption.value)
+                _allAudioTracks.value = loaded
+                // If no active playlist has been locked yet, initialize it with the library
+                if (_queue.value.isEmpty() && loaded.isNotEmpty()) {
+                    _originalQueue.value = loaded
+                    _queue.value = loaded
+                }
             } catch (e: Exception) {
                 _error.value = e.localizedMessage ?: "Failed to load music library"
             } finally {
@@ -532,41 +574,100 @@ class MusicViewModel @Inject constructor(
     }
 
     /**
-     * Connects our Manager (ViewModel) scoreboards to the actual Audio Engine.
+     * Connects our Manager (ViewModel) scoreboards to the actual Audio Engine,
+     * and handles automatic playlist progression when a song finishes.
      */
     private fun observePlayerManager() {
         observeJob?.cancel() // Stop any previous watchers
         observeJob = viewModelScope.launch {
             // Keep our scoreboards updated when the Engine switches songs or pauses
-            launch { playerManager.currentTrack.collect { _currentTrack1.value = it } }
+            launch {
+                playerManager.currentTrack.collect { track ->
+                    _currentTrack1.value = track
+                    if (track != null) {
+                        val idx = _queue.value.indexOfFirst { it.id == track.id }
+                        if (idx != -1) _currentQueueIndex.value = idx
+                        if (lastAutoAdvancedTrackId != track.id) {
+                            lastAutoAdvancedTrackId = null
+                        }
+                    }
+                }
+            }
             launch { playerManager.currentTrack2.collect { _currentTrack2.value = it } }
             launch { playerManager.isPlaying.collect { _isPlaying1.value = it } }
             launch { playerManager.isPlaying2.collect { _isPlaying2.value = it } }
 
-            // A ticking clock loop to keep the song's progress bar moving
+            // A ticking clock loop to keep the song's progress bar moving and trigger autoplay at track end
             launch {
                 while (isActive) {
                     val p1Playing = _isPlaying1.value
                     val p2Playing = _isPlaying2.value
+                    val track1 = _currentTrack1.value
 
-                    // Only poll the timestamp rapidly if music is actively playing.
+                    val pos1 = playerManager.player1Position
+                    val dur1 = playerManager.player1Duration.takeIf { it > 0 && it != C.TIME_UNSET }
+                        ?: track1?.duration
+                        ?: 0L
+
                     if (p1Playing || p2Playing) {
-                        _currentPosition1.value = playerManager.player1Position
+                        _currentPosition1.value = pos1
                         _currentPosition2.value = playerManager.player2Position
 
-                        val d1 = playerManager.player1Duration
-                        if (d1 > 0 && d1 != C.TIME_UNSET) _duration1.value = d1
+                        if (dur1 > 0) _duration1.value = dur1
 
                         val d2 = playerManager.player2Duration
                         if (d2 > 0 && d2 != C.TIME_UNSET) _duration2.value = d2
+                    }
 
-                        delay(250) // Tick 4 times a second
+                    // Reset auto-advance guard when the song is near the beginning/middle
+                    if (track1 != null && dur1 > 1500L && pos1 < dur1 - 1500L) {
+                        if (lastAutoAdvancedTrackId == track1.id) {
+                            lastAutoAdvancedTrackId = null
+                        }
+                    }
+
+                    // Autoplay next song from the SAME active playlist when current song reaches the end
+                    if (!isDuoModeActive && track1 != null && dur1 > 1500L && pos1 >= dur1 - 350L) {
+                        if (lastAutoAdvancedTrackId != track1.id) {
+                            lastAutoAdvancedTrackId = track1.id
+                            autoAdvanceInSamePlaylist(track1)
+                        }
+                    }
+
+                    if (p1Playing || p2Playing) {
+                        delay(250) // Tick 4 times a second while playing
                     } else {
-                        delay(1000) // Sleep/Tick slower to save CPU battery when paused
+                        delay(600) // Sleep/Tick slower to save CPU battery when paused
                     }
                 }
             }
         }
+    }
+
+    /**
+     * Automatically plays the next track in the locked `_queue` (active playlist) when a song finishes.
+     */
+    private fun autoAdvanceInSamePlaylist(finishedTrack: AudioTrack) {
+        if (repeatMode == Player.REPEAT_MODE_ONE) {
+            playTrackFromPlaylist(finishedTrack, _queue.value)
+            return
+        }
+
+        val activeList = _queue.value.ifEmpty { _allAudioTracks.value }
+        if (activeList.isEmpty()) return
+
+        val currentIdx = activeList.indexOfFirst { it.id == finishedTrack.id }
+            .takeIf { it != -1 } ?: _currentQueueIndex.value.coerceIn(0, activeList.lastIndex)
+
+        val isAtEnd = currentIdx >= activeList.lastIndex
+        if (isAtEnd && repeatMode == Player.REPEAT_MODE_OFF && activeList.size == 1) {
+            return
+        }
+
+        val nextIdx = (currentIdx + 1) % activeList.size
+        val nextTrack = activeList[nextIdx]
+        _currentQueueIndex.value = nextIdx
+        playTrackFromPlaylist(nextTrack, activeList)
     }
 
     // Tells Android we want to be notified if headphones are plugged in or Bluetooth is connected.
@@ -624,6 +725,7 @@ class MusicViewModel @Inject constructor(
                 currentList.add(insertIndex++, track)
             }
         }
+        _originalQueue.value = currentList
         _queue.value = currentList
         playerManager.setPlaylist(currentList, _currentQueueIndex.value.coerceAtLeast(0)) // Update the Audio Engine's playlist
         clearSelection()
@@ -642,6 +744,7 @@ class MusicViewModel @Inject constructor(
                 currentList.add(track)
             }
         }
+        _originalQueue.value = currentList
         _queue.value = currentList
         playerManager.setPlaylist(currentList, _currentQueueIndex.value)
         clearSelection()
@@ -657,6 +760,38 @@ class MusicViewModel @Inject constructor(
 
     // --- PLAYBACK CONTROL FUNCTIONS ---
 
+    /**
+     * Plays a song while locking the active playlist to `playlist` so autoplay and Next/Prev
+     * stay strictly inside that playlist.
+     */
+    fun playTrackFromPlaylist(track: AudioTrack, playlist: List<AudioTrack> = emptyList()) {
+        val resolvedPlaylist = playlist.ifEmpty { _queue.value }.ifEmpty { _allAudioTracks.value }
+        if (resolvedPlaylist.isNotEmpty()) {
+            _originalQueue.value = resolvedPlaylist
+            val q = if (isShuffleEnabled) {
+                listOf(track) + (resolvedPlaylist - track).shuffled()
+            } else {
+                resolvedPlaylist
+            }
+            _queue.value = q
+            val idx = q.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
+            _currentQueueIndex.value = idx
+        } else {
+            _originalQueue.value = listOf(track)
+            _queue.value = listOf(track)
+            _currentQueueIndex.value = 0
+        }
+
+        lastAutoAdvancedTrackId = null
+        setDuoMode(false)
+        updateStats(track.id)
+        _currentTrack1.value = track
+        _currentPosition1.value = 0L
+        _duration1.value = track.duration
+        playerManager.playTrack(track, false)
+        updateVolume(1f, false)
+    }
+
     // Plays a specific single song immediately.
     fun playTrack(track: AudioTrack, secondary: Boolean = false) {
         if (!secondary) {
@@ -665,22 +800,29 @@ class MusicViewModel @Inject constructor(
 
             _currentPosition1.value = 0L // Reset progress bar to 0:00
             _duration1.value = track.duration
+            lastAutoAdvancedTrackId = null
 
             viewModelScope.launch {
-                val full = if (_allAudioTracks.value.isNotEmpty()) _allAudioTracks.value else {
+                // Keep the currently locked playlist if track belongs to it; otherwise fall back to full library
+                val currentActive = _originalQueue.value
+                val baseList = if (currentActive.any { it.id == track.id }) {
+                    currentActive
+                } else if (_allAudioTracks.value.isNotEmpty()) {
+                    _allAudioTracks.value
+                } else {
                     val loaded = repository.getLocalQueue(_currentSortOption.value)
                     _allAudioTracks.value = loaded
                     loaded
                 }
 
-                _originalQueue.value = full
+                _originalQueue.value = baseList
 
                 // Organize the playlist. Put the clicked song first.
                 val q = if (isShuffleEnabled) {
-                    listOf(track) + (full - track).shuffled()
+                    listOf(track) + (baseList - track).shuffled()
                 } else {
-                    val idx = full.indexOfFirst { it.id == track.id }
-                    if (idx != -1) full.drop(idx) + full.take(idx) else listOf(track)
+                    val idx = baseList.indexOfFirst { it.id == track.id }
+                    if (idx != -1) baseList.drop(idx) + baseList.take(idx) else listOf(track)
                 }
 
                 _queue.value = q
@@ -700,6 +842,7 @@ class MusicViewModel @Inject constructor(
         if (currentList.none { it.id == track.id }) {
             val insertIndex = if (_currentQueueIndex.value + 1 <= currentList.size) _currentQueueIndex.value + 1 else currentList.size
             currentList.add(insertIndex, track)
+            _originalQueue.value = currentList
             _queue.value = currentList
             playerManager.setPlaylist(currentList, _currentQueueIndex.value.coerceAtLeast(0))
         }
@@ -709,6 +852,7 @@ class MusicViewModel @Inject constructor(
         val currentList = _queue.value.toMutableList()
         if (currentList.none { it.id == track.id }) {
             currentList.add(track)
+            _originalQueue.value = currentList
             _queue.value = currentList
             playerManager.setPlaylist(currentList, _currentQueueIndex.value)
         }
@@ -719,6 +863,7 @@ class MusicViewModel @Inject constructor(
         val indexToRemove = currentList.indexOfFirst { it.id == track.id }
         if (indexToRemove != -1) {
             currentList.removeAt(indexToRemove)
+            _originalQueue.value = currentList
             _queue.value = currentList
             // If we deleted a song that was BEFORE our current song, we need to shift our index pointer back by 1.
             if (indexToRemove < _currentQueueIndex.value) _currentQueueIndex.value -= 1
@@ -732,6 +877,7 @@ class MusicViewModel @Inject constructor(
         if (fromIndex in currentList.indices && toIndex in currentList.indices) {
             val item = currentList.removeAt(fromIndex)
             currentList.add(toIndex, item)
+            _originalQueue.value = currentList
             _queue.value = currentList
 
             // Adjust current queue index so playback doesn't randomly jump to a different song while reordering.
@@ -764,19 +910,27 @@ class MusicViewModel @Inject constructor(
         if (tracks.isEmpty()) return
         setDuoMode(false)
         _originalQueue.value = tracks
+        lastAutoAdvancedTrackId = null
+
+        val safeStart = startIndex.coerceIn(0, tracks.lastIndex)
 
         // Figure out order based on if Shuffle is active
         val q = if (isShuffleEnabled) {
-            listOf(tracks[startIndex]) + (tracks - tracks[startIndex]).shuffled()
-        } else if (startIndex > 0) {
-            tracks.drop(startIndex) + tracks.take(startIndex) // Rotate the list so chosen song is first
+            listOf(tracks[safeStart]) + (tracks - tracks[safeStart]).shuffled()
+        } else if (safeStart > 0) {
+            tracks.drop(safeStart) + tracks.take(safeStart) // Rotate the list so chosen song is first
         } else {
             tracks
         }
 
         _queue.value = q
         _currentQueueIndex.value = 0
-        q.firstOrNull()?.let { updateStats(it.id) }
+        q.firstOrNull()?.let {
+            _currentTrack1.value = it
+            _currentPosition1.value = 0L
+            _duration1.value = it.duration
+            updateStats(it.id)
+        }
         playerManager.setPlaylist(q, 0)
     }
 
@@ -786,18 +940,31 @@ class MusicViewModel @Inject constructor(
         playQueue(tracks, idx)
     }
 
-    // Loads a song onto a specific turntable in Duo Mode
-    fun playDuoTrack(track: AudioTrack, isPlayer2: Boolean) {
-        setDuoMode(true)
+    // Loads a song onto a specific turntable (or plays a single track on Player 1 while locking its playlist)
+    fun playDuoTrack(track: AudioTrack, isPlayer2: Boolean, playlist: List<AudioTrack>? = null) {
+        setDuoMode(isPlayer2)
         updateStats(track.id)
         if (isPlayer2) {
             _currentTrack2.value = track
             _currentPosition2.value = 0L
             _duration2.value = track.duration
         } else {
+            lastAutoAdvancedTrackId = null
             _currentTrack1.value = track
             _currentPosition1.value = 0L
             _duration1.value = track.duration
+
+            // Lock the active playlist so Next/Prev and Autoplay stay in the same playlist
+            val targetList = when {
+                !playlist.isNullOrEmpty() -> playlist
+                _queue.value.any { it.id == track.id } -> _queue.value
+                _allAudioTracks.value.isNotEmpty() -> _allAudioTracks.value
+                else -> listOf(track)
+            }
+            _originalQueue.value = targetList
+            _queue.value = targetList
+            val idx = targetList.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
+            _currentQueueIndex.value = idx
         }
         playerManager.playTrack(track, isPlayer2)
         updateVolume(1f, isPlayer2) // Ensure the new song isn't muted
@@ -815,18 +982,40 @@ class MusicViewModel @Inject constructor(
     }
 
     fun skipNext() {
-        val qSize = _queue.value.size
+        val activeList = _queue.value.ifEmpty { _allAudioTracks.value }
+        val qSize = activeList.size
         if (qSize > 0) {
+            val activeId = _currentTrack1.value?.id
+            val currentIdx = if (activeId != null) {
+                activeList.indexOfFirst { it.id == activeId }.takeIf { it != -1 } ?: _currentQueueIndex.value
+            } else {
+                _currentQueueIndex.value
+            }
+            val nextIdx = (currentIdx + 1) % qSize
+            _currentQueueIndex.value = nextIdx
+            val nextTrack = activeList[nextIdx]
+            playTrackFromPlaylist(nextTrack, activeList)
+        } else {
             playerManager.seekToNext()
-            _currentQueueIndex.value = (_currentQueueIndex.value + 1) % qSize // Loop around to the start if at the end
         }
     }
 
     fun skipPrevious() {
-        val qSize = _queue.value.size
+        val activeList = _queue.value.ifEmpty { _allAudioTracks.value }
+        val qSize = activeList.size
         if (qSize > 0) {
+            val activeId = _currentTrack1.value?.id
+            val currentIdx = if (activeId != null) {
+                activeList.indexOfFirst { it.id == activeId }.takeIf { it != -1 } ?: _currentQueueIndex.value
+            } else {
+                _currentQueueIndex.value
+            }
+            val prevIdx = (currentIdx - 1 + qSize) % qSize
+            _currentQueueIndex.value = prevIdx
+            val prevTrack = activeList[prevIdx]
+            playTrackFromPlaylist(prevTrack, activeList)
+        } else {
             playerManager.seekToPrevious()
-            _currentQueueIndex.value = (_currentQueueIndex.value - 1 + qSize) % qSize
         }
     }
 
@@ -834,9 +1023,23 @@ class MusicViewModel @Inject constructor(
         isShuffleEnabled = !isShuffleEnabled
         playerManager.setShuffleMode(isShuffleEnabled) // Tell the Engine to shuffle upcoming songs
 
-        // If we turned shuffle OFF, reset the playlist back to the normal alphabetical/date order
-        if (!isShuffleEnabled && _originalQueue.value.isNotEmpty()) {
-            _queue.value = _originalQueue.value
+        val base = _originalQueue.value.ifEmpty { _allAudioTracks.value }
+        if (base.isNotEmpty()) {
+            val current = _currentTrack1.value
+            if (isShuffleEnabled) {
+                val shuffled = if (current != null && base.any { it.id == current.id }) {
+                    listOf(current) + (base - current).shuffled()
+                } else {
+                    base.shuffled()
+                }
+                _queue.value = shuffled
+                _currentQueueIndex.value = 0
+            } else {
+                _queue.value = base
+                if (current != null) {
+                    _currentQueueIndex.value = base.indexOfFirst { it.id == current.id }.coerceAtLeast(0)
+                }
+            }
         }
     }
 
@@ -856,6 +1059,12 @@ class MusicViewModel @Inject constructor(
 
     // User wants to jump to an exact millisecond timestamp
     fun seekTo(ms: Long, secondary: Boolean = false) {
+        if (!secondary) {
+            _currentPosition1.value = ms
+            lastAutoAdvancedTrackId = null
+        } else {
+            _currentPosition2.value = ms
+        }
         playerManager.seekTo(ms, secondary)
     }
 
@@ -998,7 +1207,7 @@ class MusicViewModel @Inject constructor(
             val left = pos.toInt()
             val right = minOf(left + 1, input.lastIndex)
             val frac = pos - left
-            input[left] * (1 - frac) + input[right] * frac
+            input[left] * (1f - frac) + input[right] * frac
         }
     }
 

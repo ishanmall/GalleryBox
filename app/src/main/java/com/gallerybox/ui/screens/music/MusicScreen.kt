@@ -15,6 +15,7 @@ import androidx.annotation.RequiresApi
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
@@ -35,12 +36,14 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.*
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -53,6 +56,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
 import java.util.Locale
+import kotlin.math.roundToInt
 
 import com.gallerybox.viewmodel.AudioTrack
 import com.gallerybox.viewmodel.MusicViewModel
@@ -98,10 +102,47 @@ fun MusicScreen(
     var loadedSongs by remember { mutableStateOf<ImmutableList<AudioTrack>>(persistentListOf()) }
     var displaySongs by remember { mutableStateOf<ImmutableList<AudioTrack>>(persistentListOf()) }
 
-    // Direct single-track playback using the working DuoTrack engine path (no full player screen)
-    val playSelectedSong: (AudioTrack) -> Unit = { song ->
-        viewModel.playDuoTrack(track = song, isPlayer2 = false)
+    // Holds the locked playlist context so autoplay, swipe, & next/prev stay within the same playlist
+    var activePlaylist by remember { mutableStateOf<ImmutableList<AudioTrack>>(persistentListOf()) }
+
+    // Direct single-track playback locked to the selected playlist
+    val playSelectedSong: (AudioTrack, ImmutableList<AudioTrack>) -> Unit = { song, playlist ->
+        val targetQueue = playlist.ifEmpty { loadedSongs }
+        activePlaylist = targetQueue
+        viewModel.playDuoTrack(track = song, isPlayer2 = false, playlist = targetQueue)
         viewModel.setDuoMode(false)
+    }
+
+    val playNextInPlaylist: () -> Unit = {
+        val queue = activePlaylist.ifEmpty { displaySongs }.ifEmpty { loadedSongs }
+        val activeId = currentTrack?.id
+        if (activeId != null && queue.isNotEmpty()) {
+            val idx = queue.indexOfFirst { it.id == activeId }
+            val nextSong = if (idx != -1) {
+                queue[(idx + 1) % queue.size]
+            } else {
+                queue.first()
+            }
+            playSelectedSong(nextSong, queue)
+        } else {
+            viewModel.skipNext()
+        }
+    }
+
+    val playPrevInPlaylist: () -> Unit = {
+        val queue = activePlaylist.ifEmpty { displaySongs }.ifEmpty { loadedSongs }
+        val activeId = currentTrack?.id
+        if (activeId != null && queue.isNotEmpty()) {
+            val idx = queue.indexOfFirst { it.id == activeId }
+            val prevSong = if (idx != -1) {
+                queue[(idx - 1 + queue.size) % queue.size]
+            } else {
+                queue.last()
+            }
+            playSelectedSong(prevSong, queue)
+        } else {
+            viewModel.skipPrevious()
+        }
     }
 
     LaunchedEffect(Unit) {
@@ -114,7 +155,15 @@ fun MusicScreen(
 
     LaunchedEffect(loadedSongsRaw) {
         withContext(Dispatchers.Default) {
-            loadedSongs = loadedSongsRaw.toImmutableList()
+            val immutableLoaded = loadedSongsRaw.toImmutableList()
+            loadedSongs = immutableLoaded
+            if (activePlaylist.isEmpty()) {
+                activePlaylist = immutableLoaded
+            } else {
+                val updatedIds = immutableLoaded.associateBy { it.id }
+                val synced = activePlaylist.mapNotNull { updatedIds[it.id] }.toImmutableList()
+                activePlaylist = synced.ifEmpty { immutableLoaded }
+            }
         }
     }
 
@@ -142,7 +191,7 @@ fun MusicScreen(
             }
 
             if (trackToPlay != null) {
-                playSelectedSong(trackToPlay)
+                playSelectedSong(trackToPlay, loadedSongs)
                 hasPlayedInitial = true
             }
         }
@@ -241,25 +290,8 @@ fun MusicScreen(
                                 modifier = playerWidth,
                                 onPlayPause = viewModel::togglePlayPause,
                                 onSeek = { ms -> viewModel.seekTo(ms, false) },
-                                onOpenSpeedPitch = { showSpeedPitchDialog = true },
-                                onNext = {
-                                    val idx = displaySongs.indexOfFirst { it.id == track.id }
-                                    if (idx != -1 && displaySongs.isNotEmpty()) {
-                                        val nextSong = displaySongs[(idx + 1) % displaySongs.size]
-                                        playSelectedSong(nextSong)
-                                    } else {
-                                        viewModel.skipNext()
-                                    }
-                                },
-                                onPrev = {
-                                    val idx = displaySongs.indexOfFirst { it.id == track.id }
-                                    if (idx != -1 && displaySongs.isNotEmpty()) {
-                                        val prevSong = displaySongs[(idx - 1 + displaySongs.size) % displaySongs.size]
-                                        playSelectedSong(prevSong)
-                                    } else {
-                                        viewModel.skipPrevious()
-                                    }
-                                }
+                                onNext = playNextInPlaylist,
+                                onPrev = playPrevInPlaylist
                             )
                         }
                     }
@@ -302,7 +334,7 @@ fun MusicScreen(
                             onNavigateToEqualizer = onNavigateToEqualizer,
                             onNavigateToDigitalRadio = onNavigateToDigitalRadio,
                             onNavigateToOnlineFinder = onNavigateToOnlineFinder,
-                            onPlayTrack = { song -> playSelectedSong(song) }
+                            onPlayTrack = { song -> playSelectedSong(song, loadedSongs) }
                         )
                     }
                     composable(MusicRoute.Library.route) {
@@ -311,7 +343,7 @@ fun MusicScreen(
                             vm = viewModel,
                             adaptiveState = adaptiveState,
                             onTrashClick = { trackToTrash = it },
-                            onSongClick = { song -> playSelectedSong(song) }
+                            onSongClick = { song -> playSelectedSong(song, displaySongs) }
                         )
                     }
                 }
@@ -875,19 +907,47 @@ fun ModernMiniPlayer(
     modifier: Modifier = Modifier,
     onPlayPause: () -> Unit,
     onSeek: (Long) -> Unit,
-    onOpenSpeedPitch: () -> Unit,
     onNext: () -> Unit,
     onPrev: () -> Unit
 ) {
     val colors = MaterialTheme.colorScheme
     val view = LocalView.current
+    val density = LocalDensity.current
 
     val position by positionFlow.collectAsStateWithLifecycle(initialValue = 0L)
-    var isDragging by remember { mutableStateOf(false) }
+    var isDraggingSlider by remember { mutableStateOf(false) }
     var sliderFraction by remember { mutableFloatStateOf(0f) }
+    var hasTriggeredAutoNext by remember(track.id) { mutableStateOf(false) }
+
+    val currentOnNext by rememberUpdatedState(onNext)
+    val currentOnPrev by rememberUpdatedState(onPrev)
+
+    // Horizontal swipe state for Next / Previous song
+    var dragOffsetX by remember { mutableFloatStateOf(0f) }
+    val swipeThresholdPx = remember(density) { with(density) { 56.dp.toPx() } }
+    val animatedOffsetX by animateFloatAsState(
+        targetValue = dragOffsetX,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessMedium
+        ),
+        label = "MiniPlayerSwipeOffset"
+    )
+
+    // Autoplay next song from the active playlist when the current track finishes
+    LaunchedEffect(position, isPlaying, track.id, track.duration, isDraggingSlider) {
+        if (track.duration > 1500L && !isDraggingSlider) {
+            if (position < track.duration - 1500L) {
+                hasTriggeredAutoNext = false
+            } else if (position >= track.duration - 350L && !hasTriggeredAutoNext) {
+                hasTriggeredAutoNext = true
+                currentOnNext()
+            }
+        }
+    }
 
     val safeDuration = track.duration.coerceAtLeast(1L).toFloat()
-    val currentFraction = if (isDragging) {
+    val currentFraction = if (isDraggingSlider) {
         sliderFraction
     } else {
         (position.toFloat() / safeDuration).coerceIn(0f, 1f)
@@ -910,51 +970,89 @@ fun ModernMiniPlayer(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 12.dp, end = 8.dp, top = 10.dp, bottom = 6.dp)
+                .padding(start = 12.dp, end = 12.dp, top = 10.dp, bottom = 6.dp)
         ) {
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .pointerInput(track.id) {
+                        detectHorizontalDragGestures(
+                            onDragEnd = {
+                                when {
+                                    // Swipe Left -> Next Song
+                                    dragOffsetX <= -swipeThresholdPx -> {
+                                        view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                                        currentOnNext()
+                                    }
+                                    // Swipe Right -> Previous Song
+                                    dragOffsetX >= swipeThresholdPx -> {
+                                        view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                                        currentOnPrev()
+                                    }
+                                }
+                                dragOffsetX = 0f
+                            },
+                            onDragCancel = {
+                                dragOffsetX = 0f
+                            },
+                            onHorizontalDrag = { change, dragAmount ->
+                                change.consume()
+                                dragOffsetX = (dragOffsetX + dragAmount).coerceIn(-swipeThresholdPx * 1.6f, swipeThresholdPx * 1.6f)
+                            }
+                        )
+                    },
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                AsyncImage(
-                    getArtRequest(track.albumId),
-                    contentDescription = "Album Art",
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .size(48.dp)
-                        .clip(CircleShape)
-                        .background(colors.surfaceVariant)
-                        .border(1.5.dp, colors.primary.copy(alpha = 0.5f), CircleShape)
-                )
-
-                Spacer(Modifier.width(12.dp))
-
-                Column(
+                // Swipeable Album Art + Track Info area with spring offset feedback
+                Row(
                     modifier = Modifier
                         .weight(1f)
-                        .padding(end = 6.dp)
+                        .offset { IntOffset((animatedOffsetX * 0.45f).roundToInt(), 0) },
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        track.title,
-                        color = colors.onSurface,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        fontWeight = FontWeight.ExtraBold,
-                        fontSize = (14 * adaptiveState.textScaleFactor).sp
+                    AsyncImage(
+                        getArtRequest(track.albumId),
+                        contentDescription = "Album Art",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .size(48.dp)
+                            .clip(CircleShape)
+                            .background(colors.surfaceVariant)
+                            .border(1.5.dp, colors.primary.copy(alpha = 0.5f), CircleShape)
                     )
-                    Text(
-                        track.artist,
-                        color = colors.onSurfaceVariant,
-                        fontSize = (12 * adaptiveState.textScaleFactor).sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+
+                    Spacer(Modifier.width(12.dp))
+
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = 6.dp)
+                    ) {
+                        Text(
+                            track.title,
+                            color = colors.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = (14 * adaptiveState.textScaleFactor).sp
+                        )
+                        Text(
+                            track.artist,
+                            color = colors.onSurfaceVariant,
+                            fontSize = (12 * adaptiveState.textScaleFactor).sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
 
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
                     IconButton(
                         onClick = { onPrev(); view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY) },
-                        modifier = Modifier.size(34.dp)
+                        modifier = Modifier.size(36.dp)
                     ) {
                         Icon(
                             Icons.Rounded.SkipPrevious,
@@ -982,28 +1080,13 @@ fun ModernMiniPlayer(
 
                     IconButton(
                         onClick = { onNext(); view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY) },
-                        modifier = Modifier.size(34.dp)
+                        modifier = Modifier.size(36.dp)
                     ) {
                         Icon(
                             Icons.Rounded.SkipNext,
                             contentDescription = "Next",
                             tint = colors.onSurface,
                             modifier = Modifier.size(22.dp)
-                        )
-                    }
-
-                    IconButton(
-                        onClick = {
-                            view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                            onOpenSpeedPitch()
-                        },
-                        modifier = Modifier.size(32.dp)
-                    ) {
-                        Icon(
-                            Icons.Default.MoreVert,
-                            contentDescription = "Speed & Pitch",
-                            tint = colors.onSurfaceVariant,
-                            modifier = Modifier.size(20.dp)
                         )
                     }
                 }
@@ -1020,7 +1103,7 @@ fun ModernMiniPlayer(
             ) {
                 Text(
                     text = formatTime(
-                        if (isDragging) (safeDuration * sliderFraction).toLong() else position
+                        if (isDraggingSlider) (safeDuration * sliderFraction).toLong() else position
                     ),
                     fontFamily = FontFamily.Monospace,
                     fontSize = 11.sp,
@@ -1031,13 +1114,13 @@ fun ModernMiniPlayer(
                 Slider(
                     value = currentFraction,
                     onValueChange = {
-                        isDragging = true
+                        isDraggingSlider = true
                         sliderFraction = it
                     },
                     onValueChangeFinished = {
                         val targetMs = (safeDuration * sliderFraction).toLong()
                         onSeek(targetMs)
-                        isDragging = false
+                        isDraggingSlider = false
                     },
                     colors = SliderDefaults.colors(
                         thumbColor = colors.primary,

@@ -29,7 +29,7 @@ android {
         applicationId = "com.gallerybox"
         minSdk = 31
         targetSdk = 36
-        versionCode = 102
+        versionCode = 103
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

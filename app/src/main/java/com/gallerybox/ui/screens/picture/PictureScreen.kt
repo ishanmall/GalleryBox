@@ -29,7 +29,6 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.*
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -480,7 +479,6 @@ fun PictureScreen(
     val adaptiveState = rememberAdaptiveState()
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
-    val haptic = LocalHapticFeedback.current
     val gridState = rememberLazyGridState()
     val scrollBehavior = TopAppBarDefaults.enterAlwaysScrollBehavior(rememberTopAppBarState())
 
@@ -493,16 +491,24 @@ fun PictureScreen(
     val mediaMap by viewModel.mediaMap.collectAsState()
     val favoriteIds by viewModel.favoriteIds.collectAsState()
 
-    val openViewerState = viewerState as? GalleryViewerState.Open
-    val currentItem = openViewerState?.mediaId?.let { mediaMap[it] }
-
     val pagedMedia = viewModel.pagedMedia.collectAsLazyPagingItems()
 
-    val prefs = remember { context.getSharedPreferences("gallery_prefs", Context.MODE_PRIVATE) ?: context.getSharedPreferences("gallery_prefs", Context.MODE_PRIVATE) }
+    // Fallback lookup so single-item viewer never crashes if mediaMap hasn't indexed an item or just removed it
+    val openViewerState = viewerState as? GalleryViewerState.Open
+    val currentItem = remember(openViewerState, mediaMap, pagedMedia.itemSnapshotList) {
+        val id = openViewerState?.mediaId ?: return@remember null
+        mediaMap[id] ?: pagedMedia.itemSnapshotList.items
+            .filterIsInstance<GalleryGridItem.Media>()
+            .firstOrNull { it.item.id == id }
+            ?.item
+    }
+
+    val prefs = remember { context.getSharedPreferences("gallery_prefs", Context.MODE_PRIVATE) }
 
     var columnCount by rememberSaveable {
         mutableIntStateOf(
-            prefs.getInt("picture_grid_columns",
+            prefs.getInt(
+                "picture_grid_columns",
                 when (adaptiveState.widthSize) {
                     WindowWidthSize.COMPACT -> 4
                     WindowWidthSize.MEDIUM -> 6
@@ -548,27 +554,63 @@ fun PictureScreen(
         }
     }
 
-    val intentSenderLauncher = rememberLauncherForActivityResult(contract = ActivityResultContracts.StartIntentSenderForResult()) { result ->
-        trashViewModel.onPermissionResultGlobal(result.resultCode == Activity.RESULT_OK)
-        if (result.resultCode != Activity.RESULT_OK) {
+    val intentSenderLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        val granted = result.resultCode == Activity.RESULT_OK
+        trashViewModel.onPermissionResultGlobal(granted)
+        viewModel.onPermissionResult(granted)
+        if (!granted) {
             Toast.makeText(context, "Permission Denied", Toast.LENGTH_SHORT).show()
         }
     }
 
+    // Listen to both trashViewModel and viewModel events so single-item and multi-item trash permissions are always handled safely
     LaunchedEffect(trashViewModel, lifecycleOwner) {
         trashViewModel.onRefreshGallery = { viewModel.refreshAfterFileOperation() }
-        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
             trashViewModel.events.collect { event ->
                 when (event) {
-                    is GalleryEvent.RequestPermission -> intentSenderLauncher.launch(IntentSenderRequest.Builder(event.intentSender).build())
+                    is GalleryEvent.RequestPermission -> {
+                        runCatching {
+                            viewModel.getPlayer().pause()
+                            viewModel.getPlayer().stop()
+                        }
+                        intentSenderLauncher.launch(IntentSenderRequest.Builder(event.intentSender).build())
+                    }
                     is GalleryEvent.OperationSuccess -> {
                         activeDialog = PictureUiDialog.None
                         isSelectionMode = false
                         selectedIds = emptySet()
                         viewModel.closeViewer()
+                        viewModel.refreshAfterFileOperation()
                         if (snackbarHostState.showSnackbar("Moved to Trash", "View Trash", duration = SnackbarDuration.Short) == SnackbarResult.ActionPerformed) {
                             onNavigateToTrash()
                         }
+                    }
+                    is GalleryEvent.ShowToast -> Toast.makeText(context, event.message, Toast.LENGTH_SHORT).show()
+                    else -> {}
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(viewModel, lifecycleOwner) {
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            viewModel.events.collect { event ->
+                when (event) {
+                    is GalleryEvent.RequestPermission -> {
+                        runCatching {
+                            viewModel.getPlayer().pause()
+                            viewModel.getPlayer().stop()
+                        }
+                        intentSenderLauncher.launch(IntentSenderRequest.Builder(event.intentSender).build())
+                    }
+                    is GalleryEvent.OperationSuccess -> {
+                        activeDialog = PictureUiDialog.None
+                        isSelectionMode = false
+                        selectedIds = emptySet()
+                        viewModel.closeViewer()
                     }
                     is GalleryEvent.ShowToast -> Toast.makeText(context, event.message, Toast.LENGTH_SHORT).show()
                     else -> {}
@@ -591,12 +633,12 @@ fun PictureScreen(
         selectedIds = emptySet()
     }
 
-    BackHandler(enabled = activeDialog != PictureUiDialog.None) {
-        activeDialog = PictureUiDialog.None
+    BackHandler(enabled = viewerState is GalleryViewerState.Open && activeDialog == PictureUiDialog.None) {
+        viewModel.closeViewer()
     }
 
-    BackHandler(enabled = viewerState is GalleryViewerState.Open) {
-        viewModel.closeViewer()
+    BackHandler(enabled = activeDialog != PictureUiDialog.None) {
+        activeDialog = PictureUiDialog.None
     }
 
     fun getSelectedItems(): List<MediaItem> {
@@ -798,7 +840,7 @@ fun PictureScreen(
                                     }
                                     selectedIds = newSet.toSet()
                                 } else {
-                                    viewModel.openViewer(item.id)
+                                    viewModel.openViewer(item)
                                 }
                             },
                             header = {
@@ -839,6 +881,74 @@ fun PictureScreen(
             }
         }
 
+        // Fullscreen Viewer Overlay
+        if (viewerState is GalleryViewerState.Open && currentItem != null) {
+            var stableMediaList by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
+            var stableStartIndex by remember { mutableIntStateOf(0) }
+
+            LaunchedEffect(pagedMedia.itemSnapshotList, mediaMap, openViewerState?.mediaId) {
+                withContext(Dispatchers.Default) {
+                    val items = pagedMedia.itemSnapshotList.items
+                        .filterIsInstance<GalleryGridItem.Media>()
+                        .map { mediaMap[it.item.id] ?: it.item }
+                    val finalItems = if (items.isNotEmpty()) items else listOf(currentItem)
+                    val index = finalItems.indexOfFirst { it.id == currentItem.id }.coerceAtLeast(0)
+                    withContext(Dispatchers.Main) {
+                        stableMediaList = finalItems
+                        stableStartIndex = index
+                    }
+                }
+            }
+
+            if (stableMediaList.isNotEmpty()) {
+                FullscreenMediaPager(
+                    initialIndex = stableStartIndex,
+                    mediaList = stableMediaList,
+                    mediaMap = mediaMap,
+                    favoriteIds = favoriteIds,
+                    sharedPlayer = viewModel.getPlayer(),
+                    adaptiveState = adaptiveState,
+                    onPageChanged = { newPageItem ->
+                        viewModel.openViewer(newPageItem)
+                    },
+                    onClose = { viewModel.closeViewer() },
+                    onToggleFavorite = { id -> viewModel.toggleFavorite(id) },
+                    onEdit = { item ->
+                        viewModel.closeViewer()
+                        onNavigateToEditor(item.uri.toString(), item.id)
+                    },
+                    onPlayVideo = { uri, playlist ->
+                        viewModel.setVideoPlaylist(playlist)
+                        viewModel.closeViewer()
+                        onNavigateToVideoPlayer(uri, playlist)
+                    },
+                    onDelete = { item ->
+                        // Pause and release any active video file lock before opening Trash dialog
+                        runCatching {
+                            val player = viewModel.getPlayer()
+                            player.pause()
+                            player.stop()
+                            player.clearMediaItems()
+                        }
+                        activeDialog = PictureUiDialog.TrashConfirm(listOf(item))
+                    },
+                    onMove = { item ->
+                        viewModel.closeViewer()
+                        onNavigateToMoveCopy("MOVE", item.id.toString(), null)
+                    },
+                    onCopy = { item ->
+                        viewModel.closeViewer()
+                        onNavigateToMoveCopy("COPY", item.id.toString(), null)
+                    },
+                    onWallpaper = { item ->
+                        viewModel.closeViewer()
+                        onNavigateToWallpaper(item.uri.toString(), item.id)
+                    }
+                )
+            }
+        }
+
+        // DialogsHost placed AFTER FullscreenMediaPager so BottomSheets always render above the viewer
         if (activeDialog != PictureUiDialog.None) {
             DialogsHost(
                 dialog = activeDialog,
@@ -858,59 +968,6 @@ fun PictureScreen(
                     activeDialog = PictureUiDialog.None
                 }
             )
-        }
-
-        if (viewerState is GalleryViewerState.Open && currentItem != null) {
-            var stableMediaList by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
-            var stableStartIndex by remember { mutableIntStateOf(0) }
-
-            LaunchedEffect(pagedMedia.itemSnapshotList, mediaMap, currentItem.id) {
-                withContext(Dispatchers.Default) {
-                    val items = pagedMedia.itemSnapshotList.items
-                        .filterIsInstance<GalleryGridItem.Media>()
-                        .map { mediaMap[it.item.id] ?: it.item }
-                    val index = items.indexOfFirst { it.id == currentItem.id }.coerceAtLeast(0)
-                    withContext(Dispatchers.Main) {
-                        stableMediaList = items
-                        stableStartIndex = index
-                    }
-                }
-            }
-
-            if (stableMediaList.isNotEmpty()) {
-                FullscreenMediaPager(
-                    initialIndex = stableStartIndex,
-                    mediaList = stableMediaList,
-                    mediaMap = mediaMap,
-                    favoriteIds = favoriteIds,
-                    sharedPlayer = viewModel.getPlayer(),
-                    adaptiveState = adaptiveState,
-                    onPageChanged = {},
-                    onClose = { viewModel.closeViewer() },
-                    onToggleFavorite = { id -> viewModel.toggleFavorite(id) },
-                    onEdit = { item ->
-                        viewModel.closeViewer()
-                        onNavigateToEditor(item.uri.toString(), item.id)
-                    },
-                    onPlayVideo = { uri, playlist ->
-                        viewModel.closeViewer()
-                        onNavigateToVideoPlayer(uri, playlist)
-                    },
-                    onDelete = { item -> activeDialog = PictureUiDialog.TrashConfirm(listOf(item)) },
-                    onMove = { item ->
-                        viewModel.closeViewer()
-                        onNavigateToMoveCopy("MOVE", item.id.toString(), null)
-                    },
-                    onCopy = { item ->
-                        viewModel.closeViewer()
-                        onNavigateToMoveCopy("COPY", item.id.toString(), null)
-                    },
-                    onWallpaper = { item ->
-                        viewModel.closeViewer()
-                        onNavigateToWallpaper(item.uri.toString(), item.id)
-                    }
-                )
-            }
         }
 
         if (isSelectionMode) {
@@ -1241,7 +1298,7 @@ fun ModernSortSheet(activeSort: PhotoSort, onDismiss: () -> Unit, onSortSelected
                     modifier = Modifier
                         .size(48.dp)
                         .clip(CircleShape)
-                        .background(Brush.linearGradient(listOf(MaterialTheme.colorScheme.primary.copy(alpha=0.2f), MaterialTheme.colorScheme.primary.copy(alpha=0.05f)))),
+                        .background(Brush.linearGradient(listOf(MaterialTheme.colorScheme.primary.copy(alpha = 0.2f), MaterialTheme.colorScheme.primary.copy(alpha = 0.05f)))),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
@@ -1890,10 +1947,20 @@ fun DialogsHost(
                 count = dialog.mediaItems.size,
                 onDismiss = onDismiss,
                 onConfirm = {
-                    if (dialog.mediaItems.isNotEmpty()) {
-                        trashViewModel.confirmPendingGalleryTrash(dialog.mediaItems)
-                    }
+                    val itemsToTrash = dialog.mediaItems
                     onDismiss()
+                    // Safely close the fullscreen viewer and stop ExoPlayer BEFORE trashing
+                    // so the pager does not crash trying to render a deleted item or locked video URI
+                    runCatching {
+                        val player = viewModel.getPlayer()
+                        player.pause()
+                        player.stop()
+                        player.clearMediaItems()
+                    }
+                    viewModel.closeViewer()
+                    if (itemsToTrash.isNotEmpty()) {
+                        trashViewModel.confirmPendingGalleryTrash(itemsToTrash)
+                    }
                 }
             )
         }
@@ -1963,6 +2030,13 @@ fun DialogsHost(
                         item {
                             ActionItem(icon = Icons.Outlined.Delete, label = "Delete", isDestructive = true) {
                                 onDismiss()
+                                runCatching {
+                                    val player = viewModel.getPlayer()
+                                    player.pause()
+                                    player.stop()
+                                    player.clearMediaItems()
+                                }
+                                viewModel.closeViewer()
                                 trashViewModel.confirmPendingGalleryTrash(listOf(item))
                             }
                         }
@@ -2282,7 +2356,9 @@ fun GalleryGridContent(
                         ModernDateHeader(
                             title = gridItem.title,
                             onSelectAllForDate = {
-                                val snapshot = pagedMedia.itemSnapshotList.items.filterIsInstance<GalleryGridItem.Media>().filter { it.item.dateHeader == gridItem.title }
+                                val snapshot = pagedMedia.itemSnapshotList.items
+                                    .filterIsInstance<GalleryGridItem.Media>()
+                                    .filter { it.item.dateHeader == gridItem.title }
                                 val newIds = (selectedIds + snapshot.map { it.item.id }.toSet()).takeIf { s -> s.size < 5000 } ?: selectedIds
                                 onSelectionChange(newIds)
                                 onSelectionModeChange(true)
@@ -2589,7 +2665,7 @@ fun FullscreenMediaPager(
     }
 
     DisposableEffect(Unit) {
-        val window = (context as? Activity)?.window
+        val window = context.findActivity()?.window
         if (window != null) {
             val controller = WindowCompat.getInsetsController(window, view)
             controller.hide(WindowInsetsCompat.Type.systemBars())
@@ -2598,8 +2674,10 @@ fun FullscreenMediaPager(
         }
 
         onDispose {
-            sharedPlayer.pause()
-            sharedPlayer.playWhenReady = false
+            runCatching {
+                sharedPlayer.pause()
+                sharedPlayer.playWhenReady = false
+            }
             window?.let {
                 WindowCompat.getInsetsController(it, view)
                     .show(WindowInsetsCompat.Type.systemBars())
@@ -2607,15 +2685,8 @@ fun FullscreenMediaPager(
         }
     }
 
-    BackHandler(enabled = !showControls) {
-        showControls = true
-    }
-
-    BackHandler(enabled = showControls) {
-        onClose()
-    }
-
-    val liveCurrentItem = mediaList.getOrNull(pagerState.currentPage)
+    val safeCurrentPage = pagerState.currentPage.coerceIn(0, maxOf(mediaList.lastIndex, 0))
+    val liveCurrentItem = mediaList.getOrNull(safeCurrentPage)
         ?.let { mediaMap[it.id] ?: it }
 
     if (adaptiveState.posture == DevicePosture.HALF_OPENED) {
@@ -2628,10 +2699,10 @@ fun FullscreenMediaPager(
                 HorizontalPager(
                     state = pagerState,
                     pageSpacing = 18.dp,
-                    key = { index -> mediaList[index].id },
+                    key = { index -> mediaList.getOrNull(index)?.id ?: index },
                     modifier = Modifier.fillMaxSize()
                 ) { page ->
-                    val item = mediaList[page]
+                    val item = mediaList.getOrNull(page) ?: return@HorizontalPager
 
                     if (item.isVideo) {
                         VideoPreviewPage(
@@ -2917,10 +2988,10 @@ fun FullscreenMediaPager(
             HorizontalPager(
                 state = pagerState,
                 pageSpacing = 18.dp,
-                key = { index -> mediaList[index].id },
+                key = { index -> mediaList.getOrNull(index)?.id ?: index },
                 modifier = Modifier.fillMaxSize()
             ) { page ->
-                val item = mediaList[page]
+                val item = mediaList.getOrNull(page) ?: return@HorizontalPager
 
                 if (item.isVideo) {
                     VideoPreviewPage(
@@ -3405,7 +3476,13 @@ fun PremiumViewerAction(
 }
 
 @Composable
-fun ZoomableImagePage(item: MediaItem, onTap: () -> Unit, onDismiss: () -> Unit, onZoomChanged: (Boolean) -> Unit, onControlsVisibilityChange: (Boolean) -> Unit) {
+fun ZoomableImagePage(
+    item: MediaItem,
+    onTap: () -> Unit,
+    onDismiss: () -> Unit,
+    onZoomChanged: (Boolean) -> Unit,
+    onControlsVisibilityChange: (Boolean) -> Unit
+) {
     val ctx = LocalContext.current
     val d = LocalDensity.current
     val hap = LocalHapticFeedback.current
@@ -3465,8 +3542,8 @@ fun ZoomableImagePage(item: MediaItem, onTap: () -> Unit, onDismiss: () -> Unit,
                                 }
                             }
 
-                            val mx = (size.width * (sc - 1)) / 2f
-                            val my = (size.height * (sc - 1)) / 2f
+                            val mx = (size.width * (sc - 1f)) / 2f
+                            val my = (size.height * (sc - 1f)) / 2f
                             oX = (oX + pan.x).coerceIn(-mx, mx)
                             oY = (oY + pan.y).coerceIn(-my, my)
                         } else {
