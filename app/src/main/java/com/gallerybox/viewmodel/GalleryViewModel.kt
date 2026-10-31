@@ -1535,6 +1535,10 @@ class GalleryViewModel @Inject constructor(
         invalidatePagingSources()
     }
 
+    fun onItemsTrashedLocally(ids: Set<Long>) = viewModelScope.launch(Dispatchers.Default) {
+        removeMediaLocally(ids)
+    }
+
     private suspend fun removeMediaLocally(ids: Set<Long>) = withContext(Dispatchers.Default) {
         _mediaMap.value = java.util.HashMap(_mediaMap.value).apply { ids.forEach { remove(it) } }
         _mediaIndexes.update { old ->

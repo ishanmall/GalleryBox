@@ -246,7 +246,7 @@ sealed class PictureUiDialog {
     data object None : PictureUiDialog()
     data object GridSize : PictureUiDialog()
     data object Sort : PictureUiDialog()
-    data class TrashConfirm(val mediaItems: List<MediaItem>) : PictureUiDialog()
+    data class TrashConfirm(val mediaIds: List<Long>) : PictureUiDialog()
     data class MetadataInfo(val item: MediaItem) : PictureUiDialog()
     data class QuickAction(val item: MediaItem) : PictureUiDialog()
 }
@@ -489,18 +489,32 @@ fun PictureScreen(
     val activeSort by viewModel.activeSort.collectAsState()
     val viewerState by viewModel.viewerState.collectAsState()
     val mediaMap by viewModel.mediaMap.collectAsState()
+    val rawMedia by viewModel.rawMedia.collectAsState()
     val favoriteIds by viewModel.favoriteIds.collectAsState()
+    val trashBin by viewModel.trashBin.collectAsState()
 
     val pagedMedia = viewModel.pagedMedia.collectAsLazyPagingItems()
 
-    // Fallback lookup so single-item viewer never crashes if mediaMap hasn't indexed an item or just removed it
+    // Dedicated reference to the currently opened item in Fullscreen Viewer (just like AlbumDetailScreen)
+    var openedMediaItem by remember { mutableStateOf<MediaItem?>(null) }
+    var pendingTrashItems by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
+
     val openViewerState = viewerState as? GalleryViewerState.Open
-    val currentItem = remember(openViewerState, mediaMap, pagedMedia.itemSnapshotList) {
-        val id = openViewerState?.mediaId ?: return@remember null
-        mediaMap[id] ?: pagedMedia.itemSnapshotList.items
-            .filterIsInstance<GalleryGridItem.Media>()
-            .firstOrNull { it.item.id == id }
-            ?.item
+    val viewerItemId = openViewerState?.mediaId
+
+    val currentItem = remember(viewerItemId, openedMediaItem, mediaMap, pagedMedia.itemSnapshotList) {
+        if (viewerItemId == null) return@remember null
+        openedMediaItem?.takeIf { it.id == viewerItemId }
+            ?: mediaMap[viewerItemId]
+            ?: pagedMedia.itemSnapshotList.items
+                .filterIsInstance<GalleryGridItem.Media>()
+                .firstOrNull { it.item.id == viewerItemId }
+                ?.item
+    }
+
+    // Automatically refresh PagingData whenever trashBin or rawMedia count changes (e.g., screenshot taken or item trashed)
+    LaunchedEffect(trashBin.size, rawMedia.size) {
+        pagedMedia.refresh()
     }
 
     val prefs = remember { context.getSharedPreferences("gallery_prefs", Context.MODE_PRIVATE) }
@@ -546,7 +560,8 @@ fun PictureScreen(
                 }
                 if (targetItem != null) {
                     withContext(Dispatchers.Main) {
-                        viewModel.openViewer(targetItem.id)
+                        openedMediaItem = targetItem
+                        viewModel.openViewer(targetItem)
                         hasOpenedInitial = true
                     }
                 }
@@ -554,35 +569,54 @@ fun PictureScreen(
         }
     }
 
-    val intentSenderLauncher = rememberLauncherForActivityResult(
+    // Separate permission launchers for TrashViewModel and GalleryViewModel so they NEVER interfere!
+    val intentSenderLauncherTrash = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartIntentSenderForResult()
     ) { result ->
         val granted = result.resultCode == Activity.RESULT_OK
         trashViewModel.onPermissionResultGlobal(granted)
+        if (!granted) {
+            pendingTrashItems = emptyList()
+            Toast.makeText(context, "Permission Denied", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    val intentSenderLauncherGallery = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        val granted = result.resultCode == Activity.RESULT_OK
         viewModel.onPermissionResult(granted)
         if (!granted) {
             Toast.makeText(context, "Permission Denied", Toast.LENGTH_SHORT).show()
         }
     }
 
-    // Listen to both trashViewModel and viewModel events so single-item and multi-item trash permissions are always handled safely
     LaunchedEffect(trashViewModel, lifecycleOwner) {
-        trashViewModel.onRefreshGallery = { viewModel.refreshAfterFileOperation() }
+        trashViewModel.onRefreshGallery = {
+            viewModel.refreshAfterFileOperation()
+            pagedMedia.refresh()
+        }
         lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
             trashViewModel.events.collect { event ->
                 when (event) {
                     is GalleryEvent.RequestPermission -> {
                         runCatching {
-                            viewModel.getPlayer().pause()
-                            viewModel.getPlayer().stop()
+                            val player = viewModel.getPlayer()
+                            player.pause()
+                            player.stop()
+                            player.clearMediaItems()
                         }
-                        intentSenderLauncher.launch(IntentSenderRequest.Builder(event.intentSender).build())
+                        intentSenderLauncherTrash.launch(IntentSenderRequest.Builder(event.intentSender).build())
                     }
                     is GalleryEvent.OperationSuccess -> {
+                        val trashedIds = pendingTrashItems.map { it.id }.toSet()
+                        pendingTrashItems = emptyList()
                         activeDialog = PictureUiDialog.None
                         isSelectionMode = false
                         selectedIds = emptySet()
+                        openedMediaItem = null
                         viewModel.closeViewer()
+                        pagedMedia.refresh()
                         viewModel.refreshAfterFileOperation()
                         if (snackbarHostState.showSnackbar("Moved to Trash", "View Trash", duration = SnackbarDuration.Short) == SnackbarResult.ActionPerformed) {
                             onNavigateToTrash()
@@ -601,16 +635,20 @@ fun PictureScreen(
                 when (event) {
                     is GalleryEvent.RequestPermission -> {
                         runCatching {
-                            viewModel.getPlayer().pause()
-                            viewModel.getPlayer().stop()
+                            val player = viewModel.getPlayer()
+                            player.pause()
+                            player.stop()
+                            player.clearMediaItems()
                         }
-                        intentSenderLauncher.launch(IntentSenderRequest.Builder(event.intentSender).build())
+                        intentSenderLauncherGallery.launch(IntentSenderRequest.Builder(event.intentSender).build())
                     }
                     is GalleryEvent.OperationSuccess -> {
                         activeDialog = PictureUiDialog.None
                         isSelectionMode = false
                         selectedIds = emptySet()
+                        openedMediaItem = null
                         viewModel.closeViewer()
+                        pagedMedia.refresh()
                     }
                     is GalleryEvent.ShowToast -> Toast.makeText(context, event.message, Toast.LENGTH_SHORT).show()
                     else -> {}
@@ -634,6 +672,7 @@ fun PictureScreen(
     }
 
     BackHandler(enabled = viewerState is GalleryViewerState.Open && activeDialog == PictureUiDialog.None) {
+        openedMediaItem = null
         viewModel.closeViewer()
     }
 
@@ -642,10 +681,18 @@ fun PictureScreen(
     }
 
     fun getSelectedItems(): List<MediaItem> {
-        return pagedMedia.itemSnapshotList.items
+        val snapshotList = pagedMedia.itemSnapshotList.items
             .filterIsInstance<GalleryGridItem.Media>()
-            .filter { selectedIds.contains(it.item.id) }
             .map { mediaMap[it.item.id] ?: it.item }
+        return buildList {
+            addAll(snapshotList.filter { selectedIds.contains(it.id) })
+            selectedIds.forEach { id ->
+                if (none { it.id == id }) {
+                    val fallback = mediaMap[id] ?: rawMedia.firstOrNull { it.id == id }
+                    if (fallback != null) add(fallback)
+                }
+            }
+        }
     }
 
     Box(
@@ -824,15 +871,12 @@ fun PictureScreen(
                             mediaMap = mediaMap,
                             deviceTier = deviceTier,
                             onSelectionChange = {
-                                Log.d("GallerySelection", "PictureScreen: onSelectionChange -> $it")
                                 selectedIds = it
                             },
                             onSelectionModeChange = {
-                                Log.d("GallerySelection", "PictureScreen: onSelectionModeChange -> $it")
                                 isSelectionMode = it
                             },
                             onItemClick = { item ->
-                                Log.d("GallerySelection", "PictureScreen: onItemClick -> ${item.id}, isSelectionMode=$isSelectionMode")
                                 if (isSelectionMode) {
                                     val newSet = selectedIds.toMutableSet()
                                     if (!newSet.remove(item.id)) {
@@ -840,6 +884,7 @@ fun PictureScreen(
                                     }
                                     selectedIds = newSet.toSet()
                                 } else {
+                                    openedMediaItem = item
                                     viewModel.openViewer(item)
                                 }
                             },
@@ -881,71 +926,82 @@ fun PictureScreen(
             }
         }
 
-        // Fullscreen Viewer Overlay
-        if (viewerState is GalleryViewerState.Open && currentItem != null) {
-            var stableMediaList by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
-            var stableStartIndex by remember { mutableIntStateOf(0) }
+        // Fullscreen Viewer Overlay (Built identically to AlbumDetailScreen so single-item state is rock-solid)
+        val snapshotItems = remember(pagedMedia.itemSnapshotList, mediaMap) {
+            pagedMedia.itemSnapshotList.items
+                .filterIsInstance<GalleryGridItem.Media>()
+                .map { mediaMap[it.item.id] ?: it.item }
+        }
 
-            LaunchedEffect(pagedMedia.itemSnapshotList, mediaMap, openViewerState?.mediaId) {
-                withContext(Dispatchers.Default) {
-                    val items = pagedMedia.itemSnapshotList.items
-                        .filterIsInstance<GalleryGridItem.Media>()
-                        .map { mediaMap[it.item.id] ?: it.item }
-                    val finalItems = if (items.isNotEmpty()) items else listOf(currentItem)
-                    val index = finalItems.indexOfFirst { it.id == currentItem.id }.coerceAtLeast(0)
-                    withContext(Dispatchers.Main) {
-                        stableMediaList = finalItems
-                        stableStartIndex = index
-                    }
+        val viewerItems = remember(snapshotItems, openedMediaItem, viewerItemId) {
+            buildList<MediaItem> {
+                addAll(snapshotItems)
+                val opened = openedMediaItem
+                if (opened != null && none { existing -> existing.id == opened.id }) {
+                    add(0, opened)
                 }
             }
+        }
 
-            if (stableMediaList.isNotEmpty()) {
-                FullscreenMediaPager(
-                    initialIndex = stableStartIndex,
-                    mediaList = stableMediaList,
-                    mediaMap = mediaMap,
-                    favoriteIds = favoriteIds,
-                    sharedPlayer = viewModel.getPlayer(),
-                    adaptiveState = adaptiveState,
-                    onPageChanged = { newPageItem ->
-                        viewModel.openViewer(newPageItem)
-                    },
-                    onClose = { viewModel.closeViewer() },
-                    onToggleFavorite = { id -> viewModel.toggleFavorite(id) },
-                    onEdit = { item ->
-                        viewModel.closeViewer()
-                        onNavigateToEditor(item.uri.toString(), item.id)
-                    },
-                    onPlayVideo = { uri, playlist ->
-                        viewModel.setVideoPlaylist(playlist)
-                        viewModel.closeViewer()
-                        onNavigateToVideoPlayer(uri, playlist)
-                    },
-                    onDelete = { item ->
-                        // Pause and release any active video file lock before opening Trash dialog
-                        runCatching {
-                            val player = viewModel.getPlayer()
-                            player.pause()
-                            player.stop()
-                            player.clearMediaItems()
-                        }
-                        activeDialog = PictureUiDialog.TrashConfirm(listOf(item))
-                    },
-                    onMove = { item ->
-                        viewModel.closeViewer()
-                        onNavigateToMoveCopy("MOVE", item.id.toString(), null)
-                    },
-                    onCopy = { item ->
-                        viewModel.closeViewer()
-                        onNavigateToMoveCopy("COPY", item.id.toString(), null)
-                    },
-                    onWallpaper = { item ->
-                        viewModel.closeViewer()
-                        onNavigateToWallpaper(item.uri.toString(), item.id)
+        if (viewerState is GalleryViewerState.Open && viewerItems.isNotEmpty()) {
+            val stableStartIndex = viewerItems
+                .indexOfFirst { media -> media.id == viewerItemId }
+                .coerceAtLeast(0)
+
+            FullscreenMediaPager(
+                initialIndex = stableStartIndex,
+                mediaList = viewerItems,
+                mediaMap = mediaMap,
+                favoriteIds = favoriteIds,
+                sharedPlayer = viewModel.getPlayer(),
+                adaptiveState = adaptiveState,
+                onPageChanged = { newPageItem ->
+                    openedMediaItem = newPageItem
+                    viewModel.openViewer(newPageItem)
+                },
+                onClose = {
+                    openedMediaItem = null
+                    viewModel.closeViewer()
+                },
+                onToggleFavorite = { id -> viewModel.toggleFavorite(id) },
+                onEdit = { item ->
+                    openedMediaItem = null
+                    viewModel.closeViewer()
+                    onNavigateToEditor(item.uri.toString(), item.id)
+                },
+                onPlayVideo = { uri, playlist ->
+                    viewModel.setVideoPlaylist(playlist)
+                    openedMediaItem = null
+                    viewModel.closeViewer()
+                    onNavigateToVideoPlayer(uri, playlist)
+                },
+                onDelete = { item ->
+                    // Release ExoPlayer lock on any open video before showing Trash confirmation
+                    runCatching {
+                        val player = viewModel.getPlayer()
+                        player.pause()
+                        player.stop()
+                        player.clearMediaItems()
                     }
-                )
-            }
+                    openedMediaItem = item
+                    activeDialog = PictureUiDialog.TrashConfirm(listOf(item.id))
+                },
+                onMove = { item ->
+                    openedMediaItem = null
+                    viewModel.closeViewer()
+                    onNavigateToMoveCopy("MOVE", item.id.toString(), null)
+                },
+                onCopy = { item ->
+                    openedMediaItem = null
+                    viewModel.closeViewer()
+                    onNavigateToMoveCopy("COPY", item.id.toString(), null)
+                },
+                onWallpaper = { item ->
+                    openedMediaItem = null
+                    viewModel.closeViewer()
+                    onNavigateToWallpaper(item.uri.toString(), item.id)
+                }
+            )
         }
 
         // DialogsHost placed AFTER FullscreenMediaPager so BottomSheets always render above the viewer
@@ -953,12 +1009,32 @@ fun PictureScreen(
             DialogsHost(
                 dialog = activeDialog,
                 mediaMap = mediaMap,
+                rawMedia = rawMedia,
+                pagedMedia = pagedMedia,
+                openedMediaItem = openedMediaItem,
                 trashViewModel = trashViewModel,
                 viewModel = viewModel,
                 activeSort = activeSort,
                 columnCount = columnCount,
                 prefs = prefs,
                 onDismiss = { activeDialog = PictureUiDialog.None },
+                onConfirmTrash = { itemsToTrash ->
+                    pendingTrashItems = itemsToTrash
+                    activeDialog = PictureUiDialog.None
+                    isSelectionMode = false
+                    openedMediaItem = null
+                    runCatching {
+                        val player = viewModel.getPlayer()
+                        player.pause()
+                        player.stop()
+                        player.clearMediaItems()
+                    }
+                    viewModel.closeViewer()
+                    if (itemsToTrash.isNotEmpty()) {
+                        trashViewModel.confirmPendingGalleryTrash(itemsToTrash)
+                        invalidateThumbCache(context, itemsToTrash.map { it.uri })
+                    }
+                },
                 onNavigateToEditor = onNavigateToEditor,
                 onNavigateToMoveCopy = onNavigateToMoveCopy,
                 onNavigateToWallpaper = onNavigateToWallpaper,
@@ -1031,7 +1107,7 @@ fun PictureScreen(
                         isDestructive = true,
                         enabled = selectedIds.isNotEmpty()
                     ) {
-                        activeDialog = PictureUiDialog.TrashConfirm(getSelectedItems())
+                        activeDialog = PictureUiDialog.TrashConfirm(getSelectedItems().map { it.id })
                     }
                     var showMore by remember { mutableStateOf(false) }
                     Box {
@@ -1929,45 +2005,69 @@ fun ActionItem(icon: ImageVector, label: String, isDestructive: Boolean = false,
 fun DialogsHost(
     dialog: PictureUiDialog,
     mediaMap: Map<Long, MediaItem>,
+    rawMedia: List<MediaItem>,
+    pagedMedia: LazyPagingItems<GalleryGridItem>,
+    openedMediaItem: MediaItem?,
     trashViewModel: TrashViewModel,
     viewModel: GalleryViewModel,
     activeSort: PhotoSort,
     columnCount: Int,
     prefs: android.content.SharedPreferences,
     onDismiss: () -> Unit,
+    onConfirmTrash: (List<MediaItem>) -> Unit,
     onNavigateToEditor: (String, Long) -> Unit,
     onNavigateToMoveCopy: (String, String, String?) -> Unit,
     onNavigateToWallpaper: (String, Long) -> Unit,
     onUpdateColumns: (Int) -> Unit
 ) {
     val context = LocalContext.current
+
     when (dialog) {
         is PictureUiDialog.TrashConfirm -> {
             ModernMoveToTrashSheet(
-                count = dialog.mediaItems.size,
+                count = dialog.mediaIds.size,
                 onDismiss = onDismiss,
                 onConfirm = {
-                    val itemsToTrash = dialog.mediaItems
-                    onDismiss()
-                    // Safely close the fullscreen viewer and stop ExoPlayer BEFORE trashing
-                    // so the pager does not crash trying to render a deleted item or locked video URI
-                    runCatching {
-                        val player = viewModel.getPlayer()
-                        player.pause()
-                        player.stop()
-                        player.clearMediaItems()
+                    val targetIds = dialog.mediaIds.toSet()
+                    val snapshotList = pagedMedia.itemSnapshotList.items
+                        .filterIsInstance<GalleryGridItem.Media>()
+                        .map { mediaMap[it.item.id] ?: it.item }
+
+                    // Resolve items from snapshot, mediaMap, rawMedia,
+                    // and openedMediaItem so single-item Trash never misses.
+                    val itemsToTrash = buildList {
+                        addAll(
+                            snapshotList.filter {
+                                targetIds.contains(it.id)
+                            }
+                        )
+
+                        targetIds.forEach { id ->
+                            if (none { it.id == id }) {
+                                val fallback = mediaMap[id]
+                                    ?: openedMediaItem?.takeIf { it.id == id }
+                                    ?: rawMedia.firstOrNull { it.id == id }
+
+                                if (fallback != null) {
+                                    add(fallback)
+                                }
+                            }
+                        }
                     }
-                    viewModel.closeViewer()
-                    if (itemsToTrash.isNotEmpty()) {
-                        trashViewModel.confirmPendingGalleryTrash(itemsToTrash)
-                    }
+
+                    onConfirmTrash(itemsToTrash)
                 }
             )
         }
+
         is PictureUiDialog.QuickAction -> {
             val item = dialog.item
-            val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-            var showMoreExpanded by remember { mutableStateOf(false) }
+            val sheetState = rememberModalBottomSheetState(
+                skipPartiallyExpanded = true
+            )
+            var showMoreExpanded by remember {
+                mutableStateOf(false)
+            }
 
             ModalBottomSheet(
                 onDismissRequest = onDismiss,
@@ -1977,7 +2077,9 @@ fun DialogsHost(
                     BottomSheetDefaults.DragHandle(
                         width = 48.dp,
                         height = 4.dp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(
+                            alpha = 0.4f
+                        )
                     )
                 }
             ) {
@@ -1986,7 +2088,9 @@ fun DialogsHost(
                         .padding(horizontal = 24.dp, vertical = 16.dp)
                         .padding(bottom = 24.dp)
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                         Column {
                             Text(
                                 text = getSmartName(item),
@@ -1994,6 +2098,7 @@ fun DialogsHost(
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
+
                             Text(
                                 text = getFolderName(item.path),
                                 color = Color.Gray,
@@ -2001,76 +2106,156 @@ fun DialogsHost(
                             )
                         }
                     }
+
                     Spacer(modifier = Modifier.height(24.dp))
+
                     LazyRow(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceEvenly
                     ) {
                         item {
-                            ActionItem(icon = Icons.Outlined.Edit, label = "Edit") {
+                            ActionItem(
+                                icon = Icons.Outlined.Edit,
+                                label = "Edit"
+                            ) {
                                 onDismiss()
-                                onNavigateToEditor(item.uri.toString(), item.id)
+                                onNavigateToEditor(
+                                    item.uri.toString(),
+                                    item.id
+                                )
                             }
                         }
+
                         item {
-                            ActionItem(icon = Icons.Outlined.Share, label = "Share") {
+                            ActionItem(
+                                icon = Icons.Outlined.Share,
+                                label = "Share"
+                            ) {
                                 context.startActivity(
                                     Intent.createChooser(
                                         Intent(Intent.ACTION_SEND).apply {
-                                            type = if (item.isVideo) "video/*" else "image/*"
-                                            putExtra(Intent.EXTRA_STREAM, item.uri)
-                                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                            type = if (item.isVideo) {
+                                                "video/*"
+                                            } else {
+                                                "image/*"
+                                            }
+
+                                            putExtra(
+                                                Intent.EXTRA_STREAM,
+                                                item.uri
+                                            )
+
+                                            addFlags(
+                                                Intent.FLAG_GRANT_READ_URI_PERMISSION
+                                            )
                                         },
                                         "Share via"
                                     )
                                 )
+
                                 onDismiss()
                             }
                         }
+
                         item {
-                            ActionItem(icon = Icons.Outlined.Delete, label = "Delete", isDestructive = true) {
-                                onDismiss()
-                                runCatching {
-                                    val player = viewModel.getPlayer()
-                                    player.pause()
-                                    player.stop()
-                                    player.clearMediaItems()
-                                }
-                                viewModel.closeViewer()
-                                trashViewModel.confirmPendingGalleryTrash(listOf(item))
+                            ActionItem(
+                                icon = Icons.Outlined.Delete,
+                                label = "Delete",
+                                isDestructive = true
+                            ) {
+                                val resolved = openedMediaItem
+                                    ?.takeIf { it.id == item.id }
+                                    ?: mediaMap[item.id]
+                                    ?: rawMedia.firstOrNull { it.id == item.id }
+                                    ?: item
+
+                                onConfirmTrash(listOf(resolved))
                             }
                         }
+
                         item {
-                            ActionItem(icon = Icons.Default.MoreVert, label = "More") {
+                            ActionItem(
+                                icon = Icons.Default.MoreVert,
+                                label = "More"
+                            ) {
                                 showMoreExpanded = true
                             }
                         }
                     }
+
                     if (showMoreExpanded) {
-                        Column(modifier = Modifier.padding(top = 16.dp)) {
-                            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+                        Column(
+                            modifier = Modifier.padding(top = 16.dp)
+                        ) {
+                            HorizontalDivider(
+                                modifier = Modifier.padding(vertical = 8.dp)
+                            )
+
                             ListItem(
-                                headlineContent = { Text("Move to Album", fontWeight = FontWeight.SemiBold) },
-                                leadingContent = { Icon(imageVector = Icons.AutoMirrored.Outlined.DriveFileMove, contentDescription = null) },
+                                headlineContent = {
+                                    Text(
+                                        "Move to Album",
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                },
+                                leadingContent = {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Outlined.DriveFileMove,
+                                        contentDescription = null
+                                    )
+                                },
                                 modifier = Modifier.clickable {
                                     onDismiss()
-                                    onNavigateToMoveCopy("MOVE", item.id.toString(), null)
+                                    onNavigateToMoveCopy(
+                                        "MOVE",
+                                        item.id.toString(),
+                                        null
+                                    )
                                 }
                             )
+
                             ListItem(
-                                headlineContent = { Text("Copy to Album", fontWeight = FontWeight.SemiBold) },
-                                leadingContent = { Icon(imageVector = Icons.Outlined.FileCopy, contentDescription = null) },
+                                headlineContent = {
+                                    Text(
+                                        "Copy to Album",
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                },
+                                leadingContent = {
+                                    Icon(
+                                        imageVector = Icons.Outlined.FileCopy,
+                                        contentDescription = null
+                                    )
+                                },
                                 modifier = Modifier.clickable {
                                     onDismiss()
-                                    onNavigateToMoveCopy("COPY", item.id.toString(), null)
+                                    onNavigateToMoveCopy(
+                                        "COPY",
+                                        item.id.toString(),
+                                        null
+                                    )
                                 }
                             )
+
                             ListItem(
-                                headlineContent = { Text("Set as Wallpaper", fontWeight = FontWeight.SemiBold) },
-                                leadingContent = { Icon(imageVector = Icons.Outlined.Wallpaper, contentDescription = null) },
+                                headlineContent = {
+                                    Text(
+                                        "Set as Wallpaper",
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                },
+                                leadingContent = {
+                                    Icon(
+                                        imageVector = Icons.Outlined.Wallpaper,
+                                        contentDescription = null
+                                    )
+                                },
                                 modifier = Modifier.clickable {
                                     onDismiss()
-                                    onNavigateToWallpaper(item.uri.toString(), item.id)
+                                    onNavigateToWallpaper(
+                                        item.uri.toString(),
+                                        item.id
+                                    )
                                 }
                             )
                         }
@@ -2078,6 +2263,7 @@ fun DialogsHost(
                 }
             }
         }
+
         is PictureUiDialog.GridSize -> {
             ModernGridSheet(
                 currentColumns = columnCount,
@@ -2086,6 +2272,7 @@ fun DialogsHost(
                 onUpdate = onUpdateColumns
             )
         }
+
         is PictureUiDialog.Sort -> {
             ModernSortSheet(
                 activeSort = activeSort,
@@ -2096,12 +2283,14 @@ fun DialogsHost(
                 }
             )
         }
+
         is PictureUiDialog.MetadataInfo -> {
             MediaMetadataSheet(
                 item = dialog.item,
                 onDismiss = onDismiss
             )
         }
+
         PictureUiDialog.None -> {}
     }
 }
@@ -2327,31 +2516,37 @@ fun GalleryGridContent(
             verticalArrangement = Arrangement.spacedBy(3.dp),
             horizontalArrangement = Arrangement.spacedBy(3.dp)
         ) {
-            item(span = { GridItemSpan(maxLineSpan) }) {
+            item(
+                key = "top_filter_header",
+                span = { GridItemSpan(maxLineSpan) }
+            ) {
                 header()
             }
 
             items(
                 count = pagedMedia.itemCount,
                 span = { index ->
-                    if (pagedMedia.peek(index) is GalleryGridItem.Header) {
+                    val peeked = runCatching { pagedMedia.peek(index) }.getOrNull()
+                    if (peeked is GalleryGridItem.Header) {
                         GridItemSpan(columnCount.coerceAtLeast(1))
                     } else {
                         GridItemSpan(1)
                     }
                 },
+                // Collision-proof keys: prevents LazyVerticalGrid crash when taking a live screenshot!
                 key = { index ->
-                    when (val item = pagedMedia.peek(index)) {
-                        is GalleryGridItem.Media -> item.item.id
-                        is GalleryGridItem.Header -> "header_${item.id}"
-                        else -> index
+                    when (val item = runCatching { pagedMedia.peek(index) }.getOrNull()) {
+                        is GalleryGridItem.Media -> "media_${item.item.id}"
+                        is GalleryGridItem.Header -> "header_${item.title}_$index"
+                        else -> "placeholder_$index"
                     }
                 },
                 contentType = { index ->
-                    if (pagedMedia.peek(index) is GalleryGridItem.Header) "header" else "media"
+                    val peeked = runCatching { pagedMedia.peek(index) }.getOrNull()
+                    if (peeked is GalleryGridItem.Header) "header" else "media"
                 }
             ) { index ->
-                when (val gridItem = pagedMedia[index]) {
+                when (val gridItem = runCatching { pagedMedia[index] }.getOrNull()) {
                     is GalleryGridItem.Header -> {
                         ModernDateHeader(
                             title = gridItem.title,
@@ -3591,5 +3786,17 @@ fun ZoomableImagePage(
             contentScale = ContentScale.Fit,
             modifier = Modifier.fillMaxSize()
         )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CACHE HELPER
+// ---------------------------------------------------------------------------
+fun invalidateThumbCache(context: Context, uris: List<Uri>) {
+    val imageLoader = coil.imageLoader(context)
+    uris.forEach { uri ->
+        val uriString = uri.toString()
+        imageLoader.diskCache?.remove(uriString)
+        imageLoader.memoryCache?.remove(coil.memory.MemoryCache.Key(uriString))
     }
 }

@@ -65,6 +65,7 @@ import androidx.hilt.work.HiltWorker
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import coil.compose.AsyncImage
@@ -277,21 +278,23 @@ fun TrashScreen(
         }
     }
 
-    LaunchedEffect(trashViewModel) {
-        trashViewModel.events.collect { event ->
-            when (event) {
-                is GalleryEvent.RequestPermission -> intentSenderLauncher.launch(IntentSenderRequest.Builder(event.intentSender).build())
-                is GalleryEvent.ShowToast -> Toast.makeText(context, event.message, Toast.LENGTH_SHORT).show()
-                is GalleryEvent.OperationSuccess -> {
-                    isEditMode = false
-                    selectedIds = emptySet()
-                    itemForDetails = null
-                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                    scope.launch { snackbarHostState.showSnackbar("Operation Completed Successfully") }
-                    galleryViewModel.refreshData()
-                    musicViewModel.loadAllAudioTracks()
+    LaunchedEffect(trashViewModel, lifecycleOwner) {
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            trashViewModel.events.collect { event ->
+                when (event) {
+                    is GalleryEvent.RequestPermission -> intentSenderLauncher.launch(IntentSenderRequest.Builder(event.intentSender).build())
+                    is GalleryEvent.ShowToast -> Toast.makeText(context, event.message, Toast.LENGTH_SHORT).show()
+                    is GalleryEvent.OperationSuccess -> {
+                        isEditMode = false
+                        selectedIds = emptySet()
+                        itemForDetails = null
+                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                        scope.launch { snackbarHostState.showSnackbar("Operation Completed Successfully") }
+                        galleryViewModel.refreshData()
+                        musicViewModel.loadAllAudioTracks()
+                    }
+                    else -> {}
                 }
-                else -> {}
             }
         }
     }
@@ -1199,9 +1202,14 @@ fun TrashSquareTile(
     ) {
         when (item.type) {
             TrashMediaType.Image, TrashMediaType.Video -> {
+                val context = LocalContext.current
+                val imageModel = remember(item.contentUri, item.originalPath) {
+                    val file = if (item.originalPath.isNotBlank()) java.io.File(item.originalPath) else null
+                    if (file != null && file.exists()) file else item.contentUri
+                }
                 AsyncImage(
-                    model = ImageRequest.Builder(LocalContext.current)
-                        .data(item.contentUri)
+                    model = ImageRequest.Builder(context)
+                        .data(imageModel)
                         .size(350)
                         .memoryCacheKey("t_${item.id}")
                         .crossfade(true)
@@ -1378,92 +1386,6 @@ fun MetadataRow(label: String, value: String) {
     }
 }
 
-/**
- * =========================================================================================
- * ⚙️ THE JANITOR (Background Cleanup Worker - Android WorkManager)
- * =========================================================================================
- */
-@HiltWorker
-class TrashCleanupWorker @AssistedInject constructor(
-    @Assisted appContext: Context,
-    @Assisted workerParams: WorkerParameters,
-    private val dao: GalleryDao
-) : CoroutineWorker(appContext, workerParams) {
-
-    companion object {
-        private const val TRASH_EXPIRY_MS = 30L * 24L * 60L * 60L * 1000L
-    }
-
-    override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
-        try {
-            val expiryThreshold = System.currentTimeMillis() - TRASH_EXPIRY_MS
-            val allCandidates = dao.getOldestTrashItems(5000)
-
-            if (allCandidates.isEmpty()) return@withContext Result.success()
-
-            val deletedIds = mutableListOf<Long>()
-            var deleteFailures = 0
-
-            allCandidates.chunked(500).forEach { batch ->
-                batch.forEachIndexed { index, trash ->
-                    if (index % 50 == 0) yield()
-                    val uri = runCatching { Uri.parse(trash.contentUri) }.getOrNull()
-                    val exists = uri != null && mediaExists(uri)
-                    val isExpired = trash.deletedTimestamp < expiryThreshold
-
-                    when {
-                        !exists -> deletedIds.add(trash.id)
-                        isExpired -> {
-                            try {
-                                if (applicationContext.contentResolver.delete(uri!!, null, null) > 0) {
-                                    deletedIds.add(trash.id)
-                                } else {
-                                    if (!mediaExists(uri)) deletedIds.add(trash.id) else deleteFailures++
-                                }
-                            } catch (e: Exception) {
-                                deleteFailures++
-                            }
-                        }
-                    }
-                }
-                if (deletedIds.isNotEmpty()) {
-                    dao.deleteTrashItems(deletedIds)
-                    deletedIds.clear()
-                }
-            }
-
-            if (deleteFailures > 100) Result.retry() else Result.success()
-        } catch (e: Exception) {
-            Result.success()
-        }
-    }
-
-    private fun mediaExists(uri: Uri): Boolean {
-        return try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                val bundle = Bundle().apply {
-                    putInt(MediaStore.QUERY_ARG_MATCH_TRASHED, MediaStore.MATCH_INCLUDE)
-                }
-                applicationContext.contentResolver.query(
-                    uri,
-                    arrayOf(MediaStore.MediaColumns._ID),
-                    bundle,
-                    null
-                )?.use { it.moveToFirst() } == true
-            } else {
-                applicationContext.contentResolver.query(
-                    uri,
-                    arrayOf(MediaStore.MediaColumns._ID),
-                    null,
-                    null,
-                    null
-                )?.use { it.moveToFirst() } == true
-            }
-        } catch (e: Exception) {
-            false
-        }
-    }
-}
 
 /**
  * =========================================================================================
@@ -1519,6 +1441,51 @@ fun EmptyTrashView(currentFilter: TrashFilter) {
                     modifier = Modifier.padding(horizontal = 40.dp)
                 )
             }
+        }
+    }
+}
+
+@HiltWorker
+class TrashCleanupWorker @AssistedInject constructor(
+    @Assisted appContext: Context,
+    @Assisted workerParams: WorkerParameters,
+    private val dao: GalleryDao
+) : CoroutineWorker(appContext, workerParams) {
+
+    companion object {
+        private const val TRASH_EXPIRY_MS = 30L * 24L * 60L * 60L * 1000L
+    }
+
+    override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
+        try {
+            val expiryThreshold = System.currentTimeMillis() - TRASH_EXPIRY_MS
+            val allCandidates = dao.getOldestTrashItems(5000)
+
+            if (allCandidates.isEmpty()) return@withContext Result.success()
+
+            val expiredItems = allCandidates.filter { it.deletedTimestamp < expiryThreshold }
+            if (expiredItems.isEmpty()) return@withContext Result.success()
+
+            val deletedIds = mutableListOf<Long>()
+
+            expiredItems.chunked(500).forEach { batch ->
+                batch.forEachIndexed { index, trash ->
+                    if (index % 50 == 0) yield()
+                    val uri = runCatching { Uri.parse(trash.contentUri) }.getOrNull()
+                    if (uri != null) {
+                        runCatching { applicationContext.contentResolver.delete(uri, null, null) }
+                    }
+                    deletedIds.add(trash.id)
+                }
+                if (deletedIds.isNotEmpty()) {
+                    dao.deleteTrashItems(deletedIds)
+                    deletedIds.clear()
+                }
+            }
+
+            Result.success()
+        } catch (e: Exception) {
+            Result.success()
         }
     }
 }
