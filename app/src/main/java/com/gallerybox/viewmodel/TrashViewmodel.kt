@@ -45,6 +45,11 @@ class TrashViewModel @Inject constructor(
 
     // --- PENDING TASKS MEMORY ---
     @Volatile private var pendingTrashEntities: List<TrashEntity> = emptyList()
+
+    // Room rows already inserted BEFORE the system permission dialog (gallery trash flow).
+    // If the user denies, these rows are removed again.
+    @Volatile private var pendingTrashRowIds: List<Long> = emptyList()
+
     @Volatile private var pendingDeleteEntities: List<TrashEntity> = emptyList()
     @Volatile private var pendingDeleteAction: (() -> Unit)? = null
     @Volatile private var pendingRestoreEntities: List<TrashEntity> = emptyList()
@@ -94,6 +99,7 @@ class TrashViewModel @Inject constructor(
         viewModelScope.launch(Dispatchers.IO) {
 
             val trashSnapshot = pendingTrashEntities
+            val trashRowIdsSnapshot = pendingTrashRowIds
             val restoreSnapshot = pendingRestoreEntities
             val deleteSnapshot = pendingDeleteEntities
 
@@ -114,13 +120,21 @@ class TrashViewModel @Inject constructor(
                     else -> "Permission denied"
                 }
 
+                // Roll back rows that were inserted before the permission dialog.
+                if (trashRowIdsSnapshot.isNotEmpty()) {
+                    runCatching { galleryDao.deleteTrashItems(trashRowIdsSnapshot) }
+                        .onFailure { Log.e(TAG, "Failed to roll back pending trash rows", it) }
+                }
+
                 pendingTrashEntities = emptyList()
+                pendingTrashRowIds = emptyList()
                 pendingRestoreEntities = emptyList()
                 pendingDeleteEntities = emptyList()
                 pendingDeleteAction = null
                 pendingRestoreOnComplete = null
 
                 withContext(Dispatchers.Main) {
+                    onRefreshGallery?.invoke()
                     _events.emit(GalleryEvent.ShowToast(message))
                 }
                 return@launch
@@ -128,24 +142,19 @@ class TrashViewModel @Inject constructor(
 
             try {
                 when {
-                    // 1. Move Gallery media into Trash
+                    // 1. Move media into Trash
                     trashSnapshot.isNotEmpty() -> {
-                        Log.d(
-                            TAG,
-                            "Saving ${trashSnapshot.size} pending Trash items to Room"
-                        )
+                        if (trashRowIdsSnapshot.isEmpty()) {
+                            // Music / legacy flows: rows not inserted yet.
+                            Log.d(TAG, "Saving ${trashSnapshot.size} pending Trash items to Room")
+                            val insertedIds = galleryDao.insertTrashItemsBulk(trashSnapshot)
+                            Log.d(TAG, "Trash DB insertion completed: ${insertedIds.size} rows")
+                        } else {
+                            Log.d(TAG, "Trash rows already saved (${trashRowIdsSnapshot.size}), skipping insert")
+                        }
 
-                        // First save successfully in Room.
-                        val insertedIds =
-                            galleryDao.insertTrashItemsBulk(trashSnapshot)
-
-                        Log.d(
-                            TAG,
-                            "Trash DB insertion completed: ${insertedIds.size} rows"
-                        )
-
-                        // Clear pending state ONLY after successful insertion.
                         pendingTrashEntities = emptyList()
+                        pendingTrashRowIds = emptyList()
 
                         withContext(Dispatchers.Main) {
                             onRefreshGallery?.invoke()
@@ -196,7 +205,6 @@ class TrashViewModel @Inject constructor(
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to complete pending Trash operation", e)
 
-                // Keep pending state intact if Room operation fails.
                 withContext(Dispatchers.Main) {
                     _events.emit(
                         GalleryEvent.ShowToast(
@@ -279,7 +287,6 @@ class TrashViewModel @Inject constructor(
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             try {
-                val uris = mediaItems.map { Uri.parse(it.contentUri) }
                 // Try direct untrash first if our app owns the file
                 val needPermissionItems = mutableListOf<TrashEntity>()
                 val directlyRestoredIds = mutableListOf<Long>()
@@ -322,7 +329,6 @@ class TrashViewModel @Inject constructor(
                 _events.emit(GalleryEvent.RequestPermission(intentSender))
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to create restore request, restoring from local Trash table", e)
-                // If the file was soft-trashed only in Room DB, removing it from Trash table restores it to Gallery!
                 galleryDao.deleteTrashItems(mediaItems.map { it.id })
                 withContext(Dispatchers.Main) {
                     onRefreshGallery?.invoke()
@@ -330,7 +336,6 @@ class TrashViewModel @Inject constructor(
                 }
             }
         } else {
-            // On Android 10 and below, removing from Trash table un-hides the item back into Gallery
             galleryDao.deleteTrashItems(mediaItems.map { it.id })
             withContext(Dispatchers.Main) {
                 onRefreshGallery?.invoke()
@@ -399,12 +404,17 @@ class TrashViewModel @Inject constructor(
 
     /**
      * Moves photos/videos from PictureScreen or AlbumDetailScreen into the Trash Bin (NEVER permanently deletes!).
+     *
+     * R+: Room rows are inserted FIRST, then the system permission dialog is shown.
+     * This way the item always shows up in TrashScreen even if the permission callback
+     * is lost (e.g. when the fullscreen viewer was open). If the user denies, the rows are rolled back.
      */
     fun confirmPendingGalleryTrash(itemsToTrash: List<MediaItem>) = viewModelScope.launch(Dispatchers.IO) {
         if (itemsToTrash.isEmpty()) return@launch
 
+        val distinctItems = itemsToTrash.distinctBy { it.id }
         val now = System.currentTimeMillis()
-        val mappedEntities = itemsToTrash.distinctBy { it.id }.map { media ->
+        val mappedEntities = distinctItems.map { media ->
             TrashEntity(
                 deletedTimestamp = now,
                 originalPath = media.path,
@@ -417,14 +427,28 @@ class TrashViewModel @Inject constructor(
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             try {
-                val uris = itemsToTrash.distinctBy { it.id }.map { it.uri }
-                val intentSender = MediaStore.createTrashRequest(resolver, uris, true).intentSender
+                val intentSender = MediaStore.createTrashRequest(
+                    resolver,
+                    distinctItems.map { it.uri },
+                    true
+                ).intentSender
+
+                // 1. Save in Room first
+                val rowIds = galleryDao.insertTrashItemsBulk(mappedEntities)
+                pendingTrashRowIds = rowIds
                 pendingTrashEntities = mappedEntities
+
+                withContext(Dispatchers.Main) {
+                    onRefreshGallery?.invoke()
+                }
+
+                // 2. Then ask the system for permission
                 _events.emit(GalleryEvent.RequestPermission(intentSender))
             } catch (e: Exception) {
                 Log.e(TAG, "MediaStore.createTrashRequest failed, using app-level non-destructive Trash", e)
-                // NEVER call resolver.delete() here! Insert into TrashEntity table so it moves to TrashScreen
-                // and remains 100% recoverable!
+                pendingTrashRowIds = emptyList()
+                pendingTrashEntities = emptyList()
+                // NEVER call resolver.delete() here!
                 galleryDao.insertTrashItemsBulk(mappedEntities)
                 withContext(Dispatchers.Main) {
                     onRefreshGallery?.invoke()
@@ -432,8 +456,6 @@ class TrashViewModel @Inject constructor(
                 }
             }
         } else {
-            // On Android 10 and below, insert into TrashEntity table without deleting the file on disk
-            // so the item is hidden from Gallery, appears in TrashScreen, and can be Restored!
             galleryDao.insertTrashItemsBulk(mappedEntities)
             withContext(Dispatchers.Main) {
                 onRefreshGallery?.invoke()
@@ -460,6 +482,7 @@ class TrashViewModel @Inject constructor(
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             try {
                 val intentSender = MediaStore.createTrashRequest(resolver, itemsToTrash.map { Uri.parse(it.uri) }, true).intentSender
+                pendingTrashRowIds = emptyList()
                 pendingTrashEntities = mappedEntities
                 withContext(Dispatchers.Main) {
                     onPermissionRequested(IntentSenderRequest.Builder(intentSender).build())
@@ -504,6 +527,7 @@ class TrashViewModel @Inject constructor(
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             try {
                 val intentSender = MediaStore.createTrashRequest(resolver, songs.map { Uri.parse(it.uri) }, true).intentSender
+                pendingTrashRowIds = emptyList()
                 pendingTrashEntities = mappedEntities
                 _events.emit(GalleryEvent.RequestPermission(intentSender))
             } catch (e: Exception) {

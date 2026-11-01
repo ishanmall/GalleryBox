@@ -97,6 +97,8 @@ import androidx.media3.ui.PlayerView
 import androidx.paging.compose.LazyPagingItems
 import androidx.paging.compose.collectAsLazyPagingItems
 import coil.compose.AsyncImage
+import coil.imageLoader
+import coil.memory.MemoryCache
 import coil.request.CachePolicy
 import coil.request.ImageRequest
 import coil.size.Precision
@@ -497,7 +499,9 @@ fun PictureScreen(
 
     // Dedicated reference to the currently opened item in Fullscreen Viewer (just like AlbumDetailScreen)
     var openedMediaItem by remember { mutableStateOf<MediaItem?>(null) }
-    var pendingTrashItems by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
+
+    // Tracks a pending trash action so "Moved to Trash" is shown ONLY after the file is actually deleted
+    var awaitingTrashFeedback by remember { mutableStateOf(false) }
 
     val openViewerState = viewerState as? GalleryViewerState.Open
     val viewerItemId = openViewerState?.mediaId
@@ -512,9 +516,12 @@ fun PictureScreen(
                 ?.item
     }
 
-    // Automatically refresh PagingData whenever trashBin or rawMedia count changes (e.g., screenshot taken or item trashed)
+    // Refresh PagingData when trashBin or rawMedia count changes (e.g., screenshot taken or item trashed).
+    // Skipped while the fullscreen viewer is open so it never races with the trash flow.
     LaunchedEffect(trashBin.size, rawMedia.size) {
-        pagedMedia.refresh()
+        if (viewerState !is GalleryViewerState.Open) {
+            pagedMedia.refresh()
+        }
     }
 
     val prefs = remember { context.getSharedPreferences("gallery_prefs", Context.MODE_PRIVATE) }
@@ -576,7 +583,7 @@ fun PictureScreen(
         val granted = result.resultCode == Activity.RESULT_OK
         trashViewModel.onPermissionResultGlobal(granted)
         if (!granted) {
-            pendingTrashItems = emptyList()
+            awaitingTrashFeedback = false
             Toast.makeText(context, "Permission Denied", Toast.LENGTH_SHORT).show()
         }
     }
@@ -587,6 +594,7 @@ fun PictureScreen(
         val granted = result.resultCode == Activity.RESULT_OK
         viewModel.onPermissionResult(granted)
         if (!granted) {
+            awaitingTrashFeedback = false
             Toast.makeText(context, "Permission Denied", Toast.LENGTH_SHORT).show()
         }
     }
@@ -595,6 +603,10 @@ fun PictureScreen(
         trashViewModel.onRefreshGallery = {
             viewModel.refreshAfterFileOperation()
             pagedMedia.refresh()
+            if (awaitingTrashFeedback) {
+                awaitingTrashFeedback = false
+                Toast.makeText(context, "Moved to Trash", Toast.LENGTH_SHORT).show()
+            }
         }
         lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
             trashViewModel.events.collect { event ->
@@ -609,20 +621,25 @@ fun PictureScreen(
                         intentSenderLauncherTrash.launch(IntentSenderRequest.Builder(event.intentSender).build())
                     }
                     is GalleryEvent.OperationSuccess -> {
-                        val trashedIds = pendingTrashItems.map { it.id }.toSet()
-                        pendingTrashItems = emptyList()
                         activeDialog = PictureUiDialog.None
                         isSelectionMode = false
                         selectedIds = emptySet()
                         openedMediaItem = null
                         viewModel.closeViewer()
-                        pagedMedia.refresh()
                         viewModel.refreshAfterFileOperation()
-                        if (snackbarHostState.showSnackbar("Moved to Trash", "View Trash", duration = SnackbarDuration.Short) == SnackbarResult.ActionPerformed) {
-                            onNavigateToTrash()
-                        }
+                        pagedMedia.refresh()
+                        awaitingTrashFeedback = false
+
+                        Toast.makeText(
+                            context,
+                            "Moved to Trash",
+                            Toast.LENGTH_SHORT
+                        ).show()
                     }
-                    is GalleryEvent.ShowToast -> Toast.makeText(context, event.message, Toast.LENGTH_SHORT).show()
+                    is GalleryEvent.ShowToast -> {
+                        awaitingTrashFeedback = false
+                        Toast.makeText(context, event.message, Toast.LENGTH_SHORT).show()
+                    }
                     else -> {}
                 }
             }
@@ -649,6 +666,10 @@ fun PictureScreen(
                         openedMediaItem = null
                         viewModel.closeViewer()
                         pagedMedia.refresh()
+                        if (awaitingTrashFeedback) {
+                            awaitingTrashFeedback = false
+                            Toast.makeText(context, "Moved to Trash", Toast.LENGTH_SHORT).show()
+                        }
                     }
                     is GalleryEvent.ShowToast -> Toast.makeText(context, event.message, Toast.LENGTH_SHORT).show()
                     else -> {}
@@ -1019,10 +1040,13 @@ fun PictureScreen(
                 prefs = prefs,
                 onDismiss = { activeDialog = PictureUiDialog.None },
                 onConfirmTrash = { itemsToTrash ->
-                    pendingTrashItems = itemsToTrash
+                    // Exact same flow as AlbumDetailScreen: close dialog, stop player, close viewer,
+                    // then call confirmPendingGalleryTrash and let OperationSuccess/onRefreshGallery show "Moved to Trash" AFTER user clicks Allow.
                     activeDialog = PictureUiDialog.None
                     isSelectionMode = false
+                    selectedIds = emptySet()
                     openedMediaItem = null
+
                     runCatching {
                         val player = viewModel.getPlayer()
                         player.pause()
@@ -1030,7 +1054,9 @@ fun PictureScreen(
                         player.clearMediaItems()
                     }
                     viewModel.closeViewer()
+
                     if (itemsToTrash.isNotEmpty()) {
+                        awaitingTrashFeedback = true
                         trashViewModel.confirmPendingGalleryTrash(itemsToTrash)
                         invalidateThumbCache(context, itemsToTrash.map { it.uri })
                     }
@@ -2054,6 +2080,17 @@ fun DialogsHost(
                             }
                         }
                     }
+
+                    Log.i(
+                        "TrashFlow",
+                        """
+                        CONFIRM TRASH
+                        IDs: ${itemsToTrash.map { it.id }}
+                        URIs: ${itemsToTrash.map { it.uri }}
+                        PATHS: ${itemsToTrash.map { it.path }}
+                        TYPES: ${itemsToTrash.map { it.isVideo }}
+                        """.trimIndent()
+                    )
 
                     onConfirmTrash(itemsToTrash)
                 }
@@ -3793,10 +3830,10 @@ fun ZoomableImagePage(
 // CACHE HELPER
 // ---------------------------------------------------------------------------
 fun invalidateThumbCache(context: Context, uris: List<Uri>) {
-    val imageLoader = coil.imageLoader(context)
+    val imageLoader = context.imageLoader
     uris.forEach { uri ->
         val uriString = uri.toString()
         imageLoader.diskCache?.remove(uriString)
-        imageLoader.memoryCache?.remove(coil.memory.MemoryCache.Key(uriString))
+        imageLoader.memoryCache?.remove(MemoryCache.Key(uriString))
     }
 }
