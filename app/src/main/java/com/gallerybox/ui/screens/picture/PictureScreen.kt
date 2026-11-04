@@ -2810,7 +2810,7 @@ fun SelectionOverlay(
 }
 
 // =========================================================================================
-// 🖼️ FULL SCREEN VIEWER OVERLAY
+// 🖼️ FULL SCREEN VIEWER OVERLAY (CLEAN TOP — NO TOP BAR / BACK BUTTON / DATE)
 // =========================================================================================
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -2969,48 +2969,6 @@ fun FullscreenMediaPager(
                     .fillMaxWidth()
                     .background(Color.Black)
             ) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .fillMaxWidth()
-                        .padding(18.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        FilledIconButton(
-                            onClick = onClose,
-                            colors = IconButtonDefaults.filledIconButtonColors(
-                                containerColor = Color.White.copy(alpha = 0.16f)
-                            )
-                        ) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                contentDescription = "Back",
-                                tint = Color.White
-                            )
-                        }
-
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text(
-                                text = liveCurrentItem?.let {
-                                    shortDateFormatter.format(Date(it.dateAdded * 1000L))
-                                } ?: "",
-                                color = Color.White,
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.size(48.dp))
-                    }
-                }
-
                 liveCurrentItem?.let { currentItem ->
                     Box(
                         modifier = Modifier
@@ -3252,57 +3210,6 @@ fun FullscreenMediaPager(
             }
 
             if (showControls) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .fillMaxWidth()
-                        .background(
-                            Brush.verticalGradient(
-                                listOf(
-                                    Color.Black.copy(alpha = 0.75f),
-                                    Color.Transparent
-                                )
-                            )
-                        )
-                        .statusBarsPadding()
-                        .padding(18.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        FilledIconButton(
-                            onClick = onClose,
-                            colors = IconButtonDefaults.filledIconButtonColors(
-                                containerColor = Color.White.copy(alpha = 0.16f)
-                            )
-                        ) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                contentDescription = "Back",
-                                tint = Color.White
-                            )
-                        }
-
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text(
-                                text = liveCurrentItem?.let {
-                                    shortDateFormatter.format(Date(it.dateAdded * 1000L))
-                                } ?: "",
-                                color = Color.White,
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.size(48.dp))
-                    }
-                }
-
                 liveCurrentItem?.let { currentItem ->
                     Box(
                         modifier = Modifier

@@ -4796,7 +4796,7 @@ fun MetadataRow(icon: ImageVector, label: String, value: String) {
 
 /**
  * =========================================================================================
- * 🖼️ FULL SCREEN VIEWER OVERLAY (Samsung One UI Cinema Pager)
+ * 🖼️ FULL SCREEN VIEWER OVERLAY (CLEAN TOP + CRASH-FREE IN-WINDOW MORE & DETAILS MENU)
  * =========================================================================================
  */
 @OptIn(ExperimentalFoundationApi::class)
@@ -4830,6 +4830,11 @@ fun FullscreenMediaPager(
     val act = remember { ctx.findActivity() }
     val vid = remember(mediaList) { mediaList.filter { it.isVideo } }
 
+    BackHandler(enabled = more || meta) {
+        more = false
+        meta = false
+    }
+
     LaunchedEffect(initialIndex, mediaList.size) {
         if (st.currentPage != initialIndex && initialIndex in mediaList.indices) {
             st.scrollToPage(initialIndex)
@@ -4837,6 +4842,8 @@ fun FullscreenMediaPager(
     }
 
     val performClose = {
+        more = false
+        meta = false
         runCatching {
             sharedPlayer.playWhenReady = false
             sharedPlayer.pause()
@@ -4864,6 +4871,7 @@ fun FullscreenMediaPager(
 
     LaunchedEffect(st.currentPage, vid) {
         ctrl = true
+        more = false
 
         val current = mediaList.getOrNull(st.currentPage) ?: return@LaunchedEffect
         val resolvedCurrent = mediaMap[current.id] ?: current
@@ -4917,7 +4925,14 @@ fun FullscreenMediaPager(
                     isCurrentPage = st.currentPage == p,
                     showControls = ctrl,
                     sharedPlayer = sharedPlayer,
-                    onTap = { ctrl = !ctrl },
+                    onTap = {
+                        if (more || meta) {
+                            more = false
+                            meta = false
+                        } else {
+                            ctrl = !ctrl
+                        }
+                    },
                     onPlay = {
                         sharedPlayer.pause()
                         onPlayVideo(itm.uri.toString(), vid.map { it.uri.toString() })
@@ -4926,7 +4941,14 @@ fun FullscreenMediaPager(
             } else {
                 ZoomableImagePage(
                     item = itm,
-                    onTap = { ctrl = !ctrl },
+                    onTap = {
+                        if (more || meta) {
+                            more = false
+                            meta = false
+                        } else {
+                            ctrl = !ctrl
+                        }
+                    },
                     onDismiss = { performClose() },
                     onZoomChanged = {},
                     onControlsVisibilityChange = { ctrl = it }
@@ -4934,79 +4956,188 @@ fun FullscreenMediaPager(
             }
         }
 
+        // Scrim when in-window More menu or Details card is open
         AnimatedVisibility(
-            visible = ctrl,
-            enter = fadeIn(tween(180)) + slideInVertically(initialOffsetY = { -it / 3 }),
-            exit = fadeOut(tween(150)) + slideOutVertically(targetOffsetY = { -it / 3 }),
-            modifier = Modifier.align(Alignment.TopCenter)
+            visible = more || meta,
+            enter = fadeIn(tween(150)),
+            exit = fadeOut(tween(120)),
+            modifier = Modifier.fillMaxSize()
         ) {
             Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .background(
-                        Brush.verticalGradient(
-                            listOf(
-                                Color.Black.copy(alpha = 0.75f),
-                                Color.Black.copy(alpha = 0.30f),
-                                Color.Transparent
-                            )
-                        )
-                    )
-                    .statusBarsPadding()
-                    .padding(horizontal = 12.dp, vertical = 10.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    IconButton(onClick = { performClose() }) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Back",
-                            tint = Color.White
-                        )
-                    }
-
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier
-                            .weight(1f)
-                            .padding(horizontal = 12.dp)
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.55f))
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
                     ) {
-                        Text(
-                            text = curr?.let { shortViewerDateFormatter.format(Date(it.dateAdded * 1000L)) } ?: "",
-                            color = Color.White,
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        curr?.bucketName?.takeIf { it.isNotBlank() }?.let { albumName ->
-                            Text(
-                                text = albumName,
-                                color = Color.White.copy(alpha = 0.72f),
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Medium,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
+                        more = false
+                        meta = false
                     }
+            )
+        }
 
-                    IconButton(onClick = { meta = true }) {
-                        Icon(
-                            imageVector = Icons.Outlined.Info,
-                            contentDescription = "Details",
-                            tint = Color.White
-                        )
+        // In-Window Crash-Free "More" Menu Card (No PopupWindow / DialogWindow token conflicts)
+        AnimatedVisibility(
+            visible = more && curr != null,
+            enter = fadeIn(tween(160)) + scaleIn(initialScale = 0.92f, animationSpec = tween(180)),
+            exit = fadeOut(tween(120)) + scaleOut(targetScale = 0.92f, animationSpec = tween(120)),
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .navigationBarsPadding()
+                .padding(end = 20.dp, bottom = 96.dp)
+        ) {
+            curr?.let { currentItem ->
+                Surface(
+                    shape = RoundedCornerShape(20.dp),
+                    color = Color(0xF21C1E26),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f)),
+                    shadowElevation = 12.dp,
+                    modifier = Modifier.width(220.dp)
+                ) {
+                    Column(modifier = Modifier.padding(vertical = 8.dp)) {
+                        ViewerMenuRow(
+                            icon = Icons.Outlined.Info,
+                            label = "Details"
+                        ) {
+                            more = false
+                            meta = true
+                        }
+                        ViewerMenuRow(
+                            icon = Icons.AutoMirrored.Outlined.DriveFileMove,
+                            label = "Move to Album"
+                        ) {
+                            more = false
+                            onMove(currentItem)
+                        }
+                        ViewerMenuRow(
+                            icon = Icons.Outlined.FileCopy,
+                            label = "Copy to Album"
+                        ) {
+                            more = false
+                            onCopy(currentItem)
+                        }
+                        if (currentItem.isVideo) {
+                            ViewerMenuRow(
+                                icon = Icons.AutoMirrored.Outlined.OpenInNew,
+                                label = "Open In"
+                            ) {
+                                more = false
+                                runCatching {
+                                    ctx.startActivity(
+                                        Intent(Intent.ACTION_VIEW).apply {
+                                            setDataAndType(currentItem.uri, "video/*")
+                                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                        if (!currentItem.isVideo) {
+                            ViewerMenuRow(
+                                icon = Icons.Outlined.Wallpaper,
+                                label = "Set as Wallpaper"
+                            ) {
+                                more = false
+                                onWallpaper(currentItem)
+                            }
+                        }
                     }
                 }
             }
         }
 
+        // In-Window Crash-Free "Details" Sheet Card
         AnimatedVisibility(
-            visible = ctrl && curr != null,
+            visible = meta && curr != null,
+            enter = fadeIn(tween(180)) + slideInVertically(initialOffsetY = { it / 2 }),
+            exit = fadeOut(tween(140)) + slideOutVertically(targetOffsetY = { it / 2 }),
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .padding(horizontal = 16.dp, vertical = 20.dp)
+        ) {
+            curr?.let { item ->
+                val ds = remember(item) {
+                    SimpleDateFormat("EEEE, MMMM dd, yyyy 'at' hh:mm a", Locale.getDefault()).format(Date(item.dateAdded * 1000L))
+                }
+                val sz = remember(item) { Formatter.formatFileSize(ctx, item.size) }
+
+                Surface(
+                    shape = RoundedCornerShape(24.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f)),
+                    shadowElevation = 16.dp,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(20.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Outlined.Info,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                                Spacer(Modifier.width(12.dp))
+                                Text(
+                                    text = "Media Details",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                            IconButton(
+                                onClick = { meta = false },
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Close,
+                                    contentDescription = "Close",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(12.dp))
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = MaterialTheme.colorScheme.surfaceContainer
+                        ) {
+                            Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)) {
+                                MetadataRow(icon = Icons.Outlined.Title, label = "Name", value = item.name)
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f))
+                                MetadataRow(icon = Icons.Outlined.Folder, label = "Path", value = item.path)
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f))
+                                MetadataRow(icon = Icons.Outlined.CalendarToday, label = "Date", value = ds)
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f))
+                                MetadataRow(icon = Icons.Outlined.Storage, label = "Size", value = sz)
+                                if (item.width > 0 && item.height > 0) {
+                                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f))
+                                    MetadataRow(icon = Icons.Outlined.AspectRatio, label = "Resolution", value = "${item.width} × ${item.height}")
+                                }
+                                if (item.isVideo && item.duration > 0L) {
+                                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f))
+                                    MetadataRow(icon = Icons.Outlined.Timer, label = "Duration", value = formatDuration(item.duration))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Bottom Action Bar
+        AnimatedVisibility(
+            visible = ctrl && curr != null && !meta,
             enter = fadeIn(tween(180)) + slideInVertically(initialOffsetY = { it / 3 }),
             exit = fadeOut(tween(150)) + slideOutVertically(targetOffsetY = { it / 3 }),
             modifier = Modifier.align(Alignment.BottomCenter)
@@ -5031,90 +5162,74 @@ fun FullscreenMediaPager(
                             horizontalArrangement = Arrangement.SpaceEvenly,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            PremiumViewerAction(icon = Icons.Outlined.Edit, label = "Edit") { onEdit(currentItem) }
+                            PremiumViewerAction(icon = Icons.Outlined.Edit, label = "Edit") {
+                                more = false
+                                onEdit(currentItem)
+                            }
                             PremiumViewerAction(
                                 icon = if (favoriteIds.contains(currentItem.id)) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
                                 label = if (favoriteIds.contains(currentItem.id)) "Unfavorite" else "Favorite",
                                 tint = if (favoriteIds.contains(currentItem.id)) Color(0xFFFF4D6D) else Color.White
                             ) {
+                                more = false
                                 onToggleFavorite(currentItem.id)
                             }
                             PremiumViewerAction(icon = Icons.Outlined.Share, label = "Share") {
-                                ctx.startActivity(
-                                    Intent.createChooser(
-                                        Intent(Intent.ACTION_SEND).apply {
-                                            type = if (currentItem.isVideo) "video/*" else "image/*"
-                                            putExtra(Intent.EXTRA_STREAM, currentItem.uri)
-                                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                        },
-                                        "Share Media"
+                                more = false
+                                runCatching {
+                                    ctx.startActivity(
+                                        Intent.createChooser(
+                                            Intent(Intent.ACTION_SEND).apply {
+                                                type = if (currentItem.isVideo) "video/*" else "image/*"
+                                                putExtra(Intent.EXTRA_STREAM, currentItem.uri)
+                                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                            },
+                                            "Share Media"
+                                        )
                                     )
-                                )
+                                }
                             }
-                            PremiumViewerAction(icon = Icons.Outlined.Delete, label = "Delete", tint = Color(0xFFFF6B6B)) { onDelete(currentItem) }
-                            PremiumViewerAction(icon = Icons.Outlined.MoreVert, label = "More") { more = true }
+                            PremiumViewerAction(icon = Icons.Outlined.Delete, label = "Delete", tint = Color(0xFFFF6B6B)) {
+                                more = false
+                                onDelete(currentItem)
+                            }
+                            PremiumViewerAction(icon = Icons.Outlined.MoreVert, label = "More") {
+                                more = !more
+                            }
                         }
                     }
                 }
             }
         }
     }
+}
 
-    if (meta && curr != null) {
-        MediaMetadataSheet(item = curr) { meta = false }
-    }
-
-    if (more && curr != null) {
-        @OptIn(ExperimentalMaterial3Api::class)
-        ModalBottomSheet(
-            onDismissRequest = { more = false },
-            containerColor = MaterialTheme.colorScheme.surface,
-            dragHandle = {
-                BottomSheetDefaults.DragHandle(
-                    width = 36.dp,
-                    height = 4.dp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.28f)
-                )
-            }
-        ) {
-            Column(modifier = Modifier.padding(bottom = 32.dp)) {
-                ListItem(
-                    headlineContent = { Text("Details", fontWeight = FontWeight.Medium) },
-                    leadingContent = { Icon(imageVector = Icons.Outlined.Info, contentDescription = null) },
-                    modifier = Modifier.clickable { more = false; meta = true }
-                )
-                ListItem(
-                    headlineContent = { Text("Move to Album", fontWeight = FontWeight.Medium) },
-                    leadingContent = { Icon(imageVector = Icons.AutoMirrored.Outlined.DriveFileMove, contentDescription = null) },
-                    modifier = Modifier.clickable { more = false; onMove(curr) }
-                )
-                ListItem(
-                    headlineContent = { Text("Copy to Album", fontWeight = FontWeight.Medium) },
-                    leadingContent = { Icon(imageVector = Icons.Outlined.FileCopy, contentDescription = null) },
-                    modifier = Modifier.clickable { more = false; onCopy(curr) }
-                )
-                if (curr.isVideo) {
-                    ListItem(
-                        headlineContent = { Text("Open In", fontWeight = FontWeight.Medium) },
-                        leadingContent = { Icon(imageVector = Icons.AutoMirrored.Outlined.OpenInNew, contentDescription = null) },
-                        modifier = Modifier.clickable {
-                            more = false
-                            ctx.startActivity(
-                                Intent(Intent.ACTION_VIEW).apply {
-                                    setDataAndType(curr.uri, "video/*")
-                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                }
-                            )
-                        }
-                    )
-                }
-                ListItem(
-                    headlineContent = { Text("Set as Wallpaper", fontWeight = FontWeight.Medium) },
-                    leadingContent = { Icon(imageVector = Icons.Outlined.Wallpaper, contentDescription = null) },
-                    modifier = Modifier.clickable { more = false; onWallpaper(curr) }
-                )
-            }
-        }
+@Composable
+private fun ViewerMenuRow(
+    icon: ImageVector,
+    label: String,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 13.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = label,
+            tint = Color.White,
+            modifier = Modifier.size(20.dp)
+        )
+        Spacer(Modifier.width(14.dp))
+        Text(
+            text = label,
+            color = Color.White,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Medium
+        )
     }
 }
 

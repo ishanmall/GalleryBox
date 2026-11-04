@@ -427,7 +427,7 @@ class FmRadioEngine @Inject constructor(
  * to force the sound into only the Left Earbud, it deletes all the audio heading to the right earbud.
  *
  * UPGRADED LOGIC:
- * 1. Supports both 16-bit PCM and 32-bit Float PCM (since DefaultAudioSink is configured with enableFloatOutput = true).
+ * 1. Supports both 16-bit PCM and 32-bit Float PCM.
  * 2. Uses per-sample exponential gain smoothing so changing balance or switching ChannelMode never causes audible clicks/pops.
  * 3. Includes a soft-knee hyperbolic tangent (tanh) limiter to prevent harsh digital clipping when crossfeed or gain is high.
  */
@@ -446,7 +446,6 @@ class DynamicStereoProcessor(initialMode: ChannelMode) : BaseAudioProcessor() {
     fun setMode(mode: ChannelMode) {
         if (currentMode != mode) {
             currentMode = mode
-            // Note: Removed abrupt flush() call here so changing modes mid-song transitions smoothly without dropping audio frames!
         }
     }
 
@@ -460,7 +459,7 @@ class DynamicStereoProcessor(initialMode: ChannelMode) : BaseAudioProcessor() {
         this.crossfeed = amount.coerceIn(0f, 1f)
     }
 
-    // Upgraded: Process both standard 16-bit stereo AND 32-bit float stereo audio
+    // Process both standard 16-bit stereo AND 32-bit float stereo audio
     override fun onConfigure(fmt: AudioProcessor.AudioFormat): AudioProcessor.AudioFormat {
         if (fmt.channelCount != 2) {
             return AudioProcessor.AudioFormat.NOT_SET
@@ -525,7 +524,7 @@ class DynamicStereoProcessor(initialMode: ChannelMode) : BaseAudioProcessor() {
                 outputBuffer.putFloat(rightFloat)
             }
         } else {
-            // Standard 16-bit Short PCM DSP path
+            // Standard 16-bit Short PCM DSP path (compatible with SonicAudioProcessor pitch/speed)
             while (buffer.remaining() >= 4) {
                 var leftShort = buffer.getShort()
                 var rightShort = buffer.getShort()
@@ -594,6 +593,12 @@ class PlayerManager @Inject constructor(@ApplicationContext private val context:
     private var wasPausedByUnplug = false
     private var wasPlayer2PausedByUnplug = false
 
+    // Track target speed & pitch explicitly so changing one never loses or glitches the other
+    private var currentSpeed1 = 1.0f
+    private var currentPitch1 = 1.0f
+    private var currentSpeed2 = 1.0f
+    private var currentPitch2 = 1.0f
+
     // We create TWO record players so we can play two songs at the same time in DJ mode.
     private val stereoProcessor1 = DynamicStereoProcessor(ChannelMode.STEREO)
     private val stereoProcessor2 = DynamicStereoProcessor(ChannelMode.STEREO)
@@ -613,7 +618,7 @@ class PlayerManager @Inject constructor(@ApplicationContext private val context:
     private var presetReverb: PresetReverb? = null
     private var loudnessEnhancer: LoudnessEnhancer? = null
 
-    // Upgraded: Dedicated digital audio effects for Player 2 (so Duo Mode / Deck 2 has independent EQ & FX!)
+    // Dedicated digital audio effects for Player 2 (so Duo Mode / Deck 2 has independent EQ & FX!)
     private var equalizer2: Equalizer? = null
     private var bassBoost2: BassBoost? = null
     private var virtualizer2: Virtualizer? = null
@@ -674,7 +679,7 @@ class PlayerManager @Inject constructor(@ApplicationContext private val context:
     private val _softLimiterEnabled = MutableStateFlow(true)
     val softLimiterEnabled = _softLimiterEnabled.asStateFlow()
 
-    // Upgraded: Reactive progress flows for smooth UI seekbars and time displays
+    // Reactive progress flows for smooth UI seekbars and time displays
     private val _currentPosition1 = MutableStateFlow(0L)
     val currentPosition1 = _currentPosition1.asStateFlow()
 
@@ -757,8 +762,6 @@ class PlayerManager @Inject constructor(@ApplicationContext private val context:
                 _currentDuration1.value = player.duration.coerceAtLeast(0L)
                 _currentPosition1.value = player.currentPosition.coerceAtLeast(0L)
             }
-            // Android gives every audio stream a unique ID number. We need this ID so we can attach
-            // the Equalizer exactly to our music, and not accidentally Equalize the user's phone ringtone.
             override fun onAudioSessionIdChanged(audioSessionId: Int) {
                 if (audioSessionId != C.AUDIO_SESSION_ID_UNSET) {
                     _audioSessionId.value = audioSessionId
@@ -774,7 +777,6 @@ class PlayerManager @Inject constructor(@ApplicationContext private val context:
                 _isPlaying.value = false
                 _playerError.value = "Playback failed: ${error.localizedMessage}"
                 Log.e("PlayerManager", "Player 1 Error", error)
-                // Upgraded: If a corrupted MP3 is encountered in a playlist, automatically skip to the next valid song
                 if (player.hasNextMediaItem()) {
                     player.seekToNextMediaItem()
                     player.prepare()
@@ -823,9 +825,9 @@ class PlayerManager @Inject constructor(@ApplicationContext private val context:
     }
 
     /**
-     * Upgraded Progress & Auto-Crossfade Monitor:
+     * Progress & Auto-Crossfade Monitor:
      * Updates position StateFlows every 200ms while playing and automatically triggers a smooth
-     * crossfade when a song is about to end (if crossfadeDurationMs > 0 and gaplessPlayback is not overriding it).
+     * crossfade when a song is about to end.
      */
     private fun updateProgressMonitor() {
         if (_isPlaying.value || _isPlaying2.value) {
@@ -872,14 +874,20 @@ class PlayerManager @Inject constructor(@ApplicationContext private val context:
     }
 
     // Builds the physical ExoPlayer software component
+    // IMPORTANT: enableFloatOutput = false and enableAudioTrackPlaybackParams = false
+    // ensures Media3's software SonicAudioProcessor handles speed & pitch on 16-bit PCM
+    // without hardware AudioTrack stalls or float-format mismatches!
     private fun createExoPlayer(processor: DynamicStereoProcessor, isPrimary: Boolean = true): ExoPlayer {
         val renderersFactory = object : DefaultRenderersFactory(context) {
-            override fun buildAudioSink(context: Context, enableFloatOutput: Boolean, enableAudioTrackPlaybackParams: Boolean) =
-                DefaultAudioSink.Builder(context)
-                    .setAudioProcessors(arrayOf(processor)) // Inject our left/right audio blocker wire
-                    .setEnableFloatOutput(true) // Higher quality audio processing
-                    .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
-                    .build()
+            override fun buildAudioSink(
+                context: Context,
+                enableFloatOutput: Boolean,
+                enableAudioTrackPlaybackParams: Boolean
+            ) = DefaultAudioSink.Builder(context)
+                .setAudioProcessors(arrayOf(processor))
+                .setEnableFloatOutput(false)
+                .setEnableAudioTrackPlaybackParams(false)
+                .build()
         }.setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
 
         val audioAttributes = AudioAttributes.Builder()
@@ -898,11 +906,9 @@ class PlayerManager @Inject constructor(@ApplicationContext private val context:
 
         return ExoPlayer.Builder(context, renderersFactory)
             .setLoadControl(loadControl)
-            // Upgraded: Primary player automatically manages Android AudioFocus so calls/other apps pause MP3s cleanly.
-            // Secondary player shares focus with primary so it doesn't fight Player 1 in Duo Mode.
             .setAudioAttributes(audioAttributes, isPrimary)
             .setWakeMode(C.WAKE_MODE_LOCAL)
-            .setHandleAudioBecomingNoisy(false) // We handle noisy unplugging manually with our receiver
+            .setHandleAudioBecomingNoisy(false)
             .setPauseAtEndOfMediaItems(!gaplessPlayback)
             .build()
     }
@@ -944,7 +950,6 @@ class PlayerManager @Inject constructor(@ApplicationContext private val context:
             presetReverb?.release()
             loudnessEnhancer?.release()
 
-            // Wrap them in try/catch because some budget phones don't support these advanced audio features!
             try {
                 equalizer = Equalizer(0, sessionId).apply {
                     enabled = isEqEnabledCached
@@ -1053,7 +1058,7 @@ class PlayerManager @Inject constructor(@ApplicationContext private val context:
             player2.pause()
         } else {
             crossfadeJob?.cancel()
-            applyVolumes() // Ensure volume is restored if paused mid-crossfade
+            applyVolumes()
             player.pause()
         }
     }
@@ -1087,13 +1092,12 @@ class PlayerManager @Inject constructor(@ApplicationContext private val context:
     fun seekToPrevious() {
         crossfadeJob?.cancel()
         applyVolumes()
-        // Upgraded: Standard media player UX — if more than 3 seconds into the song, restart current song; otherwise go to previous song
         if (player.currentPosition > 3000L) {
             player.seekTo(0L)
         } else if (player.hasPreviousMediaItem()) {
             player.seekToPrevious()
         } else {
-            player.seekTo(0L) // If there is no previous song, just restart the current song
+            player.seekTo(0L)
         }
     }
 
@@ -1159,8 +1163,6 @@ class PlayerManager @Inject constructor(@ApplicationContext private val context:
     private fun applyVolumes() {
         val volumeVal1 = _volume1.value
         val volumeVal2 = _volume2.value
-        // If DJ Duo Mode is active, and both players are at 100% volume, we halve them both to 50%
-        // so the combined sound doesn't explode the speaker. This is called a "Soft Limiter".
         val limiterScale = if (_softLimiterEnabled.value && isDuoModeActive) 1f / max(1f, volumeVal1 + volumeVal2) else 1f
         val logVolume1 = calculateTargetVolume(volumeVal1, limiterScale)
         val logVolume2 = calculateTargetVolume(volumeVal2, limiterScale)
@@ -1199,26 +1201,44 @@ class PlayerManager @Inject constructor(@ApplicationContext private val context:
     }
 
     fun resetPlaybackParameters() {
+        currentSpeed1 = 1.0f
+        currentPitch1 = 1.0f
+        currentSpeed2 = 1.0f
+        currentPitch2 = 1.0f
         player.playbackParameters = PlaybackParameters.DEFAULT
         player2.playbackParameters = PlaybackParameters.DEFAULT
     }
 
     fun setSpeed(speed: Float, isPlayer2: Boolean) {
-        val safeSpeed = speed.coerceIn(0.25f, 3.0f)
-        val targetPlayer = if (isPlayer2) player2 else player
-        targetPlayer.playbackParameters = PlaybackParameters(safeSpeed, targetPlayer.playbackParameters.pitch)
+        val safeSpeed = ((speed.coerceIn(0.25f, 3.0f) * 100f).roundToInt() / 100f).coerceIn(0.25f, 3.0f)
+        if (isPlayer2) {
+            if (abs(currentSpeed2 - safeSpeed) < 0.005f) return
+            currentSpeed2 = safeSpeed
+            player2.playbackParameters = PlaybackParameters(currentSpeed2, currentPitch2)
+        } else {
+            if (abs(currentSpeed1 - safeSpeed) < 0.005f) return
+            currentSpeed1 = safeSpeed
+            player.playbackParameters = PlaybackParameters(currentSpeed1, currentPitch1)
+        }
     }
 
     fun setPitch(pitch: Float, isPlayer2: Boolean) {
-        val safePitch = pitch.coerceIn(0.25f, 3.0f)
-        val targetPlayer = if (isPlayer2) player2 else player
-        targetPlayer.playbackParameters = PlaybackParameters(targetPlayer.playbackParameters.speed, safePitch)
+        val safePitch = ((pitch.coerceIn(0.25f, 3.0f) * 100f).roundToInt() / 100f).coerceIn(0.25f, 3.0f)
+        if (isPlayer2) {
+            if (abs(currentPitch2 - safePitch) < 0.005f) return
+            currentPitch2 = safePitch
+            player2.playbackParameters = PlaybackParameters(currentSpeed2, currentPitch2)
+        } else {
+            if (abs(currentPitch1 - safePitch) < 0.005f) return
+            currentPitch1 = safePitch
+            player.playbackParameters = PlaybackParameters(currentSpeed1, currentPitch1)
+        }
     }
 
     fun setPreampGain(millibels: Int) {
         cachedPreampMillibels = millibels
         try {
-            loudnessEnhancer?.setTargetGain(millibels) // Make it universally louder
+            loudnessEnhancer?.setTargetGain(millibels)
             loudnessEnhancer2?.setTargetGain(millibels)
         } catch (_: Exception) {}
     }
@@ -1251,7 +1271,6 @@ class PlayerManager @Inject constructor(@ApplicationContext private val context:
         try {
             val targetEq = if (isPlayer2) equalizer2 else equalizer
             val band = index.toShort()
-            // Upgraded: Query hardware equalizer's actual supported min/max band level range if available, falling back to +/- 1500 mB
             val range = targetEq?.bandLevelRange
             val convertedLevel = if (range != null && range.size >= 2) {
                 val min = range[0].toInt()
@@ -1335,6 +1354,11 @@ class PlayerManager @Inject constructor(@ApplicationContext private val context:
         val mediaItem = buildMediaItem(track)
 
         targetPlayer.setMediaItem(mediaItem)
+        targetPlayer.playbackParameters = if (secondary) {
+            PlaybackParameters(currentSpeed2, currentPitch2)
+        } else {
+            PlaybackParameters(currentSpeed1, currentPitch1)
+        }
         targetPlayer.prepare()
         targetPlayer.playWhenReady = true
     }
@@ -1356,11 +1380,12 @@ class PlayerManager @Inject constructor(@ApplicationContext private val context:
         val mediaItems = tracks.map { track -> buildMediaItem(track) }
 
         player.setMediaItems(mediaItems, safeStartIndex, C.TIME_UNSET)
+        player.playbackParameters = PlaybackParameters(currentSpeed1, currentPitch1)
         player.prepare()
         player.play()
     }
 
-    // --- UPGRADED QUEUE MANAGEMENT FUNCTIONS ---
+    // --- QUEUE MANAGEMENT FUNCTIONS ---
 
     // Appends a track to the end of the active queue without interrupting playback
     fun addToQueue(track: AudioTrack) {
@@ -1405,7 +1430,7 @@ class PlayerManager @Inject constructor(@ApplicationContext private val context:
         }
     }
 
-    // --- UPGRADED SLEEP TIMER ---
+    // --- SLEEP TIMER ---
     fun startSleepTimer(durationMinutes: Int) {
         sleepTimerJob?.cancel()
         if (durationMinutes <= 0) {
@@ -1434,7 +1459,7 @@ class PlayerManager @Inject constructor(@ApplicationContext private val context:
             }
             pause(secondary = false)
             pause(secondary = true)
-            applyVolumes() // Restore configured volume levels for next time user hits play
+            applyVolumes()
             _sleepTimerRemainingMs.value = null
         }
     }
@@ -1472,7 +1497,7 @@ class PlayerManager @Inject constructor(@ApplicationContext private val context:
 
         crossfadeJob?.cancel()
         crossfadeJob = engineScope.launch {
-            val steps = 20 // Break the fade into 20 tiny volume jumps
+            val steps = 20
             val limiterScale = if (_softLimiterEnabled.value && isDuoModeActive) 1f / max(1f, _volume1.value + _volume2.value) else 1f
             val initialVolume = calculateTargetVolume(_volume1.value, limiterScale)
             val delayDuration = (crossfadeDurationMs / 2 / steps).toLong().coerceAtLeast(10L)
@@ -1486,7 +1511,7 @@ class PlayerManager @Inject constructor(@ApplicationContext private val context:
 
                 player.volume = 0f
                 if (player.hasNextMediaItem()) {
-                    player.seekToNext() // Skip to next song instantly
+                    player.seekToNext()
                 }
 
                 // Fade IN the new song
@@ -1496,7 +1521,7 @@ class PlayerManager @Inject constructor(@ApplicationContext private val context:
                     delay(delayDuration)
                 }
             } finally {
-                applyVolumes() // Always restore to normal logarithmic volume even if job is cancelled mid-fade
+                applyVolumes()
             }
         }
     }
@@ -1527,7 +1552,6 @@ class PlayerManager @Inject constructor(@ApplicationContext private val context:
         _currentPosition2.value = 0L
         _currentDuration2.value = 0L
 
-        // Turn off all effects so they don't consume battery when paused
         setAudioFxActive(false)
     }
 
@@ -1554,9 +1578,7 @@ class PlayerManager @Inject constructor(@ApplicationContext private val context:
 
 /**
  * --- THE CONDUCTOR (MusicService) ---
- * Android is brutal. If a user swipes up to go to their home screen, Android instantly freezes the app.
- * A `Service` is a VIP pass. It tells Android: "I am doing something important in the background, please don't kill me!"
- * This service runs the music continuously even when the app is closed, and provides the Notification Bar playback controls.
+ * Runs the music continuously even when the app is closed, and provides the Notification Bar playback controls.
  */
 @UnstableApi
 @AndroidEntryPoint
@@ -1578,7 +1600,7 @@ class MusicService : Service() {
     private var notificationManager: NotificationManager? = null
     private var currentAlbumArt: Bitmap? = null
     private var lastLoadedArtKey: String? = null
-    private var autoStopJob: Job? = null // A timer that completely shuts down the service if paused for too long, to save battery.
+    private var autoStopJob: Job? = null
     private var streamRetryJob: Job? = null
     private var streamRetryCount = 0
 
@@ -1588,7 +1610,7 @@ class MusicService : Service() {
     private var digitalStreamUrl = ""
     private var digitalTitle = ""
     private var digitalSubtitle = ""
-    private var digitalLiveStreamSongTitle: String? = null // Upgraded: Holds live ICY metadata song title from radio stream
+    private var digitalLiveStreamSongTitle: String? = null
     private var digitalImageUrl = ""
 
     private val _playbackMode = MutableStateFlow(PlaybackMode.NONE)
@@ -1608,7 +1630,6 @@ class MusicService : Service() {
             .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
             .build()
 
-        // Upgraded: Digital radio player now handles AudioFocus, WakeLocks, and Noisy headphone unplugs automatically
         digitalPlayer = ExoPlayer.Builder(this)
             .setAudioAttributes(digitalAudioAttributes, true)
             .setWakeMode(C.WAKE_MODE_NETWORK)
@@ -1621,7 +1642,6 @@ class MusicService : Service() {
                 if (isPlaying) {
                     streamRetryCount = 0
                     streamRetryJob?.cancel()
-                    // MUTE THE OTHERS! If Internet Radio starts playing, forcefully stop the FM Radio and MP3 players.
                     fmRadioEngine.stop()
                     playerManager.pause(secondary = false)
                     playerManager.pause(secondary = true)
@@ -1638,7 +1658,6 @@ class MusicService : Service() {
                     updateNotification(digitalPlayer?.isPlaying == true)
                 }
             }
-            // Upgraded: Extract live ICY stream metadata (currently playing song on internet radio)
             override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
                 if (_playbackMode.value == PlaybackMode.DIGITAL_RADIO) {
                     val streamTitle = mediaMetadata.title?.toString()?.takeIf { it.isNotBlank() && it != digitalTitle }
@@ -1650,7 +1669,6 @@ class MusicService : Service() {
             }
             override fun onPlayerError(error: PlaybackException) {
                 Log.e("MusicService", "Digital stream error", error)
-                // Upgraded: Exponential backoff auto-reconnect if live internet radio stream drops briefly
                 if (_playbackMode.value == PlaybackMode.DIGITAL_RADIO && digitalStreamUrl.isNotEmpty() && streamRetryCount < 3) {
                     streamRetryCount++
                     val backoffMs = 2000L * streamRetryCount
@@ -1675,9 +1693,9 @@ class MusicService : Service() {
             ACTION_PLAY_PAUSE -> togglePlayPause()
             ACTION_NEXT -> {
                 when (_playbackMode.value) {
-                    PlaybackMode.FM_RADIO -> fmRadioEngine.scanNext() // Skip to next FM station
-                    PlaybackMode.LOCAL_MUSIC -> playerManager.seekToNext() // Skip to next MP3 song
-                    PlaybackMode.DIGITAL_RADIO, PlaybackMode.NONE -> {} // Digital radio streams can't be "skipped"
+                    PlaybackMode.FM_RADIO -> fmRadioEngine.scanNext()
+                    PlaybackMode.LOCAL_MUSIC -> playerManager.seekToNext()
+                    PlaybackMode.DIGITAL_RADIO, PlaybackMode.NONE -> {}
                 }
             }
             ACTION_PREV -> {
@@ -1695,11 +1713,9 @@ class MusicService : Service() {
                 stopSelf()
             }
         }
-        // "START_NOT_STICKY" means if Android runs out of memory and violently kills the app, it shouldn't try to automatically restart the music later.
         return START_NOT_STICKY
     }
 
-    // Sets up the notification channel so Android allows us to post the playback controls.
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(CHANNEL_ID, "Media Playback", NotificationManager.IMPORTANCE_LOW).apply {
@@ -1725,7 +1741,6 @@ class MusicService : Service() {
     /**
      * THE TRAFFIC COP.
      * Constantly watches all three players (FM, MP3, Internet).
-     * If one starts playing, it ensures the others are muted, and updates the Lock Screen notification with the correct song/station info.
      */
     private fun coordinateEngines() {
         // Observe Local Music State
@@ -1735,7 +1750,7 @@ class MusicService : Service() {
                     fmRadioEngine.stop()
                     digitalPlayer?.pause()
                     _playbackMode.value = PlaybackMode.LOCAL_MUSIC
-                    mediaSession?.player = playerManager.player // Tell the lock screen to use the MP3 player controls
+                    mediaSession?.player = playerManager.player
                     updateNotification(true)
                 } else if (_playbackMode.value == PlaybackMode.LOCAL_MUSIC) {
                     updateNotification(false)
@@ -1778,7 +1793,7 @@ class MusicService : Service() {
         serviceScope.launch {
             fmRadioEngine.frequency.collect {
                 if (_playbackMode.value == PlaybackMode.FM_RADIO) {
-                    updateNotification(fmRadioEngine.isPlaying.value) // Update the "98.3 MHz" text on the lock screen
+                    updateNotification(fmRadioEngine.isPlaying.value)
                 }
             }
         }
@@ -1815,7 +1830,7 @@ class MusicService : Service() {
         }
         try {
             val request = ImageRequest.Builder(this)
-                .data(url) // Fetch it from the internet!
+                .data(url)
                 .size(256)
                 .bitmapConfig(Bitmap.Config.RGB_565)
                 .allowHardware(false)
@@ -1830,7 +1845,7 @@ class MusicService : Service() {
         updateNotification(digitalPlayer?.isPlaying == true)
     }
 
-    // Builds the visual media player you see when you pull down from the top of your phone screen.
+    // Builds the visual media player notification
     private fun updateNotification(isPlaying: Boolean) {
         val session = mediaSession ?: return
         val isFm = _playbackMode.value == PlaybackMode.FM_RADIO
@@ -1848,27 +1863,24 @@ class MusicService : Service() {
             else -> playerManager.currentTrack.value?.artist ?: "Unknown Artist"
         }
 
-        // Set up the buttons
         val playPauseIcon = if (isPlaying) androidx.media3.ui.R.drawable.exo_icon_pause else androidx.media3.ui.R.drawable.exo_icon_play
         val playPauseAction = NotificationCompat.Action(playPauseIcon, "Play/Pause", pendingIntent(ACTION_PLAY_PAUSE, 0))
         val prevAction = NotificationCompat.Action(androidx.media3.ui.R.drawable.exo_icon_previous, "Previous", pendingIntent(ACTION_PREV, 1))
         val nextAction = NotificationCompat.Action(androidx.media3.ui.R.drawable.exo_icon_next, "Next", pendingIntent(ACTION_NEXT, 2))
 
-        // If the user clicks the notification itself (not the buttons), open the app.
         val openIntent = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
 
-        // Tell Android to use the special "Media" style layout, rather than a standard boring text notification.
         val mediaStyle = androidx.media3.session.MediaStyleNotificationHelper.MediaStyle(session)
-            .setShowActionsInCompactView(0, 1, 2) // Which buttons to show when the notification is small/collapsed
+            .setShowActionsInCompactView(0, 1, 2)
 
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(androidx.media3.ui.R.drawable.exo_icon_play) // Tiny icon in the top status bar
+            .setSmallIcon(androidx.media3.ui.R.drawable.exo_icon_play)
             .setContentTitle(title)
             .setContentText(text)
-            .setLargeIcon(if (isFm) null else currentAlbumArt) // Album art
+            .setLargeIcon(if (isFm) null else currentAlbumArt)
             .setContentIntent(openIntent)
-            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC) // Show it on the lock screen
-            .setOngoing(isPlaying) // If playing, the user cannot swipe the notification away!
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setOngoing(isPlaying)
             .setOnlyAlertOnce(true)
             .addAction(prevAction)
             .addAction(playPauseAction)
@@ -1877,17 +1889,15 @@ class MusicService : Service() {
 
         val notification = builder.build()
 
-        // Android 14 requires us to declare exactly WHY we are forcing the app to run in the background.
         if (isPlaying) {
-            startForegroundSafe(NOTIFICATION_ID, notification) // Tell Android "Do not kill me!"
-            autoStopJob?.cancel() // Cancel the idle shut-off timer
+            startForegroundSafe(NOTIFICATION_ID, notification)
+            autoStopJob?.cancel()
         } else {
-            notificationManager?.notify(NOTIFICATION_ID, notification) // Just update the picture/text
-            stopForeground(STOP_FOREGROUND_DETACH) // Tell Android "I am paused, you can kill me to save battery if you need to."
+            notificationManager?.notify(NOTIFICATION_ID, notification)
+            stopForeground(STOP_FOREGROUND_DETACH)
         }
     }
 
-    // Creates the specialized intents that hook the lock screen buttons to our internal functions
     private fun pendingIntent(action: String, reqCode: Int): PendingIntent {
         val intent = Intent(this, MusicService::class.java).setAction(action)
         return PendingIntent.getService(this, reqCode, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
@@ -1896,7 +1906,6 @@ class MusicService : Service() {
     private fun startForegroundSafe(notificationId: Int, notification: Notification) {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                // Formally declare we are playing media
                 startForeground(notificationId, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
             } else {
                 startForeground(notificationId, notification)
@@ -1910,14 +1919,12 @@ class MusicService : Service() {
         when (_playbackMode.value) {
             PlaybackMode.LOCAL_MUSIC -> playerManager.togglePlayPause()
             PlaybackMode.FM_RADIO -> {
-                // Upgraded: Resumes the user's current/saved frequency rather than resetting to a hardcoded 98.0f
                 if (fmRadioEngine.isPlaying.value) fmRadioEngine.stop() else fmRadioEngine.start(fmRadioEngine.frequency.value)
             }
             PlaybackMode.DIGITAL_RADIO -> {
                 if (digitalPlayer?.isPlaying == true) pauseDigitalStream() else resumeDigitalStream()
             }
             PlaybackMode.NONE -> {
-                // Upgraded fallback: If playbackMode is NONE but a track is loaded in PlayerManager, start playing it
                 if (playerManager.currentTrack.value != null) {
                     playerManager.play()
                 }
@@ -1936,7 +1943,6 @@ class MusicService : Service() {
         digitalLiveStreamSongTitle = null
         digitalImageUrl = imageUrl
 
-        // Force stop everything else
         fmRadioEngine.stop()
         playerManager.pause(secondary = false)
         playerManager.pause(secondary = true)
@@ -1960,7 +1966,6 @@ class MusicService : Service() {
             .build()
 
         try {
-            // Give the streaming URL to ExoPlayer and tell it to start buffering it from the internet
             digitalPlayer?.setMediaItem(mediaItem)
             digitalPlayer?.prepare()
             digitalPlayer?.playWhenReady = true
@@ -1968,7 +1973,6 @@ class MusicService : Service() {
             Log.e("MusicService", "Failed to start stream: $url", e)
         }
 
-        // Try to fetch the radio station's logo
         if (imageUrl.isNotEmpty()) {
             serviceScope.launch { loadDigitalAlbumArt(imageUrl) }
         } else {
@@ -2000,22 +2004,18 @@ class MusicService : Service() {
         }
     }
 
-    // If the music has been paused for 15 seconds, we completely shut down the background service.
-    // If we didn't do this, Android would eventually yell at our app for draining battery while doing nothing.
     private fun scheduleAutoStop() {
         autoStopJob?.cancel()
         autoStopJob = serviceScope.launch {
             delay(15000)
             if (!playerManager.isPlaying.value && !playerManager.isPlaying2.value && !fmRadioEngine.isPlaying.value && digitalPlayer?.isPlaying != true) {
-                stopForeground(STOP_FOREGROUND_REMOVE) // Remove the notification entirely
-                stopSelf() // Commit suicide to free up phone memory
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
             }
         }
     }
 
-    // If the user violently swipes the app away from their "Recent Apps" screen
     override fun onTaskRemoved(rootIntent: Intent?) {
-        // If it's paused, just shut down completely.
         if (!playerManager.isPlaying.value && !playerManager.isPlaying2.value && !fmRadioEngine.isPlaying.value && digitalPlayer?.isPlaying != true) {
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
@@ -2035,7 +2035,7 @@ class MusicService : Service() {
     }
 
     companion object {
-        const val NOTIFICATION_ID = 101 // A random ID number for Android
+        const val NOTIFICATION_ID = 101
         const val CHANNEL_ID = "gallerybox_music_channel"
         const val ACTION_PLAY_PAUSE = "com.gallerybox.ACTION_PLAY_PAUSE"
         const val ACTION_NEXT = "com.gallerybox.ACTION_NEXT"

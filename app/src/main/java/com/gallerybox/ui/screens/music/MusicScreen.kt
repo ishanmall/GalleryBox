@@ -56,6 +56,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
 import java.util.Locale
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 import com.gallerybox.viewmodel.AudioTrack
@@ -1150,9 +1151,28 @@ fun SpeedPitchDialog(
     adaptiveState: AdaptiveState,
     onDismiss: () -> Unit
 ) {
-    val speed by viewModel.speedPlayer1.collectAsStateWithLifecycle()
-    val pitch by viewModel.pitchPlayer1.collectAsStateWithLifecycle()
+    val vmSpeed by viewModel.speedPlayer1.collectAsStateWithLifecycle()
+    val vmPitch by viewModel.pitchPlayer1.collectAsStateWithLifecycle()
     val colors = MaterialTheme.colorScheme
+    val view = LocalView.current
+
+    // Local slider state prevents flooding ExoPlayer's SonicAudioProcessor 120 times/sec while dragging
+    var sliderSpeed by remember { mutableFloatStateOf(vmSpeed.coerceIn(0.5f, 2.0f)) }
+    var sliderPitch by remember { mutableFloatStateOf(vmPitch.coerceIn(0.5f, 2.0f)) }
+    var isDraggingSpeed by remember { mutableStateOf(false) }
+    var isDraggingPitch by remember { mutableStateOf(false) }
+
+    LaunchedEffect(vmSpeed) {
+        if (!isDraggingSpeed) {
+            sliderSpeed = vmSpeed.coerceIn(0.5f, 2.0f)
+        }
+    }
+
+    LaunchedEffect(vmPitch) {
+        if (!isDraggingPitch) {
+            sliderPitch = vmPitch.coerceIn(0.5f, 2.0f)
+        }
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1172,6 +1192,9 @@ fun SpeedPitchDialog(
                 )
                 TextButton(
                     onClick = {
+                        view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                        sliderSpeed = 1.0f
+                        sliderPitch = 1.0f
                         viewModel.setPlayerSpeed(false, 1.0f)
                         viewModel.setPlayerPitch(false, 1.0f)
                     }
@@ -1193,7 +1216,7 @@ fun SpeedPitchDialog(
                         color = colors.onSurfaceVariant
                     )
                     Text(
-                        String.format(Locale.US, "%.2fx", speed),
+                        String.format(Locale.US, "%.2fx", sliderSpeed),
                         fontFamily = FontFamily.Monospace,
                         fontWeight = FontWeight.ExtraBold,
                         fontSize = 13.sp,
@@ -1201,8 +1224,23 @@ fun SpeedPitchDialog(
                     )
                 }
                 Slider(
-                    value = speed.coerceIn(0.5f, 2.0f),
-                    onValueChange = { viewModel.setPlayerSpeed(false, it) },
+                    value = sliderSpeed,
+                    onValueChange = { raw ->
+                        isDraggingSpeed = true
+                        val stepped = ((raw * 20f).roundToInt() / 20f).coerceIn(0.5f, 2.0f)
+                        if (abs(stepped - sliderSpeed) >= 0.049f) {
+                            sliderSpeed = stepped
+                            viewModel.setPlayerSpeed(false, stepped)
+                        } else {
+                            sliderSpeed = raw.coerceIn(0.5f, 2.0f)
+                        }
+                    },
+                    onValueChangeFinished = {
+                        val finalSpeed = ((sliderSpeed * 100f).roundToInt() / 100f).coerceIn(0.5f, 2.0f)
+                        sliderSpeed = finalSpeed
+                        isDraggingSpeed = false
+                        viewModel.setPlayerSpeed(false, finalSpeed)
+                    },
                     valueRange = 0.5f..2.0f,
                     colors = SliderDefaults.colors(
                         thumbColor = colors.primary,
@@ -1224,7 +1262,7 @@ fun SpeedPitchDialog(
                         color = colors.onSurfaceVariant
                     )
                     Text(
-                        String.format(Locale.US, "%.2fx", pitch),
+                        String.format(Locale.US, "%.2fx", sliderPitch),
                         fontFamily = FontFamily.Monospace,
                         fontWeight = FontWeight.ExtraBold,
                         fontSize = 13.sp,
@@ -1232,8 +1270,23 @@ fun SpeedPitchDialog(
                     )
                 }
                 Slider(
-                    value = pitch.coerceIn(0.5f, 2.0f),
-                    onValueChange = { viewModel.setPlayerPitch(false, it) },
+                    value = sliderPitch,
+                    onValueChange = { raw ->
+                        isDraggingPitch = true
+                        val stepped = ((raw * 20f).roundToInt() / 20f).coerceIn(0.5f, 2.0f)
+                        if (abs(stepped - sliderPitch) >= 0.049f) {
+                            sliderPitch = stepped
+                            viewModel.setPlayerPitch(false, stepped)
+                        } else {
+                            sliderPitch = raw.coerceIn(0.5f, 2.0f)
+                        }
+                    },
+                    onValueChangeFinished = {
+                        val finalPitch = ((sliderPitch * 100f).roundToInt() / 100f).coerceIn(0.5f, 2.0f)
+                        sliderPitch = finalPitch
+                        isDraggingPitch = false
+                        viewModel.setPlayerPitch(false, finalPitch)
+                    },
                     valueRange = 0.5f..2.0f,
                     colors = SliderDefaults.colors(
                         thumbColor = colors.primary,
