@@ -104,8 +104,10 @@ import androidx.media3.ui.PlayerView
 import androidx.paging.compose.LazyPagingItems
 import androidx.paging.compose.collectAsLazyPagingItems
 import androidx.paging.filter
+import coil.annotation.ExperimentalCoilApi
 import coil.compose.AsyncImage
 import coil.imageLoader
+import coil.memory.MemoryCache
 import coil.request.CachePolicy
 import coil.request.ImageRequest
 import coil.size.Precision
@@ -420,22 +422,43 @@ fun toggleAppLock(
     ).authenticate(promptBuilder.build())
 }
 
-private fun invalidateThumbCache(context: Context, uris: List<Uri>) {
+@OptIn(ExperimentalCoilApi::class)
+private fun invalidateThumbCache(context: Context, uris: List<Uri>, mediaIds: List<Long> = emptyList()) {
     val cache = context.imageLoader.memoryCache
     val diskCache = context.imageLoader.diskCache
     uris.forEach { uri ->
+        val rawUri = uri.toString()
+        cache?.remove(MemoryCache.Key(rawUri))
+        CoroutineScope(Dispatchers.IO).launch { diskCache?.remove(rawUri) }
+
         (160..480 step 40).forEach { size ->
             val key = "${uri}_thumb_${size}"
-            cache?.remove(coil.memory.MemoryCache.Key(key))
+            cache?.remove(MemoryCache.Key(key))
             CoroutineScope(Dispatchers.IO).launch { diskCache?.remove(key) }
+        }
+    }
+    mediaIds.forEach { id ->
+        val fullKey = "full_$id"
+        cache?.remove(MemoryCache.Key(fullKey))
+        CoroutineScope(Dispatchers.IO).launch { diskCache?.remove(fullKey) }
+
+        (160..480 step 40).forEach { size ->
+            val idKey = "${id}_thumb_${size}"
+            cache?.remove(MemoryCache.Key(idKey))
+            CoroutineScope(Dispatchers.IO).launch { diskCache?.remove(idKey) }
         }
     }
 }
 
-private fun refreshAndClearCache(context: Context, viewModel: GalleryViewModel, affectedUris: List<Uri> = emptyList()) {
+private fun refreshAndClearCache(
+    context: Context,
+    viewModel: GalleryViewModel,
+    affectedUris: List<Uri> = emptyList(),
+    affectedIds: List<Long> = emptyList()
+) {
     viewModel.refreshAfterFileOperation()
-    if (affectedUris.isNotEmpty()) {
-        invalidateThumbCache(context, affectedUris)
+    if (affectedUris.isNotEmpty() || affectedIds.isNotEmpty()) {
+        invalidateThumbCache(context, affectedUris, affectedIds)
     }
 }
 
@@ -789,11 +812,9 @@ fun SamsungFastScrollbar(
     }
 }
 
-/**
- * =========================================================================================
- * 🖼️ MAIN ALBUM LIST SCREEN (Samsung One UI 7 Style)
- * =========================================================================================
- */
+// =========================================================================================
+// 🖼️ MAIN ALBUM LIST SCREEN (Samsung One UI 7 Style)
+// =========================================================================================
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AlbumScreen(
@@ -821,7 +842,6 @@ fun AlbumScreen(
     val viewerState by viewModel.viewerState.collectAsState()
     val allMedia by viewModel.media.collectAsState()
     val favoriteIds by viewModel.favoriteIds.collectAsState()
-    val hiddenAlbums by viewModel.hiddenAlbums.collectAsState()
 
     var isAppLockEnabled by remember { mutableStateOf(securityViewModel.isAppLockEnabled()) }
     var searchQuery by remember { mutableStateOf("") }
@@ -1027,12 +1047,12 @@ fun AlbumScreen(
         }
     }
 
-    BackHandler(enabled = isSearchActive) {
+    BackHandler(enabled = isSearchActive && activeDialog == AlbumUiDialog.None) {
         isSearchActive = false
         searchQuery = ""
     }
 
-    BackHandler(enabled = isSelectionMode) {
+    BackHandler(enabled = isSelectionMode && activeDialog == AlbumUiDialog.None) {
         selectedIds = persistentListOf<String>().toImmutableSet()
         isSelectionMode = false
     }
@@ -1041,7 +1061,7 @@ fun AlbumScreen(
         activeDialog = AlbumUiDialog.None
     }
 
-    BackHandler(enabled = viewerState is GalleryViewerState.Open) {
+    BackHandler(enabled = viewerState is GalleryViewerState.Open && activeDialog == AlbumUiDialog.None) {
         viewModel.closeViewer()
     }
 
@@ -1140,10 +1160,12 @@ fun AlbumScreen(
                                 "grid" -> activeDialog = AlbumUiDialog.GridSize
                                 "sort" -> activeDialog = AlbumUiDialog.Sort
                                 "create" -> activeDialog = AlbumUiDialog.CreateAlbum
+                                "favorites" -> actions.onNavigateToFavorites()
                                 "trash" -> actions.onNavigateToTrash()
                                 "hidden" -> actions.onNavigateToHidden()
                                 "duplicates" -> actions.onNavigateToDuplicates()
                                 "scan" -> actions.onNavigateToScan()
+                                "lock_now" -> actions.onLockApp()
                                 "toggle_lock" -> toggleAppLock(context, securityViewModel, isAppLockEnabled) { isAppLockEnabled = it }
                             }
                         }
@@ -1325,7 +1347,11 @@ fun AlbumScreen(
                                 viewModel.saveCustomAlbumOrder(orderedList)
                             },
                             onAlbumClick = { album ->
-                                actions.onAlbumClick(album)
+                                if (album.id == ID_FAVORITES) {
+                                    actions.onNavigateToFavorites()
+                                } else {
+                                    actions.onAlbumClick(album)
+                                }
                             },
                             onSelectionChange = { newSelection ->
                                 selectedIds = newSelection
@@ -1528,7 +1554,7 @@ fun AlbumScreen(
                                             viewModel.copyData(mediaIds, targetAlbum.id)
                                         }
                                     }
-                                    invalidateThumbCache(context, resolvedItems.map { it.uri })
+                                    invalidateThumbCache(context, resolvedItems.map { it.uri }, resolvedItems.map { it.id })
                                     activeDialog = AlbumUiDialog.None
                                     isSelectionMode = false
                                     selectedIds = persistentListOf<String>().toImmutableSet()
@@ -1606,7 +1632,7 @@ fun AlbumScreen(
                     } else {
                         viewModel.createAndCopy(mediaIds, newName)
                     }
-                    invalidateThumbCache(context, resolvedItems.map { it.uri })
+                    invalidateThumbCache(context, resolvedItems.map { it.uri }, mediaIds)
                     activeDialog = AlbumUiDialog.None
                     isSelectionMode = false
                     selectedIds = persistentListOf<String>().toImmutableSet()
@@ -1619,9 +1645,9 @@ fun AlbumScreen(
                 initial = dialog.album.name,
                 onDismiss = { activeDialog = AlbumUiDialog.None },
                 onConfirm = { newName: String ->
-                    val affectedUris = allMedia.filter { it.bucketId == dialog.album.id }.map { it.uri }
+                    val affectedItems = allMedia.filter { it.bucketId == dialog.album.id }
                     viewModel.renameAlbum(dialog.album, newName)
-                    invalidateThumbCache(context, affectedUris)
+                    invalidateThumbCache(context, affectedItems.map { it.uri }, affectedItems.map { it.id })
                     activeDialog = AlbumUiDialog.None
                     isSelectionMode = false
                     selectedIds = persistentListOf<String>().toImmutableSet()
@@ -1638,7 +1664,7 @@ fun AlbumScreen(
                         dialog.albums.filter { !it.id.startsWith("virtual_") }.map { it.id }
                     )
                     trashViewModel.confirmPendingAlbumTrash(dialog.albums, allMedia.toList())
-                    invalidateThumbCache(context, resolvedItems.map { it.uri })
+                    invalidateThumbCache(context, resolvedItems.map { it.uri }, resolvedItems.map { it.id })
                     activeDialog = AlbumUiDialog.None
                     isSelectionMode = false
                     selectedIds = persistentListOf<String>().toImmutableSet()
@@ -1680,11 +1706,9 @@ fun AlbumScreen(
     }
 }
 
-/**
- * =========================================================================================
- * 🙈 HIDE / UNHIDE ALBUMS SCREEN (Samsung One UI 7 Style)
- * =========================================================================================
- */
+// =========================================================================================
+// 🙈 HIDE / UNHIDE ALBUMS SCREEN (Samsung One UI 7 Style)
+// =========================================================================================
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HideScreen(
@@ -1864,11 +1888,9 @@ fun HideScreen(
     }
 }
 
-/**
- * =========================================================================================
- * 🖼️ ALBUM DETAILS SCREEN (When you open a specific folder)
- * =========================================================================================
- */
+// =========================================================================================
+// 🖼️ ALBUM DETAILS SCREEN (When you open a specific folder)
+// =========================================================================================
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AlbumDetailScreen(
@@ -2051,9 +2073,13 @@ fun AlbumDetailScreen(
 
     val scrollBehavior = TopAppBarDefaults.enterAlwaysScrollBehavior(rememberTopAppBarState())
 
-    BackHandler(enabled = localSearchQuery.isNotEmpty()) { localSearchQuery = "" }
-    BackHandler(enabled = isSelectionMode) { isSelectionMode = false }
-    BackHandler(enabled = viewerState is GalleryViewerState.Open && activeDialog == DetailUiDialog.None) {
+    BackHandler(enabled = localSearchQuery.isNotEmpty() && viewerState !is GalleryViewerState.Open && activeDialog == DetailUiDialog.None) {
+        localSearchQuery = ""
+    }
+    BackHandler(enabled = isSelectionMode && viewerState !is GalleryViewerState.Open && activeDialog == DetailUiDialog.None) {
+        isSelectionMode = false
+    }
+    BackHandler(enabled = viewerState is GalleryViewerState.Open && activeDialog == DetailUiDialog.None && metadataItemToShow == null) {
         openedMediaItem = null
         viewModel.closeViewer()
     }
@@ -2247,6 +2273,32 @@ fun AlbumDetailScreen(
                                     }
                                     HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
                                     DropdownMenuItem(
+                                        text = { Text("Hidden Albums", fontWeight = FontWeight.Medium) },
+                                        onClick = {
+                                            showMenu = false
+                                            actions.onNavigateToHidden()
+                                        },
+                                        leadingIcon = { Icon(Icons.Outlined.FolderOff, null) }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Trash", fontWeight = FontWeight.Medium) },
+                                        onClick = {
+                                            showMenu = false
+                                            actions.onNavigateToTrash()
+                                        },
+                                        leadingIcon = { Icon(Icons.Outlined.DeleteOutline, null) }
+                                    )
+                                    if (isAppLockEnabled) {
+                                        DropdownMenuItem(
+                                            text = { Text("Lock App Now", fontWeight = FontWeight.Medium) },
+                                            onClick = {
+                                                showMenu = false
+                                                actions.onLockApp()
+                                            },
+                                            leadingIcon = { Icon(Icons.Outlined.PhonelinkLock, null) }
+                                        )
+                                    }
+                                    DropdownMenuItem(
                                         text = { Text(if (isAppLockEnabled) "Disable App Lock" else "Enable App Lock", fontWeight = FontWeight.Medium) },
                                         onClick = {
                                             showMenu = false
@@ -2343,17 +2395,34 @@ fun AlbumDetailScreen(
                                         containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
                                     ) {
                                         if (selectedIds.size == 1) {
+                                            val singleItem = remember(selectedIds, mediaMap, pagedMedia.itemSnapshotList) {
+                                                val id = selectedIds.first()
+                                                mediaMap[id] ?: pagedMedia.itemSnapshotList.items
+                                                    .filterIsInstance<GalleryGridItem.Media>()
+                                                    .firstOrNull { it.item.id == id }?.item
+                                            }
                                             DropdownMenuItem(
                                                 text = { Text("Details", fontWeight = FontWeight.Medium) },
                                                 onClick = {
                                                     showMediaSelectionMenu = false
-                                                    metadataItemToShow = mediaMap[selectedIds.first()]
-                                                        ?: pagedMedia.itemSnapshotList.items
-                                                            .filterIsInstance<GalleryGridItem.Media>()
-                                                            .firstOrNull { it.item.id == selectedIds.first() }?.item
+                                                    metadataItemToShow = singleItem
                                                 },
                                                 leadingIcon = { Icon(Icons.Outlined.Info, null) }
                                             )
+                                            if (singleItem != null) {
+                                                DropdownMenuItem(
+                                                    text = { Text("Set as Wallpaper", fontWeight = FontWeight.Medium) },
+                                                    onClick = {
+                                                        showMediaSelectionMenu = false
+                                                        isSelectionMode = false
+                                                        actions.onNavigateToWallpaper(
+                                                            singleItem.uri.toString(),
+                                                            singleItem.id
+                                                        )
+                                                    },
+                                                    leadingIcon = { Icon(Icons.Outlined.Wallpaper, null) }
+                                                )
+                                            }
                                         }
                                         if (albumId == ID_HIDDEN) {
                                             DropdownMenuItem(
@@ -2371,13 +2440,14 @@ fun AlbumDetailScreen(
                                                 text = { Text("Hide", fontWeight = FontWeight.Medium) },
                                                 onClick = {
                                                     showMediaSelectionMenu = false
-                                                    viewModel.hideItems(selectedIds.toList())
-                                                    Toast.makeText(context, "${selectedIds.size} items hidden", Toast.LENGTH_SHORT).show()
+                                                    val idsToHide = selectedIds.toList()
+                                                    viewModel.hideItems(idsToHide)
+                                                    Toast.makeText(context, "${idsToHide.size} items hidden", Toast.LENGTH_SHORT).show()
                                                     val itemsToHide = pagedMedia.itemSnapshotList.items
                                                         .filterIsInstance<GalleryGridItem.Media>()
                                                         .filter { selectedIds.contains(it.item.id) }
                                                         .map { it.item.uri }
-                                                    refreshAndClearCache(context, viewModel, itemsToHide)
+                                                    refreshAndClearCache(context, viewModel, itemsToHide, idsToHide)
                                                     isSelectionMode = false
                                                 },
                                                 leadingIcon = { Icon(Icons.Outlined.VisibilityOff, null) }
@@ -2642,14 +2712,12 @@ fun AlbumDetailScreen(
                     }
                 },
                 onPlayVideo = { uri: String, playlist: List<String> ->
-                    // Lock the playlist strictly to this album's videos before navigating to VideoPlayerScreen
                     viewModel.setVideoPlaylist(playlist)
                     openedMediaItem = null
                     viewModel.closeViewer()
                     actions.onNavigateToVideoPlayer(uri, playlist)
                 },
                 onDelete = { item: MediaItem ->
-                    // Release ExoPlayer lock on any open video before showing Trash confirmation
                     runCatching {
                         val player = viewModel.getPlayer()
                         player.pause()
@@ -2728,7 +2796,6 @@ fun AlbumDetailScreen(
                             .filterIsInstance<GalleryGridItem.Media>()
                             .map { mediaMap[it.item.id] ?: it.item }
 
-                        // Resolve items from snapshot, mediaMap, rawMedia, and openedMediaItem so single-item trash never misses or crashes
                         val itemsToTrash = buildList {
                             addAll(snapshotList.filter { targetIds.contains(it.id) })
                             targetIds.forEach { id ->
@@ -2745,7 +2812,6 @@ fun AlbumDetailScreen(
                         isSelectionMode = false
                         openedMediaItem = null
 
-                        // Close viewer and stop ExoPlayer BEFORE trashing so Pager never indexes a deleted item
                         runCatching {
                             val player = viewModel.getPlayer()
                             player.pause()
@@ -2756,7 +2822,7 @@ fun AlbumDetailScreen(
 
                         if (itemsToTrash.isNotEmpty()) {
                             trashViewModel.confirmPendingGalleryTrash(itemsToTrash)
-                            invalidateThumbCache(context, itemsToTrash.map { it.uri })
+                            invalidateThumbCache(context, itemsToTrash.map { it.uri }, itemsToTrash.map { it.id })
                         }
                     }
                 )
@@ -2795,8 +2861,9 @@ fun AlbumDetailScreen(
                     val snapshotList = pagedMedia.itemSnapshotList.items
                         .filterIsInstance<GalleryGridItem.Media>()
                         .map { mediaMap[it.item.id] ?: it.item }
+                    val albumItems = snapshotList.filter { it.bucketId == album.id }
                     viewModel.renameAlbum(album, newName)
-                    invalidateThumbCache(context, snapshotList.filter { it.bucketId == album.id }.map { it.uri })
+                    invalidateThumbCache(context, albumItems.map { it.uri }, albumItems.map { it.id })
                     showRenameSheet = false
                 }
             )
@@ -2837,11 +2904,9 @@ fun ModernDateHeader(modifier: Modifier = Modifier, title: String, onSelectAllFo
     }
 }
 
-/**
- * =========================================================================================
- * 🔲 STATELESS ALBUM GRID (Fixed Drag-and-Reorder + Non-Pinned Top Recent)
- * =========================================================================================
- */
+// =========================================================================================
+// 🔲 STATELESS ALBUM GRID (Fixed Drag-and-Reorder + Non-Pinned Top Recent)
+// =========================================================================================
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun StatelessAlbumGrid(
@@ -2883,7 +2948,7 @@ fun StatelessAlbumGrid(
 
     val dynamicThumbSize = remember(actualColumns, screenWidthDp, deviceTier) {
         val maxSize = if (deviceTier == DeviceTier.LOW) 260f else 480f
-        val raw = ((screenWidthDp / actualColumns) * 2)
+        val raw = ((screenWidthDp / actualColumns) * 2f)
             .coerceIn(180f, maxSize)
             .toInt()
         (raw / 40) * 40
@@ -3175,11 +3240,9 @@ fun StatelessAlbumGrid(
     }
 }
 
-/**
- * =========================================================================================
- * 🔲 STATELESS MEDIA GRID (Inside AlbumDetailScreen — Fixed Drag-to-Select)
- * =========================================================================================
- */
+// =========================================================================================
+// 🔲 STATELESS MEDIA GRID (Inside AlbumDetailScreen — Fixed Drag-to-Select)
+// =========================================================================================
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun StatelessMediaGrid(
@@ -3265,9 +3328,9 @@ fun StatelessMediaGrid(
             dragLastIndex = idx
         }
 
-        val top10 = 10 * densityScale
-        val top25 = 25 * densityScale
-        val top40 = 40 * densityScale
+        val top10 = 10f * densityScale
+        val top25 = 25f * densityScale
+        val top40 = 40f * densityScale
 
         val y = position.y
 
@@ -3454,11 +3517,9 @@ fun StatelessMediaGrid(
     }
 }
 
-/**
- * =========================================================================================
- * 🗂️ SAMSUNG ONE UI 7 ALBUM TILE (Primary Cover Focus, SD Card Icon Only, No SD Text)
- * =========================================================================================
- */
+// =========================================================================================
+// 🗂️ SAMSUNG ONE UI 7 ALBUM TILE (Primary Cover Focus, SD Card Icon Only, No SD Text)
+// =========================================================================================
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun OptimizedAlbumTile(
@@ -4639,6 +4700,11 @@ fun ModernAlbumTopBar(
                         leadingIcon = { Icon(imageVector = Icons.Outlined.CreateNewFolder, contentDescription = null) }
                     )
                     DropdownMenuItem(
+                        text = { Text("Favorites", fontWeight = FontWeight.Medium) },
+                        onClick = { onMenuAction("favorites"); showMenu = false },
+                        leadingIcon = { Icon(imageVector = Icons.Outlined.FavoriteBorder, contentDescription = null) }
+                    )
+                    DropdownMenuItem(
                         text = { Text("Grid Size", fontWeight = FontWeight.Medium) },
                         onClick = { onMenuAction("grid"); showMenu = false },
                         leadingIcon = { Icon(imageVector = Icons.Outlined.GridView, contentDescription = null) }
@@ -4670,6 +4736,13 @@ fun ModernAlbumTopBar(
                         leadingIcon = { Icon(imageVector = Icons.Outlined.Delete, contentDescription = null) }
                     )
                     HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                    if (isAppLockEnabled) {
+                        DropdownMenuItem(
+                            text = { Text("Lock App Now", fontWeight = FontWeight.Medium) },
+                            onClick = { onMenuAction("lock_now"); showMenu = false },
+                            leadingIcon = { Icon(imageVector = Icons.Outlined.PhonelinkLock, contentDescription = null) }
+                        )
+                    }
                     DropdownMenuItem(
                         text = { Text(if (isAppLockEnabled) "Disable App Lock" else "Enable App Lock", fontWeight = FontWeight.Medium) },
                         onClick = { onMenuAction("toggle_lock"); showMenu = false },
@@ -4794,11 +4867,9 @@ fun MetadataRow(icon: ImageVector, label: String, value: String) {
     }
 }
 
-/**
- * =========================================================================================
- * 🖼️ FULL SCREEN VIEWER OVERLAY (CLEAN TOP + CRASH-FREE IN-WINDOW MORE & DETAILS MENU)
- * =========================================================================================
- */
+// =========================================================================================
+// 🖼️ FULL SCREEN VIEWER OVERLAY (CLEAN TOP + CRASH-FREE IN-WINDOW MORE & DETAILS MENU)
+// =========================================================================================
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun FullscreenMediaPager(
@@ -4977,7 +5048,7 @@ fun FullscreenMediaPager(
             )
         }
 
-        // In-Window Crash-Free "More" Menu Card (No PopupWindow / DialogWindow token conflicts)
+        // In-Window Crash-Free "More" Menu Card (Includes Set as Wallpaper just like PictureScreen)
         AnimatedVisibility(
             visible = more && curr != null,
             enter = fadeIn(tween(160)) + scaleIn(initialScale = 0.92f, animationSpec = tween(180)),
@@ -5033,14 +5104,12 @@ fun FullscreenMediaPager(
                                 }
                             }
                         }
-                        if (!currentItem.isVideo) {
-                            ViewerMenuRow(
-                                icon = Icons.Outlined.Wallpaper,
-                                label = "Set as Wallpaper"
-                            ) {
-                                more = false
-                                onWallpaper(currentItem)
-                            }
+                        ViewerMenuRow(
+                            icon = Icons.Outlined.Wallpaper,
+                            label = "Set as Wallpaper"
+                        ) {
+                            more = false
+                            onWallpaper(currentItem)
                         }
                     }
                 }
@@ -5400,9 +5469,9 @@ fun PremiumViewerAction(icon: ImageVector, label: String, tint: Color = Color.Wh
     }
 }
 
-/**
- * --- THE MICROSCOPE (ZoomableImagePage) ---
- */
+// =========================================================================================
+// 🔍 THE MICROSCOPE (ZoomableImagePage)
+// =========================================================================================
 @Composable
 fun ZoomableImagePage(
     item: MediaItem,
@@ -5426,14 +5495,26 @@ fun ZoomableImagePage(
     var oY by remember { mutableFloatStateOf(0f) }
     var bA by remember { mutableFloatStateOf(1f) }
 
-    LaunchedEffect(sc) { onZoomChanged(sc > 1.05f) }
+    LaunchedEffect(sc) {
+        val isZoomed = sc > 1.05f
+        onZoomChanged(isZoomed)
+        if (isZoomed) {
+            onControlsVisibilityChange(false)
+        }
+    }
+
+    BackHandler(enabled = sc > 1.05f) {
+        sc = 1f
+        oX = 0f
+        oY = 0f
+    }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black.copy(alpha = bA))
             .graphicsLayer {
-                val ds = 1f - (abs(oY) / 2200f)
+                val ds = (1f - (abs(oY) / 2200f)).coerceIn(0.5f, 1f)
                 scaleX = sc * ds
                 scaleY = scaleX
                 alpha = (1f - (abs(oY) / 850f)).coerceIn(0f, 1f)
@@ -5464,20 +5545,26 @@ fun ZoomableImagePage(
                         }
 
                         if (sc > 1.05f) {
-                            event.changes.forEach {
-                                if (it.positionChange() != Offset.Zero) {
-                                    it.consume()
-                                }
-                            }
                             val mx = (size.width * (sc - 1f)) / 2f
                             val my = (size.height * (sc - 1f)) / 2f
-                            oX = (oX + pan.x).coerceIn(-mx, mx)
+                            val nextX = oX + pan.x
+                            val canPanHorizontally = nextX in -mx..mx
+
+                            if (canPanHorizontally || event.changes.size > 1) {
+                                event.changes.forEach {
+                                    if (it.positionChange() != Offset.Zero) {
+                                        it.consume()
+                                    }
+                                }
+                            }
+
+                            oX = nextX.coerceIn(-mx, mx)
                             oY = (oY + pan.y).coerceIn(-my, my)
                         } else {
                             val isV = abs(pan.y) > abs(pan.x)
                             if (isV && event.changes.size == 1) {
                                 oY += pan.y
-                                bA = (1f - abs(oY) / 900f).coerceIn(0.35f, 1f)
+                                bA = (1f - (abs(oY) / 900f)).coerceIn(0.35f, 1f)
                                 event.changes.forEach {
                                     if (it.positionChange() != Offset.Zero) {
                                         it.consume()

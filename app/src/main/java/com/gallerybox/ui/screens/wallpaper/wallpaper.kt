@@ -17,7 +17,6 @@ import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Rect
-import android.graphics.drawable.BitmapDrawable
 import android.media.ExifInterface
 import android.media.MediaMetadataRetriever
 import android.net.Uri
@@ -25,9 +24,16 @@ import android.os.Build
 import android.os.PowerManager
 import android.service.wallpaper.WallpaperService
 import android.util.Log
+import android.view.Gravity
 import android.view.SurfaceHolder
+import android.view.TextureView
+import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.FrameLayout
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Canvas as ComposeCanvas
 import androidx.compose.foundation.Image
@@ -41,6 +47,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -109,11 +116,6 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.VideoSize
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.ui.AspectRatioFrameLayout
-import androidx.media3.ui.PlayerView
-import coil.imageLoader
-import coil.request.ImageRequest
-import coil.request.SuccessResult
 import coil.size.Size
 import com.gallerybox.data.MediaItem
 import com.gallerybox.ui.screens.adaptive.WindowWidthSize
@@ -333,9 +335,8 @@ object CacheEngine {
 // --- THE PHOTOSHOP ARTIST (ImageEngine) ---
 // =========================================================================================
 object ImageEngine {
-    fun createFinalBitmap(
-        context: Context,
-        uri: Uri,
+    fun renderSourceBitmapToScreen(
+        source: Bitmap,
         screenWidth: Int,
         screenHeight: Int,
         previewWidth: Int,
@@ -346,13 +347,8 @@ object ImageEngine {
         userRotation: Float,
         dimLevel: Float
     ): Bitmap? {
-        try {
+        return try {
             val safeScale = userScale.coerceIn(1f, 8f)
-            val reqW = (screenWidth * min(safeScale, 2.5f)).roundToInt().coerceAtLeast(screenWidth)
-            val reqH = (screenHeight * min(safeScale, 2.5f)).roundToInt().coerceAtLeast(screenHeight)
-
-            val original = CacheEngine.decodeExifCorrectedBitmap(context, uri, reqW, reqH) ?: return null
-
             val finalBitmap = Bitmap.createBitmap(
                 screenWidth,
                 screenHeight,
@@ -367,13 +363,12 @@ object ImageEngine {
             val cosA = abs(cos(rad)).toFloat()
             val sinA = abs(sin(rad)).toFloat()
 
-            val rotW = original.width * cosA + original.height * sinA
-            val rotH = original.width * sinA + original.height * cosA
+            val rotW = source.width * cosA + source.height * sinA
+            val rotH = source.width * sinA + source.height * cosA
 
             val sx = screenWidth.toFloat() / rotW
             val sy = screenHeight.toFloat() / rotH
 
-            // Always cover the wallpaper output.
             val base = max(sx, sy)
             val finalScale = base * safeScale
 
@@ -400,30 +395,68 @@ object ImageEngine {
             val cy = screenHeight / 2f
 
             val matrix = Matrix().apply {
-                postTranslate(-original.width / 2f, -original.height / 2f)
+                postTranslate(-source.width / 2f, -source.height / 2f)
                 postScale(finalScale, finalScale)
                 postRotate(userRotation)
                 postTranslate(cx + clampedOffsetX, cy + clampedOffsetY)
             }
 
             canvas.drawBitmap(
-                original,
+                source,
                 matrix,
                 Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
             )
-            original.recycle()
 
             if (dimLevel > 0f) {
                 canvas.drawColor(Color.argb((dimLevel * 255f).roundToInt().coerceIn(0, 255), 0, 0, 0))
             }
 
-            return finalBitmap
+            finalBitmap
         } catch (e: OutOfMemoryError) {
-            Log.e("ImageEngine", "OOM while creating wallpaper bitmap", e)
-            return null
+            Log.e("ImageEngine", "OOM while rendering bitmap", e)
+            null
+        } catch (e: Exception) {
+            Log.e("ImageEngine", "Failed to render final bitmap", e)
+            null
+        }
+    }
+
+    fun createFinalBitmap(
+        context: Context,
+        uri: Uri,
+        screenWidth: Int,
+        screenHeight: Int,
+        previewWidth: Int,
+        previewHeight: Int,
+        userScale: Float,
+        userOffsetX: Float,
+        userOffsetY: Float,
+        userRotation: Float,
+        dimLevel: Float
+    ): Bitmap? {
+        return try {
+            val safeScale = userScale.coerceIn(1f, 8f)
+            val reqW = (screenWidth * min(safeScale, 2.5f)).roundToInt().coerceAtLeast(screenWidth)
+            val reqH = (screenHeight * min(safeScale, 2.5f)).roundToInt().coerceAtLeast(screenHeight)
+
+            val original = CacheEngine.decodeExifCorrectedBitmap(context, uri, reqW, reqH) ?: return null
+            val rendered = renderSourceBitmapToScreen(
+                source = original,
+                screenWidth = screenWidth,
+                screenHeight = screenHeight,
+                previewWidth = previewWidth,
+                previewHeight = previewHeight,
+                userScale = userScale,
+                userOffsetX = userOffsetX,
+                userOffsetY = userOffsetY,
+                userRotation = userRotation,
+                dimLevel = dimLevel
+            )
+            original.recycle()
+            rendered
         } catch (e: Exception) {
             Log.e("ImageEngine", "Failed to create final bitmap", e)
-            return null
+            null
         }
     }
 }
@@ -432,6 +465,17 @@ object ImageEngine {
 // --- THE INTERIOR DECORATOR (StaticEngine) ---
 // =========================================================================================
 object StaticEngine {
+    fun getDeviceScreenBounds(context: Context): Pair<Int, Int> {
+        val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        val bounds = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            windowManager.currentWindowMetrics.bounds
+        } else {
+            val dm = context.resources.displayMetrics
+            Rect(0, 0, dm.widthPixels, dm.heightPixels)
+        }
+        return bounds.width().coerceAtLeast(1080) to bounds.height().coerceAtLeast(1920)
+    }
+
     suspend fun apply(
         context: Context,
         item: MediaItem,
@@ -447,17 +491,7 @@ object StaticEngine {
     ) = withContext(Dispatchers.IO) {
         try {
             val wm = WallpaperManager.getInstance(context)
-            val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-
-            val bounds = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                windowManager.currentWindowMetrics.bounds
-            } else {
-                val dm = context.resources.displayMetrics
-                Rect(0, 0, dm.widthPixels, dm.heightPixels)
-            }
-
-            val targetWidth = bounds.width().coerceAtLeast(1080)
-            val targetHeight = bounds.height().coerceAtLeast(1920)
+            val (targetWidth, targetHeight) = getDeviceScreenBounds(context)
 
             runCatching { wm.suggestDesiredDimensions(targetWidth, targetHeight) }
 
@@ -509,15 +543,26 @@ object StaticEngine {
 }
 
 // =========================================================================================
-// --- THE MOVIE DIRECTOR (VideoEngine) ---
+// --- THE MOVIE DIRECTOR (VideoEngine — Direct Apply without 2nd Screen when Possible) ---
 // =========================================================================================
 object VideoEngine {
-    suspend fun setVideoWallpaper(
+    fun isGalleryBoxLiveWallpaperActive(context: Context): Boolean {
+        return runCatching {
+            val wm = WallpaperManager.getInstance(context)
+            val info = wm.wallpaperInfo
+            info != null &&
+                    info.packageName == context.packageName &&
+                    info.serviceName == VideoWallpaperService::class.java.name
+        }.getOrDefault(false)
+    }
+
+    suspend fun applyVideoWallpaper(
         context: Context,
         item: MediaItem,
-        playAudio: Boolean,
-        loop: Boolean,
-        onSuccess: () -> Unit
+        flags: Int,
+        state: WallpaperUiState,
+        onAppliedDirectly: () -> Unit,
+        onNeedsSystemActivation: (Intent) -> Unit
     ) = withContext(Dispatchers.IO) {
         try {
             val uniqueName = "live_wp_${System.currentTimeMillis()}.mp4"
@@ -554,52 +599,99 @@ object VideoEngine {
 
             val safeUri = Uri.fromFile(finalFile).toString()
 
+            val normOffsetX = if (state.previewWidth > 0) {
+                state.offsetX / state.previewWidth.toFloat()
+            } else {
+                0f
+            }
+            val normOffsetY = if (state.previewHeight > 0) {
+                state.offsetY / state.previewHeight.toFloat()
+            } else {
+                0f
+            }
+
             prefs.edit()
                 .putString("wallpaper_video_uri", safeUri)
-                .putBoolean("wallpaper_video_audio", playAudio)
-                .putBoolean("wallpaper_video_loop", loop)
+                .putBoolean("wallpaper_video_audio", state.playAudio)
+                .putBoolean("wallpaper_video_loop", state.loopVideo)
+                .putFloat("wallpaper_video_scale", state.scale)
+                .putFloat("wallpaper_video_offset_x_norm", normOffsetX)
+                .putFloat("wallpaper_video_offset_y_norm", normOffsetY)
+                .putFloat("wallpaper_video_rotation", state.rotation)
+                .putFloat("wallpaper_video_dim", state.dimLevel)
+                .putInt("wallpaper_video_flags", flags)
                 .putLong("wallpaper_update_trigger", System.currentTimeMillis())
                 .commit()
 
+            val wm = WallpaperManager.getInstance(context)
+            val (targetW, targetH) = StaticEngine.getDeviceScreenBounds(context)
+
+            // If user selected Lock Screen Only (or Both Screens), also apply a high-res transformed frame
+            // directly to FLAG_LOCK so the Lock Screen updates immediately without any 2nd screen!
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && (flags and WallpaperManager.FLAG_LOCK) != 0) {
+                runCatching {
+                    val retriever = MediaMetadataRetriever()
+                    retriever.setDataSource(context, item.uri)
+                    val rawFrame = retriever.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                        ?: retriever.getFrameAtTime(0L)
+                    retriever.release()
+
+                    if (rawFrame != null) {
+                        val transformedLockBitmap = ImageEngine.renderSourceBitmapToScreen(
+                            source = rawFrame,
+                            screenWidth = targetW,
+                            screenHeight = targetH,
+                            previewWidth = state.previewWidth,
+                            previewHeight = state.previewHeight,
+                            userScale = state.scale,
+                            userOffsetX = state.offsetX,
+                            userOffsetY = state.offsetY,
+                            userRotation = state.rotation,
+                            dimLevel = state.dimLevel
+                        )
+                        rawFrame.recycle()
+
+                        if (transformedLockBitmap != null) {
+                            wm.setBitmap(
+                                transformedLockBitmap,
+                                Rect(0, 0, targetW, targetH),
+                                true,
+                                WallpaperManager.FLAG_LOCK
+                            )
+                            transformedLockBitmap.recycle()
+                        }
+                    }
+                }
+            }
+
+            val wantsHomeLive = (flags and WallpaperManager.FLAG_SYSTEM) != 0
+            val alreadyActive = isGalleryBoxLiveWallpaperActive(context)
+
             withContext(Dispatchers.Main) {
-                try {
+                if (!wantsHomeLive || alreadyActive) {
+                    // Instant direct update! Zero 2nd screen needed.
+                    Toast.makeText(context, "Wallpaper Applied Successfully", Toast.LENGTH_SHORT).show()
+                    onAppliedDirectly()
+                } else {
+                    // Android OS requires one-time activation when switching from a static wallpaper to a Live Wallpaper service
                     val component = ComponentName(context, VideoWallpaperService::class.java)
                     val intent = Intent(WallpaperManager.ACTION_CHANGE_LIVE_WALLPAPER).apply {
                         putExtra(WallpaperManager.EXTRA_LIVE_WALLPAPER_COMPONENT, component)
                     }
-                    context.startActivity(intent)
-                    onSuccess()
-                } catch (e: Exception) {
-                    Log.e("VideoEngine", "Direct live wallpaper intent failed", e)
-                    try {
-                        val fallbackIntent = Intent(WallpaperManager.ACTION_LIVE_WALLPAPER_CHOOSER)
-                        context.startActivity(fallbackIntent)
-                        Toast.makeText(
-                            context,
-                            "Please select GalleryBox Live Wallpaper from the list",
-                            Toast.LENGTH_LONG
-                        ).show()
-                        onSuccess()
-                    } catch (e2: Exception) {
-                        Toast.makeText(
-                            context,
-                            "Live Wallpapers not supported on this device",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    }
+                    onNeedsSystemActivation(intent)
                 }
             }
         } catch (e: Exception) {
-            Log.e("VideoEngine", "Failed to prepare video", e)
+            Log.e("VideoEngine", "Failed to apply video wallpaper", e)
             withContext(Dispatchers.Main) {
-                Toast.makeText(context, "Failed to prepare video wallpaper", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "Failed to apply video wallpaper", Toast.LENGTH_SHORT).show()
             }
         }
     }
 }
 
 // =========================================================================================
-// --- THE INVISIBLE CINEMA SCREEN (VideoWallpaperService) ---
+// --- THE INVISIBLE CINEMA SCREEN (VideoWallpaperService with Full Transform & Dim Support) ---
 // =========================================================================================
 class VideoWallpaperService : WallpaperService() {
     override fun onCreateEngine(): Engine = VideoEngineInstance()
@@ -610,6 +702,8 @@ class VideoWallpaperService : WallpaperService() {
         private var isVisible = false
         private var systemReceiver: BroadcastReceiver? = null
         private var retryCount = 0
+        private var surfaceWidth = 0
+        private var surfaceHeight = 0
 
         override fun onCreate(surfaceHolder: SurfaceHolder) {
             super.onCreate(surfaceHolder)
@@ -765,13 +859,9 @@ class VideoWallpaperService : WallpaperService() {
 
         override fun onSurfaceCreated(holder: SurfaceHolder) {
             super.onSurfaceCreated(holder)
-
             this.holder = holder
-
             player?.setVideoSurfaceHolder(holder)
             loadCurrentMedia()
-
-            // Reattach the surface and resume after media is ready.
             resumeIfAllowed()
         }
 
@@ -782,8 +872,9 @@ class VideoWallpaperService : WallpaperService() {
             height: Int
         ) {
             super.onSurfaceChanged(holder, format, width, height)
-
             this.holder = holder
+            this.surfaceWidth = width
+            this.surfaceHeight = height
             player?.setVideoSurfaceHolder(holder)
             resumeIfAllowed()
         }
@@ -844,12 +935,9 @@ private fun PhotoPreview(
         val scaleX = size.width / rotW
         val scaleY = size.height / rotH
 
-        // Automatic cover: fill the entire phone preview without stretching.
         val baseScale = max(scaleX, scaleY)
         val finalScale = baseScale * state.scale
 
-        // IMPORTANT FIX: Explicit pivot = Offset.Zero prevents Compose Canvas from
-        // scaling around (size.width/2, size.height/2) a second time!
         withTransform({
             translate(
                 left = size.width / 2f + state.offsetX,
@@ -875,30 +963,75 @@ private fun PhotoPreview(
 }
 
 // =========================================================================================
-// --- VIDEO PREVIEW COMPOSABLE ---
+// --- VIDEO PREVIEW COMPOSABLE (Supports Pinch-Zoom, Drag/Pan & Rotation on 1st Screen) ---
 // =========================================================================================
 @Composable
 private fun VideoPreview(
-    player: ExoPlayer
+    player: ExoPlayer,
+    state: WallpaperUiState
 ) {
-    AndroidView(
-        factory = { ctx ->
-            PlayerView(ctx).apply {
-                useController = false
-                this.player = player
-                this.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-            }
-        },
-        update = { view ->
-            view.player = player
-            view.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-        },
-        modifier = Modifier.fillMaxSize()
-    )
+    val pw = state.previewWidth.toFloat()
+    val ph = state.previewHeight.toFloat()
+    val mw = state.mediaWidth.toFloat().coerceAtLeast(1f)
+    val mh = state.mediaHeight.toFloat().coerceAtLeast(1f)
+
+    val rad = Math.toRadians(state.rotation.toDouble())
+    val cosA = abs(cos(rad)).toFloat()
+    val sinA = abs(sin(rad)).toFloat()
+
+    val rotW = mw * cosA + mh * sinA
+    val rotH = mw * sinA + mh * cosA
+
+    // Calculate cover scale so the TextureView automatically fills the phone frame without stretching
+    val coverScaleX = if (pw > 0f && rotW > 0f) max(1f, (pw / rotW) * (rotH / ph.coerceAtLeast(1f))) else 1f
+    val coverScaleY = if (ph > 0f && rotH > 0f) max(1f, (ph / rotH) * (rotW / pw.coerceAtLeast(1f))) else 1f
+    val baseCover = max(coverScaleX, coverScaleY)
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .clipToBounds(),
+        contentAlignment = Alignment.Center
+    ) {
+        AndroidView(
+            factory = { ctx ->
+                FrameLayout(ctx).apply {
+                    layoutParams = FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT
+                    )
+                    val textureView = TextureView(ctx).apply {
+                        layoutParams = FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            Gravity.CENTER
+                        )
+                    }
+                    addView(textureView)
+                    player.setVideoTextureView(textureView)
+                }
+            },
+            update = { container ->
+                val textureView = container.getChildAt(0) as? TextureView
+                if (textureView != null) {
+                    player.setVideoTextureView(textureView)
+                }
+            },
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    scaleX = baseCover * state.scale
+                    scaleY = baseCover * state.scale
+                    rotationZ = state.rotation
+                    translationX = state.offsetX
+                    translationY = state.offsetY
+                }
+        )
+    }
 }
 
 // =========================================================================================
-// --- THE CONTROL ROOM (WallpaperScreen) ---
+// --- THE CONTROL ROOM (WallpaperScreen — All Logic in 1st Screen Only) ---
 // =========================================================================================
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -920,6 +1053,17 @@ fun WallpaperScreen(
     var previewBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var videoBackdropBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var imageLoadFailed by remember { mutableStateOf(false) }
+
+    // Handles the one-time Android OS Live Wallpaper activation if VideoWallpaperService wasn't active yet
+    val liveWallpaperActivationLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) {
+        isApplying = false
+        if (VideoEngine.isGalleryBoxLiveWallpaperActive(context)) {
+            Toast.makeText(context, "Wallpaper Applied Successfully", Toast.LENGTH_SHORT).show()
+            onBack()
+        }
+    }
 
     LaunchedEffect(item.uri, item.isVideo) {
         viewModel.resetTransform()
@@ -951,7 +1095,12 @@ fun WallpaperScreen(
                     retriever.setDataSource(context, item.uri)
                     val frame = retriever.getFrameAtTime(0L)
                     retriever.release()
-                    videoBackdropBitmap = frame
+                    if (frame != null) {
+                        videoBackdropBitmap = frame
+                        viewModel.setMediaSize(frame.width, frame.height)
+                    } else if (item.width > 0 && item.height > 0) {
+                        viewModel.setMediaSize(item.width, item.height)
+                    }
                 }
             }
         }
@@ -1037,7 +1186,7 @@ fun WallpaperScreen(
                 )
             }
 
-            // Samsung-style Phone Preview Frame
+            // Samsung-style Phone Preview Frame (Supports Drag, Pinch-Zoom & Double-Tap Reset for BOTH Photos and Videos)
             Column(
                 modifier = Modifier
                     .fillMaxSize()
@@ -1088,25 +1237,21 @@ fun WallpaperScreen(
                             .onSizeChanged { size ->
                                 viewModel.setPreviewSize(size.width, size.height)
                             }
-                            .pointerInput(item.uri, item.isVideo) {
-                                if (!item.isVideo) {
-                                    detectTransformGestures { _, pan, zoom, _ ->
-                                        viewModel.applyGesture(
-                                            zoom = zoom,
-                                            panX = pan.x,
-                                            panY = pan.y
-                                        )
-                                    }
-                                }
-                            }
-                            .pointerInput(item.uri, item.isVideo) {
-                                if (!item.isVideo) {
-                                    detectTapGestures(
-                                        onDoubleTap = {
-                                            viewModel.resetTransform()
-                                        }
+                            .pointerInput(item.uri) {
+                                detectTransformGestures { _, pan, zoom, _ ->
+                                    viewModel.applyGesture(
+                                        zoom = zoom,
+                                        panX = pan.x,
+                                        panY = pan.y
                                     )
                                 }
+                            }
+                            .pointerInput(item.uri) {
+                                detectTapGestures(
+                                    onDoubleTap = {
+                                        viewModel.resetTransform()
+                                    }
+                                )
                             },
                         contentAlignment = Alignment.Center
                     ) {
@@ -1124,6 +1269,12 @@ fun WallpaperScreen(
                                         Player.REPEAT_MODE_OFF
                                     }
                                     addListener(object : Player.Listener {
+                                        override fun onVideoSizeChanged(videoSize: VideoSize) {
+                                            if (videoSize.width > 0 && videoSize.height > 0) {
+                                                viewModel.setMediaSize(videoSize.width, videoSize.height)
+                                            }
+                                        }
+
                                         override fun onPlayerError(error: PlaybackException) {
                                             playerError = true
                                         }
@@ -1153,7 +1304,10 @@ fun WallpaperScreen(
                                     color = androidx.compose.ui.graphics.Color.White
                                 )
                             } else {
-                                VideoPreview(player = player)
+                                VideoPreview(
+                                    player = player,
+                                    state = uiState
+                                )
                             }
                         } else {
                             if (imageLoadFailed) {
@@ -1171,7 +1325,7 @@ fun WallpaperScreen(
                             }
                         }
 
-                        if (!item.isVideo && uiState.dimLevel > 0f) {
+                        if (uiState.dimLevel > 0f) {
                             Box(
                                 modifier = Modifier
                                     .fillMaxSize()
@@ -1184,7 +1338,7 @@ fun WallpaperScreen(
                 }
             }
 
-            // Adjustments Menu
+            // Unified Adjustments Menu (Works for BOTH Photos and Videos on the 1st Screen)
             AnimatedVisibility(
                 visible = showAdjustments,
                 modifier = Modifier
@@ -1219,53 +1373,54 @@ fun WallpaperScreen(
                                     onCheckedChange = { viewModel.setLoopVideo(it) }
                                 )
                             }
-                        } else {
-                            Row(
-                                Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    "Rotation",
-                                    color = androidx.compose.ui.graphics.Color.White,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Row {
-                                    IconButton(onClick = { viewModel.rotateLeft() }) {
-                                        Icon(
-                                            Icons.Filled.RotateLeft,
-                                            contentDescription = "Rotate Left",
-                                            tint = androidx.compose.ui.graphics.Color.White
-                                        )
-                                    }
-                                    IconButton(onClick = { viewModel.rotateRight() }) {
-                                        Icon(
-                                            Icons.Filled.RotateRight,
-                                            contentDescription = "Rotate Right",
-                                            tint = androidx.compose.ui.graphics.Color.White
-                                        )
-                                    }
-                                }
-                            }
+                            Spacer(Modifier.height(6.dp))
+                        }
 
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
                             Text(
-                                "Dimming",
+                                "Rotation",
                                 color = androidx.compose.ui.graphics.Color.White,
                                 fontWeight = FontWeight.Bold
                             )
-                            Slider(
-                                value = uiState.dimLevel,
-                                onValueChange = { viewModel.setDimLevel(it) },
-                                valueRange = 0f..0.8f
-                            )
-
-                            Row(
-                                Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.End
-                            ) {
-                                TextButton(onClick = { viewModel.resetTransform() }) {
-                                    Text("Reset All")
+                            Row {
+                                IconButton(onClick = { viewModel.rotateLeft() }) {
+                                    Icon(
+                                        Icons.Filled.RotateLeft,
+                                        contentDescription = "Rotate Left",
+                                        tint = androidx.compose.ui.graphics.Color.White
+                                    )
                                 }
+                                IconButton(onClick = { viewModel.rotateRight() }) {
+                                    Icon(
+                                        Icons.Filled.RotateRight,
+                                        contentDescription = "Rotate Right",
+                                        tint = androidx.compose.ui.graphics.Color.White
+                                    )
+                                }
+                            }
+                        }
+
+                        Text(
+                            "Dimming",
+                            color = androidx.compose.ui.graphics.Color.White,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Slider(
+                            value = uiState.dimLevel,
+                            onValueChange = { viewModel.setDimLevel(it) },
+                            valueRange = 0f..0.8f
+                        )
+
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End
+                        ) {
+                            TextButton(onClick = { viewModel.resetTransform() }) {
+                                Text("Reset All")
                             }
                         }
                     }
@@ -1285,6 +1440,7 @@ fun WallpaperScreen(
         }
     }
 
+    // Unified Target Dialog for BOTH Photos & Videos (Home Screen / Lock Screen / Both Screens)
     if (showTargetDialog) {
         var applyTo by remember { mutableIntStateOf(WallpaperManager.FLAG_SYSTEM) }
 
@@ -1298,60 +1454,52 @@ fun WallpaperScreen(
             },
             text = {
                 Column {
-                    if (item.isVideo) {
-                        Text(
-                            "Note: Live wallpapers are handled by the system picker. Target screens (Home/Lock) will be chosen there.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(enabled = !isApplying) {
+                                applyTo = WallpaperManager.FLAG_SYSTEM
+                            }
+                    ) {
+                        RadioButton(
+                            selected = applyTo == WallpaperManager.FLAG_SYSTEM,
+                            onClick = { applyTo = WallpaperManager.FLAG_SYSTEM },
+                            enabled = !isApplying
                         )
-                    } else {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable(enabled = !isApplying) {
-                                    applyTo = WallpaperManager.FLAG_SYSTEM
-                                }
-                        ) {
-                            RadioButton(
-                                selected = applyTo == WallpaperManager.FLAG_SYSTEM,
-                                onClick = { applyTo = WallpaperManager.FLAG_SYSTEM },
-                                enabled = !isApplying
-                            )
-                            Text("Home Screen")
-                        }
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable(enabled = !isApplying) {
-                                    applyTo = WallpaperManager.FLAG_LOCK
-                                }
-                        ) {
-                            RadioButton(
-                                selected = applyTo == WallpaperManager.FLAG_LOCK,
-                                onClick = { applyTo = WallpaperManager.FLAG_LOCK },
-                                enabled = !isApplying
-                            )
-                            Text("Lock Screen")
-                        }
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable(enabled = !isApplying) {
-                                    applyTo = WallpaperManager.FLAG_SYSTEM or WallpaperManager.FLAG_LOCK
-                                }
-                        ) {
-                            RadioButton(
-                                selected = applyTo == (WallpaperManager.FLAG_SYSTEM or WallpaperManager.FLAG_LOCK),
-                                onClick = {
-                                    applyTo = WallpaperManager.FLAG_SYSTEM or WallpaperManager.FLAG_LOCK
-                                },
-                                enabled = !isApplying
-                            )
-                            Text("Both Screens")
-                        }
+                        Text("Home Screen")
+                    }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(enabled = !isApplying) {
+                                applyTo = WallpaperManager.FLAG_LOCK
+                            }
+                    ) {
+                        RadioButton(
+                            selected = applyTo == WallpaperManager.FLAG_LOCK,
+                            onClick = { applyTo = WallpaperManager.FLAG_LOCK },
+                            enabled = !isApplying
+                        )
+                        Text("Lock Screen")
+                    }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(enabled = !isApplying) {
+                                applyTo = WallpaperManager.FLAG_SYSTEM or WallpaperManager.FLAG_LOCK
+                            }
+                    ) {
+                        RadioButton(
+                            selected = applyTo == (WallpaperManager.FLAG_SYSTEM or WallpaperManager.FLAG_LOCK),
+                            onClick = {
+                                applyTo = WallpaperManager.FLAG_SYSTEM or WallpaperManager.FLAG_LOCK
+                            },
+                            enabled = !isApplying
+                        )
+                        Text("Both Screens")
                     }
                 }
             },
@@ -1361,18 +1509,33 @@ fun WallpaperScreen(
                     onClick = {
                         isApplying = true
                         val snapshot = uiState
+                        showTargetDialog = false
                         scope.launch {
-                            try {
-                                if (item.isVideo) {
-                                    VideoEngine.setVideoWallpaper(
-                                        context = context,
-                                        item = item,
-                                        playAudio = snapshot.playAudio,
-                                        loop = snapshot.loopVideo
-                                    ) {
+                            if (item.isVideo) {
+                                VideoEngine.applyVideoWallpaper(
+                                    context = context,
+                                    item = item,
+                                    flags = applyTo,
+                                    state = snapshot,
+                                    onAppliedDirectly = {
+                                        isApplying = false
                                         onBack()
+                                    },
+                                    onNeedsSystemActivation = { activationIntent ->
+                                        runCatching {
+                                            liveWallpaperActivationLauncher.launch(activationIntent)
+                                        }.onFailure {
+                                            isApplying = false
+                                            Toast.makeText(
+                                                context,
+                                                "Live Wallpapers not supported on this device",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
                                     }
-                                } else {
+                                )
+                            } else {
+                                try {
                                     StaticEngine.apply(
                                         context = context,
                                         item = item,
@@ -1387,10 +1550,9 @@ fun WallpaperScreen(
                                     ) {
                                         onBack()
                                     }
+                                } finally {
+                                    isApplying = false
                                 }
-                            } finally {
-                                isApplying = false
-                                showTargetDialog = false
                             }
                         }
                     }

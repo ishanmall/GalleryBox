@@ -96,6 +96,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.PlayerView
 import androidx.paging.compose.LazyPagingItems
 import androidx.paging.compose.collectAsLazyPagingItems
+import coil.annotation.ExperimentalCoilApi
 import coil.compose.AsyncImage
 import coil.imageLoader
 import coil.memory.MemoryCache
@@ -449,7 +450,6 @@ fun SamsungFastScrollbar(
     }
 }
 
-
 // =========================================================================================
 // 🖼️ THE MAIN PICTURE SCREEN
 // =========================================================================================
@@ -497,7 +497,7 @@ fun PictureScreen(
 
     val pagedMedia = viewModel.pagedMedia.collectAsLazyPagingItems()
 
-    // Dedicated reference to the currently opened item in Fullscreen Viewer (just like AlbumDetailScreen)
+    // Dedicated reference to the currently opened item in Fullscreen Viewer
     var openedMediaItem by remember { mutableStateOf<MediaItem?>(null) }
 
     // Tracks a pending trash action so "Moved to Trash" is shown ONLY after the file is actually deleted
@@ -505,16 +505,6 @@ fun PictureScreen(
 
     val openViewerState = viewerState as? GalleryViewerState.Open
     val viewerItemId = openViewerState?.mediaId
-
-    val currentItem = remember(viewerItemId, openedMediaItem, mediaMap, pagedMedia.itemSnapshotList) {
-        if (viewerItemId == null) return@remember null
-        openedMediaItem?.takeIf { it.id == viewerItemId }
-            ?: mediaMap[viewerItemId]
-            ?: pagedMedia.itemSnapshotList.items
-                .filterIsInstance<GalleryGridItem.Media>()
-                .firstOrNull { it.item.id == viewerItemId }
-                ?.item
-    }
 
     // Refresh PagingData when trashBin or rawMedia count changes (e.g., screenshot taken or item trashed).
     // Skipped while the fullscreen viewer is open so it never races with the trash flow.
@@ -576,7 +566,7 @@ fun PictureScreen(
         }
     }
 
-    // Separate permission launchers for TrashViewModel and GalleryViewModel so they NEVER interfere!
+    // Separate permission launchers for TrashViewModel and GalleryViewModel so they NEVER interfere
     val intentSenderLauncherTrash = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartIntentSenderForResult()
     ) { result ->
@@ -682,12 +672,12 @@ fun PictureScreen(
         onViewerStateChanged(viewerState is GalleryViewerState.Open)
     }
 
-    BackHandler(enabled = isSearchActive) {
+    BackHandler(enabled = isSearchActive && viewerState !is GalleryViewerState.Open && activeDialog == PictureUiDialog.None) {
         isSearchActive = false
         localSearchQuery = ""
     }
 
-    BackHandler(enabled = isSelectionMode) {
+    BackHandler(enabled = isSelectionMode && viewerState !is GalleryViewerState.Open && activeDialog == PictureUiDialog.None) {
         isSelectionMode = false
         selectedIds = emptySet()
     }
@@ -835,6 +825,8 @@ fun PictureScreen(
                                 "grid" -> activeDialog = PictureUiDialog.GridSize
                                 "sort" -> activeDialog = PictureUiDialog.Sort
                                 "slideshow" -> onNavigateToSlideshow()
+                                "duplicates" -> onNavigateToDuplicates()
+                                "hidden" -> onNavigateToHidden()
                                 "trash" -> onNavigateToTrash()
                                 "about" -> onNavigateToAbout()
                             }
@@ -947,7 +939,7 @@ fun PictureScreen(
             }
         }
 
-        // Fullscreen Viewer Overlay (Built identically to AlbumDetailScreen so single-item state is rock-solid)
+        // Fullscreen Viewer Overlay
         val snapshotItems = remember(pagedMedia.itemSnapshotList, mediaMap) {
             pagedMedia.itemSnapshotList.items
                 .filterIsInstance<GalleryGridItem.Media>()
@@ -1021,6 +1013,11 @@ fun PictureScreen(
                     openedMediaItem = null
                     viewModel.closeViewer()
                     onNavigateToWallpaper(item.uri.toString(), item.id)
+                },
+                onNavigateToAlbum = { bucketId ->
+                    openedMediaItem = null
+                    viewModel.closeViewer()
+                    onNavigateToAlbum(bucketId)
                 }
             )
         }
@@ -1040,8 +1037,6 @@ fun PictureScreen(
                 prefs = prefs,
                 onDismiss = { activeDialog = PictureUiDialog.None },
                 onConfirmTrash = { itemsToTrash ->
-                    // Exact same flow as AlbumDetailScreen: close dialog, stop player, close viewer,
-                    // then call confirmPendingGalleryTrash and let OperationSuccess/onRefreshGallery show "Moved to Trash" AFTER user clicks Allow.
                     activeDialog = PictureUiDialog.None
                     isSelectionMode = false
                     selectedIds = emptySet()
@@ -1058,12 +1053,13 @@ fun PictureScreen(
                     if (itemsToTrash.isNotEmpty()) {
                         awaitingTrashFeedback = true
                         trashViewModel.confirmPendingGalleryTrash(itemsToTrash)
-                        invalidateThumbCache(context, itemsToTrash.map { it.uri })
+                        invalidateThumbCache(context, itemsToTrash)
                     }
                 },
                 onNavigateToEditor = onNavigateToEditor,
                 onNavigateToMoveCopy = onNavigateToMoveCopy,
                 onNavigateToWallpaper = onNavigateToWallpaper,
+                onNavigateToAlbum = onNavigateToAlbum,
                 onUpdateColumns = { cols ->
                     columnCount = cols
                     prefs.edit().putInt("picture_grid_columns", cols).apply()
@@ -1160,6 +1156,21 @@ fun PictureScreen(
                                 },
                                 leadingIcon = { Icon(Icons.Outlined.Info, contentDescription = null) }
                             )
+                            if (selectedIds.size == 1) {
+                                DropdownMenuItem(
+                                    text = { Text("Go to Album", fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurface) },
+                                    onClick = {
+                                        showMore = false
+                                        val firstItem = getSelectedItems().firstOrNull()
+                                        if (firstItem != null && firstItem.bucketId.isNotBlank()) {
+                                            isSelectionMode = false
+                                            selectedIds = emptySet()
+                                            onNavigateToAlbum(firstItem.bucketId)
+                                        }
+                                    },
+                                    leadingIcon = { Icon(Icons.Outlined.FolderOpen, contentDescription = null) }
+                                )
+                            }
                         }
                     }
                 }
@@ -1769,6 +1780,16 @@ fun ModernTopBar(
                     )
                     HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
                     DropdownMenuItem(
+                        text = { Text("Clean Duplicates", fontWeight = FontWeight.Medium) },
+                        onClick = { onMenuAction("duplicates"); showMenu = false },
+                        leadingIcon = { Icon(imageVector = Icons.Outlined.AutoFixHigh, contentDescription = null) }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Secure Vault", fontWeight = FontWeight.Medium) },
+                        onClick = { onMenuAction("hidden"); showMenu = false },
+                        leadingIcon = { Icon(imageVector = Icons.Outlined.Lock, contentDescription = null) }
+                    )
+                    DropdownMenuItem(
                         text = { Text("Trash", fontWeight = FontWeight.Medium) },
                         onClick = { onMenuAction("trash"); showMenu = false },
                         leadingIcon = { Icon(imageVector = Icons.Outlined.Delete, contentDescription = null) }
@@ -1861,7 +1882,11 @@ fun ModernFilterRow(filters: List<UiMediaFilter>, activeFilter: UiMediaFilter, o
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MediaMetadataSheet(item: MediaItem, onDismiss: () -> Unit) {
+fun MediaMetadataSheet(
+    item: MediaItem,
+    onDismiss: () -> Unit,
+    onNavigateToAlbum: ((String) -> Unit)? = null
+) {
     val context = LocalContext.current
     val dateStr = remember(item) { metadataFormatter.format(Date(item.dateAdded * 1000L)) }
     val formattedSize = remember(item) { Formatter.formatFileSize(context, item.size) }
@@ -1906,7 +1931,7 @@ fun MediaMetadataSheet(item: MediaItem, onDismiss: () -> Unit) {
                     )
                 }
                 Spacer(Modifier.width(16.dp))
-                Column {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = "Media Details",
                         style = MaterialTheme.typography.titleLarge,
@@ -1918,6 +1943,20 @@ fun MediaMetadataSheet(item: MediaItem, onDismiss: () -> Unit) {
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                }
+                if (onNavigateToAlbum != null && item.bucketId.isNotBlank()) {
+                    FilledTonalButton(
+                        onClick = {
+                            onDismiss()
+                            onNavigateToAlbum(item.bucketId)
+                        },
+                        shape = RoundedCornerShape(14.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                        Icon(Icons.Outlined.FolderOpen, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Open Album", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
                 }
             }
             Spacer(Modifier.height(24.dp))
@@ -2044,6 +2083,7 @@ fun DialogsHost(
     onNavigateToEditor: (String, Long) -> Unit,
     onNavigateToMoveCopy: (String, String, String?) -> Unit,
     onNavigateToWallpaper: (String, Long) -> Unit,
+    onNavigateToAlbum: (String) -> Unit,
     onUpdateColumns: (Int) -> Unit
 ) {
     val context = LocalContext.current
@@ -2228,6 +2268,27 @@ fun DialogsHost(
                                 modifier = Modifier.padding(vertical = 8.dp)
                             )
 
+                            if (item.bucketId.isNotBlank()) {
+                                ListItem(
+                                    headlineContent = {
+                                        Text(
+                                            "Go to Album",
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    },
+                                    leadingContent = {
+                                        Icon(
+                                            imageVector = Icons.Outlined.FolderOpen,
+                                            contentDescription = null
+                                        )
+                                    },
+                                    modifier = Modifier.clickable {
+                                        onDismiss()
+                                        onNavigateToAlbum(item.bucketId)
+                                    }
+                                )
+                            }
+
                             ListItem(
                                 headlineContent = {
                                     Text(
@@ -2324,7 +2385,8 @@ fun DialogsHost(
         is PictureUiDialog.MetadataInfo -> {
             MediaMetadataSheet(
                 item = dialog.item,
-                onDismiss = onDismiss
+                onDismiss = onDismiss,
+                onNavigateToAlbum = onNavigateToAlbum
             )
         }
 
@@ -2439,9 +2501,9 @@ fun GalleryGridContent(
             dragLastIndex = idx
         }
 
-        val edge10 = 10 * densityScale
-        val edge40 = 40 * densityScale
-        val edge80 = 80 * densityScale
+        val edge10 = 10f * densityScale
+        val edge40 = 40f * densityScale
+        val edge80 = 80f * densityScale
 
         val y = position.y
 
@@ -2483,7 +2545,12 @@ fun GalleryGridContent(
 
             if (longPress == null) {
                 val upEvent = currentEvent.changes.firstOrNull { it.id == down.id }
-                if (upEvent != null && !upEvent.pressed && !upEvent.isConsumed) {
+                val isTap = upEvent != null &&
+                        !upEvent.pressed &&
+                        !upEvent.isConsumed &&
+                        (upEvent.position - down.position).getDistance() <= viewConfiguration.touchSlop
+
+                if (isTap && upEvent != null) {
                     upEvent.consume()
                     val index = indexAt(down.position)
                     if (index >= 0) {
@@ -2810,7 +2877,7 @@ fun SelectionOverlay(
 }
 
 // =========================================================================================
-// 🖼️ FULL SCREEN VIEWER OVERLAY (CLEAN TOP — NO TOP BAR / BACK BUTTON / DATE)
+// 🖼️ FULL SCREEN VIEWER OVERLAY
 // =========================================================================================
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -2829,7 +2896,8 @@ fun FullscreenMediaPager(
     onPlayVideo: (String, List<String>) -> Unit,
     onMove: (MediaItem) -> Unit,
     onCopy: (MediaItem) -> Unit,
-    onWallpaper: (MediaItem) -> Unit
+    onWallpaper: (MediaItem) -> Unit,
+    onNavigateToAlbum: (String) -> Unit
 ) {
     if (mediaList.isEmpty()) return
 
@@ -3074,6 +3142,27 @@ fun FullscreenMediaPager(
                                             }
                                         )
 
+                                        if (currentItem.bucketId.isNotBlank()) {
+                                            DropdownMenuItem(
+                                                text = {
+                                                    Text(
+                                                        "Go to Album",
+                                                        color = MaterialTheme.colorScheme.onSurface
+                                                    )
+                                                },
+                                                onClick = {
+                                                    showMoreMenu = false
+                                                    onNavigateToAlbum(currentItem.bucketId)
+                                                },
+                                                leadingIcon = {
+                                                    Icon(
+                                                        Icons.Outlined.FolderOpen,
+                                                        contentDescription = null
+                                                    )
+                                                }
+                                            )
+                                        }
+
                                         DropdownMenuItem(
                                             text = {
                                                 Text(
@@ -3315,6 +3404,27 @@ fun FullscreenMediaPager(
                                             }
                                         )
 
+                                        if (currentItem.bucketId.isNotBlank()) {
+                                            DropdownMenuItem(
+                                                text = {
+                                                    Text(
+                                                        "Go to Album",
+                                                        color = MaterialTheme.colorScheme.onSurface
+                                                    )
+                                                },
+                                                onClick = {
+                                                    showMoreMenu = false
+                                                    onNavigateToAlbum(currentItem.bucketId)
+                                                },
+                                                leadingIcon = {
+                                                    Icon(
+                                                        Icons.Outlined.FolderOpen,
+                                                        contentDescription = null
+                                                    )
+                                                }
+                                            )
+                                        }
+
                                         DropdownMenuItem(
                                             text = {
                                                 Text(
@@ -3413,9 +3523,11 @@ fun FullscreenMediaPager(
     }
 
     if (showMetadataSheet && liveCurrentItem != null) {
-        MediaMetadataSheet(item = liveCurrentItem) {
-            showMetadataSheet = false
-        }
+        MediaMetadataSheet(
+            item = liveCurrentItem,
+            onDismiss = { showMetadataSheet = false },
+            onNavigateToAlbum = onNavigateToAlbum
+        )
     }
 }
 
@@ -3637,14 +3749,26 @@ fun ZoomableImagePage(
     var oY by remember { mutableFloatStateOf(0f) }
     var bA by remember { mutableFloatStateOf(1f) }
 
-    LaunchedEffect(sc) { onZoomChanged(sc > 1.05f) }
+    LaunchedEffect(sc) {
+        val isZoomed = sc > 1.05f
+        onZoomChanged(isZoomed)
+        if (isZoomed) {
+            onControlsVisibilityChange(false)
+        }
+    }
+
+    BackHandler(enabled = sc > 1.05f) {
+        sc = 1f
+        oX = 0f
+        oY = 0f
+    }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black.copy(alpha = bA))
             .graphicsLayer {
-                val ds = 1f - (abs(oY) / 2200f)
+                val ds = (1f - (abs(oY) / 2200f)).coerceIn(0.5f, 1f)
                 scaleX = sc * ds
                 scaleY = scaleX
                 alpha = (1f - (abs(oY) / 850f)).coerceIn(0f, 1f)
@@ -3675,21 +3799,26 @@ fun ZoomableImagePage(
                         }
 
                         if (sc > 1.05f) {
-                            event.changes.forEach {
-                                if (it.positionChange() != Offset.Zero) {
-                                    it.consume()
+                            val mx = (size.width * (sc - 1f)) / 2f
+                            val my = (size.height * (sc - 1f)) / 2f
+                            val nextX = oX + pan.x
+                            val canPanHorizontally = nextX in -mx..mx
+
+                            if (canPanHorizontally || event.changes.size > 1) {
+                                event.changes.forEach {
+                                    if (it.positionChange() != Offset.Zero) {
+                                        it.consume()
+                                    }
                                 }
                             }
 
-                            val mx = (size.width * (sc - 1f)) / 2f
-                            val my = (size.height * (sc - 1f)) / 2f
-                            oX = (oX + pan.x).coerceIn(-mx, mx)
+                            oX = nextX.coerceIn(-mx, mx)
                             oY = (oY + pan.y).coerceIn(-my, my)
                         } else {
                             val isV = abs(pan.y) > abs(pan.x)
                             if (isV && event.changes.size == 1) {
                                 oY += pan.y
-                                bA = (1f - abs(oY) / 900f).coerceIn(0.35f, 1f)
+                                bA = (1f - (abs(oY) / 900f)).coerceIn(0.35f, 1f)
                                 event.changes.forEach {
                                     if (it.positionChange() != Offset.Zero) {
                                         it.consume()
@@ -3736,11 +3865,23 @@ fun ZoomableImagePage(
 // ---------------------------------------------------------------------------
 // CACHE HELPER
 // ---------------------------------------------------------------------------
-fun invalidateThumbCache(context: Context, uris: List<Uri>) {
+@OptIn(ExperimentalCoilApi::class)
+fun invalidateThumbCache(context: Context, items: List<MediaItem>) {
     val imageLoader = context.imageLoader
-    uris.forEach { uri ->
-        val uriString = uri.toString()
+    val standardSizes = listOf(160, 200, 240, 280, 320, 360, 400, 440, 480)
+    items.forEach { item ->
+        val uriString = item.uri.toString()
         imageLoader.diskCache?.remove(uriString)
         imageLoader.memoryCache?.remove(MemoryCache.Key(uriString))
+
+        val fullKey = "full_${item.id}"
+        imageLoader.diskCache?.remove(fullKey)
+        imageLoader.memoryCache?.remove(MemoryCache.Key(fullKey))
+
+        standardSizes.forEach { size ->
+            val thumbKey = "${item.id}_thumb_$size"
+            imageLoader.diskCache?.remove(thumbKey)
+            imageLoader.memoryCache?.remove(MemoryCache.Key(thumbKey))
+        }
     }
 }
