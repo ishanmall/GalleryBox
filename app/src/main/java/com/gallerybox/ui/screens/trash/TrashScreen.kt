@@ -7,8 +7,6 @@ import android.app.Activity
 import android.content.Context
 import android.net.Uri
 import android.os.Build
-import android.os.Bundle
-import android.provider.MediaStore
 import android.text.format.Formatter
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -27,7 +25,10 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitLongPressOrCancellation
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.*
@@ -46,13 +47,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -73,6 +78,7 @@ import coil.request.ImageRequest
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.yield
@@ -120,7 +126,7 @@ enum class TrashFilter { All, Images, Videos, Audio, Stories }
 
 /**
  * =========================================================================================
- * 🗑️ THE MAIN TRASH SCREEN (Samsung One UI 7 Style)
+ * 🗑️ THE MAIN TRASH SCREEN (Samsung One UI 7 Style + Continuous Drag-to-Select)
  * =========================================================================================
  */
 @RequiresApi(Build.VERSION_CODES.ECLAIR)
@@ -138,6 +144,7 @@ fun TrashScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val lifecycleOwner = LocalLifecycleOwner.current
     val haptics = LocalHapticFeedback.current
+    val density = LocalDensity.current
     val prefs = remember { context.getSharedPreferences("gallery_prefs", Context.MODE_PRIVATE) }
 
     var gridColumns by remember {
@@ -152,6 +159,8 @@ fun TrashScreen(
             )
         )
     }
+
+    val gridState = rememberLazyGridState()
 
     val trashEntities by galleryViewModel.trashBin.collectAsState(initial = emptyList())
     val isGalleryBusy by galleryViewModel.isBusy.collectAsState(initial = false)
@@ -326,6 +335,182 @@ fun TrashScreen(
 
     val selectedSizeBytes = remember(selectedIds, finalTrashItems) {
         finalTrashItems.filter { selectedIds.contains(it.id) }.sumOf { it.size }
+    }
+
+    // =========================================================================
+    // 🖐️ DRAG-TO-SELECT & CONTINUOUS MULTI-SESSION RANGE SELECTION ENGINE
+    // =========================================================================
+    var autoScrollSpeed by remember { mutableFloatStateOf(0f) }
+    var lastPointerPosition by remember { mutableStateOf<Offset?>(null) }
+    var dragAnchorIndex by remember { mutableIntStateOf(-1) }
+    var dragLastIndex by remember { mutableIntStateOf(-1) }
+    var dragBaseSelection by remember { mutableStateOf<Set<Long>>(emptySet()) }
+    var dragIsAdditive by remember { mutableStateOf(true) }
+
+    val currentFlattenedGridItems by rememberUpdatedState(flattenedGridItems)
+    val currentSelectedIds by rememberUpdatedState(selectedIds)
+    val currentIsEditMode by rememberUpdatedState(isEditMode)
+
+    fun indexAt(offset: Offset): Int {
+        val layoutInfo = gridState.layoutInfo
+        val itemInfo = layoutInfo.visibleItemsInfo.find {
+            offset.x >= it.offset.x && offset.x <= it.offset.x + it.size.width &&
+                    offset.y >= it.offset.y && offset.y <= it.offset.y + it.size.height
+        }
+        return itemInfo?.index ?: -1
+    }
+
+    fun mediaItemAt(gridIndex: Int): TrashUiItem? {
+        if (gridIndex !in currentFlattenedGridItems.indices) return null
+        return (currentFlattenedGridItems[gridIndex] as? TrashGridItem.Media)?.item
+    }
+
+    fun applyRangeSelection(fromIndex: Int, toIndex: Int) {
+        if (fromIndex < 0 || toIndex < 0 || currentFlattenedGridItems.isEmpty()) return
+        val lo = minOf(fromIndex, toIndex).coerceAtLeast(0)
+        val hi = maxOf(fromIndex, toIndex).coerceAtMost(currentFlattenedGridItems.lastIndex)
+
+        val updated = dragBaseSelection.toMutableSet()
+        for (i in lo..hi) {
+            val id = mediaItemAt(i)?.id ?: continue
+            if (dragIsAdditive) {
+                if (updated.size >= 5000) break
+                updated.add(id)
+            } else {
+                updated.remove(id)
+            }
+        }
+        selectedIds = updated.toSet()
+    }
+
+    fun beginDrag(offset: Offset): Boolean {
+        val idx = indexAt(offset)
+        val item = mediaItemAt(idx) ?: return false
+
+        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+        dragAnchorIndex = idx
+        dragLastIndex = idx
+        // Preserves existing selections so you can lift your finger and continue dragging anywhere else!
+        dragBaseSelection = currentSelectedIds
+        dragIsAdditive = item.id !in currentSelectedIds
+        lastPointerPosition = offset
+
+        if (!currentIsEditMode) {
+            isEditMode = true
+        }
+
+        applyRangeSelection(dragAnchorIndex, dragLastIndex)
+        return true
+    }
+
+    fun updateDrag(position: Offset, boxHeightPx: Int, densityScale: Float) {
+        lastPointerPosition = position
+        val idx = indexAt(position)
+        if (idx >= 0 && idx != dragLastIndex && mediaItemAt(idx) != null) {
+            applyRangeSelection(dragAnchorIndex, idx)
+            dragLastIndex = idx
+        }
+
+        val edge10 = 10f * densityScale
+        val edge40 = 40f * densityScale
+        val edge80 = 80f * densityScale
+
+        val y = position.y
+
+        autoScrollSpeed = when {
+            y < edge10 -> -70f
+            y < edge40 -> -25f
+            y < edge80 -> -8f
+            y > boxHeightPx - edge10 -> 70f
+            y > boxHeightPx - edge40 -> 25f
+            y > boxHeightPx - edge80 -> 8f
+            else -> 0f
+        }
+    }
+
+    fun endDrag() {
+        autoScrollSpeed = 0f
+        lastPointerPosition = null
+        dragAnchorIndex = -1
+        dragLastIndex = -1
+    }
+
+    LaunchedEffect(autoScrollSpeed) {
+        if (autoScrollSpeed == 0f) return@LaunchedEffect
+        while (isActive) {
+            withFrameNanos { }
+            gridState.scrollBy(autoScrollSpeed)
+            lastPointerPosition?.let { pos ->
+                val idx = indexAt(pos)
+                if (idx >= 0 && idx != dragLastIndex && mediaItemAt(idx) != null) {
+                    applyRangeSelection(dragAnchorIndex, idx)
+                    dragLastIndex = idx
+                }
+            }
+        }
+    }
+
+    val gestureModifier = Modifier.pointerInput(Unit) {
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false)
+            val longPress = awaitLongPressOrCancellation(down.id)
+
+            if (longPress == null) {
+                val upEvent = currentEvent.changes.firstOrNull { it.id == down.id }
+                val isTap = upEvent != null &&
+                        !upEvent.pressed &&
+                        !upEvent.isConsumed &&
+                        (upEvent.position - down.position).getDistance() <= viewConfiguration.touchSlop
+
+                if (isTap && upEvent != null) {
+                    val index = indexAt(down.position)
+                    val item = mediaItemAt(index)
+                    if (item != null) {
+                        upEvent.consume()
+                        if (currentIsEditMode) {
+                            val newSet = currentSelectedIds.toMutableSet()
+                            if (!newSet.remove(item.id)) {
+                                if (newSet.size < 5000) newSet.add(item.id)
+                            }
+                            selectedIds = newSet.toSet()
+                            haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        } else {
+                            itemForDetails = item
+                        }
+                    }
+                }
+                return@awaitEachGesture
+            }
+
+            if (!beginDrag(down.position)) return@awaitEachGesture
+            longPress.consume()
+            var lastDragUpdateMs = 0L
+
+            try {
+                while (true) {
+                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                    val change = event.changes.firstOrNull { it.id == down.id } ?: break
+
+                    change.consume()
+
+                    if (!change.pressed) {
+                        break
+                    }
+
+                    val now = System.currentTimeMillis()
+                    if (now - lastDragUpdateMs >= 16L) {
+                        updateDrag(
+                            position = change.position,
+                            boxHeightPx = size.height,
+                            densityScale = density.density
+                        )
+                        lastDragUpdateMs = now
+                    }
+                }
+            } finally {
+                endDrag()
+            }
+        }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -611,11 +796,14 @@ fun TrashScreen(
                         }
                     } else {
                         LazyVerticalGrid(
+                            state = gridState,
                             columns = GridCells.Fixed(gridColumns.coerceAtLeast(1)),
                             contentPadding = PaddingValues(start = 4.dp, end = 4.dp, bottom = 110.dp, top = 4.dp),
                             horizontalArrangement = Arrangement.spacedBy(3.dp),
                             verticalArrangement = Arrangement.spacedBy(3.dp),
-                            modifier = Modifier.fillMaxSize()
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .then(gestureModifier)
                         ) {
                             items(
                                 items = flattenedGridItems,
@@ -626,6 +814,9 @@ fun TrashScreen(
                                 key = {
                                     if (it is TrashGridItem.Header) "h_${it.title}"
                                     else (it as TrashGridItem.Media).item.id
+                                },
+                                contentType = {
+                                    if (it is TrashGridItem.Header) "header" else "media"
                                 }
                             ) { item ->
                                 when (item) {
@@ -678,26 +869,7 @@ fun TrashScreen(
                                         TrashSquareTile(
                                             item = item.item,
                                             isSelected = selectedIds.contains(item.item.id),
-                                            isEditMode = isEditMode,
-                                            onClick = {
-                                                if (isEditMode) {
-                                                    selectedIds = if (selectedIds.contains(item.item.id)) {
-                                                        selectedIds - item.item.id
-                                                    } else {
-                                                        selectedIds + item.item.id
-                                                    }
-                                                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                                } else {
-                                                    itemForDetails = item.item
-                                                }
-                                            },
-                                            onLongClick = {
-                                                if (!isEditMode) {
-                                                    isEditMode = true
-                                                    selectedIds = selectedIds + item.item.id
-                                                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                                                }
-                                            }
+                                            isEditMode = isEditMode
                                         )
                                     }
                                 }
@@ -1167,9 +1339,7 @@ fun TrashSquareTile(
     modifier: Modifier = Modifier,
     item: TrashUiItem,
     isSelected: Boolean,
-    isEditMode: Boolean,
-    onClick: () -> Unit,
-    onLongClick: () -> Unit
+    isEditMode: Boolean
 ) {
     val scale by animateFloatAsState(
         targetValue = if (isSelected) 0.88f else 1f,
@@ -1197,7 +1367,6 @@ fun TrashSquareTile(
                     Modifier
                 }
             )
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .background(MaterialTheme.colorScheme.surfaceContainerHighest)
     ) {
         when (item.type) {
@@ -1385,7 +1554,6 @@ fun MetadataRow(label: String, value: String) {
         )
     }
 }
-
 
 /**
  * =========================================================================================
